@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import argparse
+from pathlib import Path
 
 from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
+from .sync_scope import prepare_sync_filter_rules, scope_issues, sync_allowlist_info
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -46,7 +48,24 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit structured JSON output.",
     )
-    for name in ("progress", "scope", "check-allowlist", "resync", "full-resync", "track-renames"):
+    sync_scope_parser = sync_subparsers.add_parser("scope")
+    sync_scope_parser.add_argument(
+        "--filter",
+        action="store_true",
+        help="Include the generated bisync filter rules.",
+    )
+    sync_scope_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+    sync_check_parser = sync_subparsers.add_parser("check-allowlist")
+    sync_check_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+    for name in ("progress", "resync", "full-resync", "track-renames"):
         sync_subparsers.add_parser(name)
 
     for name in ("mount", "umount", "index"):
@@ -90,9 +109,17 @@ def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
     return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
 
 
+def _exit_code_for_report(report: CommandReport) -> int:
+    return 1 if report.status == "error" else 0
+
+
+def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
+    return sorted(issues, key=_issue_sort_key)
+
+
 def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
-    issues = sorted(load_result.issues, key=_issue_sort_key)
+    issues = _sort_issues(list(load_result.issues))
     mode = "dev" if paths.dev_mode else "default"
     details = {
         "workspace": str(paths.workspace_root),
@@ -115,7 +142,7 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
 def cmd_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _status_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return 1 if report.status == "error" else 0
+    return _exit_code_for_report(report)
 
 
 def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
@@ -139,7 +166,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
             repaired_items.append(f"allowlist file: {load_result.config.allowlist_file}")
         load_result = load_config(paths)
 
-    issues = sorted(load_result.issues, key=_issue_sort_key)
+    issues = _sort_issues(list(load_result.issues))
     has_errors = _has_errors(issues)
     status = _status_from_issues(issues)
     details = {
@@ -176,7 +203,7 @@ def cmd_doctor(args: argparse.Namespace, paths: RuntimePaths) -> int:
 
 def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
-    issues = sorted(load_result.issues, key=_issue_sort_key)
+    issues = _sort_issues(list(load_result.issues))
     details = {
         "runtime": "development",
         "sync engine": "bisync fallback scaffold",
@@ -199,7 +226,86 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
 def cmd_sync_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_status_report(paths)
     print(render_report(report, as_json=args.json))
-    return 1 if report.status == "error" else 0
+    return _exit_code_for_report(report)
+
+
+def _readable_baseline(info_file: Path, mode: str, status: str) -> str:
+    if status == "defaulted":
+        return f"{mode} (default)"
+    if status == "invalid":
+        return f"invalid ({info_file})"
+    return mode
+
+
+def _sync_scope_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    info = sync_allowlist_info(config)
+    issues = _sort_issues(list(load_result.issues) + scope_issues(info))
+    details: dict[str, object] = {
+        "scope mode": "allowlist",
+        "scope source": str(info.allowlist_file),
+        "scope status": info.allowlist_status,
+        "scope entries": info.allowlist_count if info.allowlist_status == "loaded" else 0,
+        "full-tree override": "pcloud-manager sync full-resync",
+        "last resync scope": _readable_baseline(
+            info.baseline.file,
+            info.baseline.mode,
+            info.baseline.status,
+        ),
+        "filter file": str(info.filter_file),
+        "entries": list(info.entries),
+    }
+    if info.allowlist_message != "-":
+        details["scope note"] = info.allowlist_message
+    if args.filter and info.allowlist_status == "loaded":
+        details["filter rules"] = list(prepare_sync_filter_rules(config, info.entries))
+
+    return CommandReport(
+        command="sync scope",
+        status=_status_from_issues(issues),
+        summary="allowlist scope is ready" if not issues else "allowlist scope needs attention",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_scope(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_scope_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
+def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    info = sync_allowlist_info(load_result.config)
+    issues = _sort_issues(list(load_result.issues) + scope_issues(info))
+    details: dict[str, object] = {
+        "file": str(info.allowlist_file),
+        "status": info.allowlist_status,
+        "entries": info.allowlist_count,
+    }
+    if info.allowlist_message != "-":
+        details["reason"] = info.allowlist_message
+
+    summary = (
+        f"allowlist loaded ({info.allowlist_count} entries)"
+        if info.allowlist_status == "loaded" and not issues
+        else f"allowlist {info.allowlist_status}"
+    )
+    return CommandReport(
+        command="sync check-allowlist",
+        status=_status_from_issues(issues),
+        summary=summary,
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_check_allowlist(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_check_allowlist_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
 
 
 def cmd_placeholder(command: str) -> int:
@@ -219,6 +325,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         if args.sync_command == "status":
             return cmd_sync_status(args, paths)
+        if args.sync_command == "scope":
+            return cmd_sync_scope(args, paths)
+        if args.sync_command == "check-allowlist":
+            return cmd_sync_check_allowlist(args, paths)
         name = f"sync {args.sync_command}" if args.sync_command else "sync"
         return cmd_placeholder(name)
     if args.command in {"mount", "umount", "index"}:

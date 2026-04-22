@@ -40,6 +40,14 @@ def render_report(report: CommandReport, as_json: bool = False) -> str:
 
     lines = [f"{report.command}: {report.status}", report.summary]
     for key, value in report.details.items():
+        if isinstance(value, list):
+            if value:
+                lines.append(f"{key}:")
+                for item in value:
+                    lines.append(f"- {item}")
+            else:
+                lines.append(f"{key}: []")
+            continue
         lines.append(f"{key}: {value}")
     if report.issues:
         lines.append("issues:")
