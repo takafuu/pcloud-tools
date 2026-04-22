@@ -1,0 +1,17 @@
+[build-system]
+requires = ["hatchling>=1.27"]
+build-backend = "hatchling.build"
+
+[project]
+name = "pcloud-tools"
+version = "0.1.0"
+description = "Python-centered successor to the pcloud-manager shell monolith."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+pcloud-tools = "pcloud_tools.cli:main"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/pcloud_tools"]

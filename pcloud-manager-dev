@@ -1,0 +1,18 @@
+#!/bin/sh
+
+set -eu
+
+ROOT_DIR=$(CDPATH= cd -- "$(dirname "$0")" && pwd)
+export PYTHONPATH="${ROOT_DIR}/src${PYTHONPATH:+:${PYTHONPATH}}"
+export PCLOUD_TOOLS_DEV=1
+export PCLOUD_TOOLS_WORKSPACE_ROOT="${ROOT_DIR}"
+export PCLOUD_TOOLS_CONFIG_DIR="${ROOT_DIR}/.dev-state/config"
+export PCLOUD_TOOLS_STATE_DIR="${ROOT_DIR}/.dev-state/state"
+export PCLOUD_TOOLS_LOG_DIR="${ROOT_DIR}/.dev-state/logs"
+
+PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
+if [ ! -x "${PYTHON_BIN}" ]; then
+  PYTHON_BIN=python3
+fi
+
+exec "${PYTHON_BIN}" -m pcloud_tools.cli "$@"
