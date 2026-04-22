@@ -360,6 +360,7 @@ def _sync_progress_report(paths: RuntimePaths) -> CommandReport:
         "rate": progress.rate,
         "eta": progress.eta,
         "elapsed": progress.elapsed,
+        "transferring block": list(progress.trailing_lines),
     }
     return CommandReport(
         command="sync progress",

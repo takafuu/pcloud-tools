@@ -52,6 +52,7 @@ class SyncProgress:
     eta: str
     elapsed: str
     activity: str
+    trailing_lines: tuple[str, ...]
 
 
 def sync_status_log_path(config: AppConfig) -> Path:
@@ -301,6 +302,7 @@ def parse_sync_progress(config: AppConfig) -> SyncProgress | None:
         return None
 
     bytes_line, checks_line, files_line, elapsed_line = lines[:4]
+    trailing_lines = tuple(line for line in lines[4:] if line.strip())
 
     scanned_entries = ""
     compared_entries = ""
@@ -335,4 +337,5 @@ def parse_sync_progress(config: AppConfig) -> SyncProgress | None:
         eta=eta,
         elapsed=elapsed,
         activity=latest_sync_activity(log_path),
+        trailing_lines=trailing_lines,
     )
