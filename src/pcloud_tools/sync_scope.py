@@ -156,6 +156,14 @@ def prepare_sync_filter_rules(config: AppConfig, entries: tuple[str, ...]) -> tu
     return tuple(rules)
 
 
+def write_sync_filter_file(config: AppConfig, entries: tuple[str, ...]) -> Path:
+    filter_file = sync_filter_file(config)
+    filter_file.parent.mkdir(parents=True, exist_ok=True)
+    rules = prepare_sync_filter_rules(config, entries)
+    filter_file.write_text("".join(f"{rule}\n" for rule in rules))
+    return filter_file
+
+
 def scope_issues(info: SyncScopeInfo) -> list[ConfigIssue]:
     issues: list[ConfigIssue] = []
     if info.allowlist_status == "missing":

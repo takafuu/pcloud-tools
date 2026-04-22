@@ -6,7 +6,12 @@ from pathlib import Path
 from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
-from .sync_scope import prepare_sync_filter_rules, scope_issues, sync_allowlist_info
+from .sync_scope import (
+    prepare_sync_filter_rules,
+    scope_issues,
+    sync_allowlist_info,
+    write_sync_filter_file,
+)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -259,6 +264,8 @@ def _sync_scope_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
     if info.allowlist_message != "-":
         details["scope note"] = info.allowlist_message
     if args.filter and info.allowlist_status == "loaded":
+        written_filter = write_sync_filter_file(config, info.entries)
+        details["filter file"] = str(written_filter)
         details["filter rules"] = list(prepare_sync_filter_rules(config, info.entries))
 
     return CommandReport(
