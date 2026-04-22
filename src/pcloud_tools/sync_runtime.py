@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -114,6 +115,35 @@ def _pid_is_alive(pid: str) -> bool:
     return True
 
 
+def _pid_command(pid: str) -> str:
+    if not pid.isdigit():
+        return ""
+    try:
+        result = subprocess.run(
+            ["ps", "-p", pid, "-o", "command="],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+    except OSError:
+        return ""
+    if result.returncode != 0:
+        return ""
+    return result.stdout.strip()
+
+
+def _pid_matches_sync_process(pid: str, config: AppConfig) -> bool:
+    if not _pid_is_alive(pid):
+        return False
+
+    command = _pid_command(pid)
+    if not command:
+        return False
+
+    required_parts = ("rclone", "bisync", str(config.core_dir), config.core_remote)
+    return all(part in command for part in required_parts)
+
+
 def read_latest_sync_logs(config: AppConfig) -> SyncLogPointers:
     return SyncLogPointers(
         last_sync=_read_last_line(sync_status_log_path(config)),
@@ -133,7 +163,7 @@ def read_sync_lock_state(config: AppConfig) -> SyncLockState:
     mode = _read_pointer(sync_lock_mode_file(config))
     started_at = _read_pointer(sync_lock_started_file(config))
     return SyncLockState(
-        active=_pid_is_alive(pid),
+        active=_pid_matches_sync_process(pid, config),
         pid=pid,
         mode=mode,
         started_at=started_at,
