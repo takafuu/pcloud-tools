@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -28,6 +29,14 @@ class SyncState:
     last_error: str
     last_log: str
     reason: str
+
+
+@dataclass(frozen=True)
+class SyncLockState:
+    active: bool
+    pid: str
+    mode: str
+    started_at: str
 
 
 @dataclass(frozen=True)
@@ -63,6 +72,22 @@ def sync_last_stderr_log_file(config: AppConfig) -> Path:
     return config.state_dir / "last-stderr-log"
 
 
+def sync_lock_dir(config: AppConfig) -> Path:
+    return config.state_dir / "bisync.lock"
+
+
+def sync_lock_pid_file(config: AppConfig) -> Path:
+    return sync_lock_dir(config) / "pid"
+
+
+def sync_lock_mode_file(config: AppConfig) -> Path:
+    return sync_lock_dir(config) / "mode"
+
+
+def sync_lock_started_file(config: AppConfig) -> Path:
+    return sync_lock_dir(config) / "started_at"
+
+
 def _read_last_line(path: Path) -> str:
     if not path.exists() or not path.is_file():
         return "(none)"
@@ -79,6 +104,16 @@ def _read_pointer(path: Path) -> str:
     return target
 
 
+def _pid_is_alive(pid: str) -> bool:
+    if not pid.isdigit():
+        return False
+    try:
+        os.kill(int(pid), 0)
+    except OSError:
+        return False
+    return True
+
+
 def read_latest_sync_logs(config: AppConfig) -> SyncLogPointers:
     return SyncLogPointers(
         last_sync=_read_last_line(sync_status_log_path(config)),
@@ -86,6 +121,22 @@ def read_latest_sync_logs(config: AppConfig) -> SyncLogPointers:
         latest_rclone_log=_read_pointer(sync_last_rclone_log_file(config)),
         latest_stdout_log=_read_pointer(sync_last_stdout_log_file(config)),
         latest_stderr_log=_read_pointer(sync_last_stderr_log_file(config)),
+    )
+
+
+def read_sync_lock_state(config: AppConfig) -> SyncLockState:
+    lock_dir = sync_lock_dir(config)
+    if not lock_dir.exists() or not lock_dir.is_dir():
+        return SyncLockState(active=False, pid="-", mode="-", started_at="-")
+
+    pid = _read_pointer(sync_lock_pid_file(config))
+    mode = _read_pointer(sync_lock_mode_file(config))
+    started_at = _read_pointer(sync_lock_started_file(config))
+    return SyncLockState(
+        active=_pid_is_alive(pid),
+        pid=pid,
+        mode=mode,
+        started_at=started_at,
     )
 
 
@@ -153,17 +204,20 @@ def sync_progress_log_path(config: AppConfig) -> Path | None:
 
 def read_sync_state(config: AppConfig) -> SyncState:
     pointers = read_latest_sync_logs(config)
-    current_log = pointers.latest_rclone_log
+    lock_state = read_sync_lock_state(config)
+    current_log = pointers.latest_rclone_log if lock_state.active else "-"
     activity = "-"
     state = "idle" if pointers.last_sync == "(none)" else "synced"
     reason = ""
 
-    if current_log != "-":
+    if lock_state.active and current_log != "-":
         log_path = Path(current_log).expanduser()
         activity = latest_sync_activity(log_path)
-        state = "syncing" if activity != "-" else "idle"
+        state = "syncing"
+    elif lock_state.active:
+        state = "syncing"
 
-    if pointers.last_sync != "(none)" and "ERROR" in pointers.last_sync:
+    if not lock_state.active and pointers.last_sync != "(none)" and "ERROR" in pointers.last_sync:
         state = "sync_error"
         reason = pointers.last_error
 
