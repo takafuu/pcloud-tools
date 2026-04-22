@@ -338,6 +338,74 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
             )
         )
 
+    if not config.core_dir.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_CORE_DIR",
+                level="error",
+                message=f"core dir does not exist: {config.core_dir}",
+            )
+        )
+    elif not config.core_dir.is_dir():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_CORE_DIR",
+                level="error",
+                message=f"core dir is not a directory: {config.core_dir}",
+            )
+        )
+
+    if not config.state_dir.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_STATE_DIR",
+                level="warning",
+                message=f"state dir does not exist yet: {config.state_dir}",
+            )
+        )
+    elif not config.state_dir.is_dir():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_STATE_DIR",
+                level="error",
+                message=f"state dir is not a directory: {config.state_dir}",
+            )
+        )
+
+    if not config.log_dir.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_LOG_DIR",
+                level="warning",
+                message=f"log dir does not exist yet: {config.log_dir}",
+            )
+        )
+    elif not config.log_dir.is_dir():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_LOG_DIR",
+                level="error",
+                message=f"log dir is not a directory: {config.log_dir}",
+            )
+        )
+
+    if not config.allowlist_file.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_ALLOWLIST_FILE",
+                level="error",
+                message=f"allowlist file does not exist: {config.allowlist_file}",
+            )
+        )
+    elif not config.allowlist_file.is_file():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_ALLOWLIST_FILE",
+                level="error",
+                message=f"allowlist path is not a file: {config.allowlist_file}",
+            )
+        )
+
     return issues
 
 
@@ -384,3 +452,18 @@ def repair_env_file(paths: RuntimePaths) -> Path:
         return env_file
     env_file.write_text(render_env_template(paths))
     return env_file
+
+
+def render_allowlist_template(paths: RuntimePaths) -> str:
+    if paths.dev_mode:
+        return "# Starter allowlist for pcloud-tools development\nDocuments/\n"
+    return "# Starter allowlist for pcloud-tools\nDocuments/\n"
+
+
+def repair_allowlist_file(config: AppConfig, paths: RuntimePaths) -> Path:
+    allowlist_file = config.allowlist_file
+    allowlist_file.parent.mkdir(parents=True, exist_ok=True)
+    if allowlist_file.exists():
+        return allowlist_file
+    allowlist_file.write_text(render_allowlist_template(paths))
+    return allowlist_file

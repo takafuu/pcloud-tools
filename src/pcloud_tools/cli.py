@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import argparse
 
-from .config import ConfigIssue, load_config, repair_env_file
+from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
 
@@ -74,11 +74,25 @@ def _has_errors(issues: list[ConfigIssue]) -> bool:
     return any(issue.level == "error" for issue in issues)
 
 
+def _has_warnings(issues: list[ConfigIssue]) -> bool:
+    return any(issue.level == "warning" for issue in issues)
+
+
+def _status_from_issues(issues: list[ConfigIssue]) -> str:
+    if _has_errors(issues):
+        return "error"
+    if _has_warnings(issues):
+        return "warning"
+    return "ok"
+
+
 def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
     return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
 
 
 def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    issues = sorted(load_result.issues, key=_issue_sort_key)
     mode = "dev" if paths.dev_mode else "default"
     details = {
         "workspace": str(paths.workspace_root),
@@ -91,15 +105,17 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
         details.update(_config_summary(paths))
     return CommandReport(
         command="status",
-        status="ok",
+        status=_status_from_issues(issues),
         summary=f"pcloud-manager-dev scaffold is ready ({mode})",
         details=details,
+        issues=_report_issues(issues),
     )
 
 
 def cmd_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
-    print(render_report(_status_report(args, paths), as_json=args.json))
-    return 0
+    report = _status_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return 1 if report.status == "error" else 0
 
 
 def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
@@ -108,16 +124,24 @@ def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
 
 
 def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[CommandReport, bool]:
-    repaired = False
+    repaired_items: list[str] = []
     if args.repair:
         env_missing = not paths.env_file.exists()
         repair_env_file(paths)
-        repaired = env_missing and paths.env_file.exists()
+        if env_missing and paths.env_file.exists():
+            repaired_items.append(f"env file: {paths.env_file}")
 
     load_result = load_config(paths)
+    if args.repair:
+        allowlist_missing = not load_result.config.allowlist_file.exists()
+        repair_allowlist_file(load_result.config, paths)
+        if allowlist_missing and load_result.config.allowlist_file.exists():
+            repaired_items.append(f"allowlist file: {load_result.config.allowlist_file}")
+        load_result = load_config(paths)
+
     issues = sorted(load_result.issues, key=_issue_sort_key)
     has_errors = _has_errors(issues)
-    status = "needs-attention" if has_errors else "ok"
+    status = _status_from_issues(issues)
     details = {
         "config dir": f"{'present' if paths.config_dir.exists() else 'missing'} ({paths.config_dir})",
         "state dir": f"{'present' if paths.state_dir.exists() else 'missing'} ({paths.state_dir})",
@@ -130,8 +154,8 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "vault layer": "enabled" if load_result.config.enable_vault_layer else "disabled",
         "crypt layer": "enabled" if load_result.config.enable_crypt_layer else "disabled",
     }
-    if repaired:
-        details["repair"] = f"wrote starter env file to {paths.env_file}"
+    if repaired_items:
+        details["repair"] = "; ".join(f"created {item}" for item in repaired_items)
 
     report = CommandReport(
         command="doctor",
@@ -152,6 +176,7 @@ def cmd_doctor(args: argparse.Namespace, paths: RuntimePaths) -> int:
 
 def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
+    issues = sorted(load_result.issues, key=_issue_sort_key)
     details = {
         "runtime": "development",
         "sync engine": "bisync fallback scaffold",
@@ -164,16 +189,17 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     }
     return CommandReport(
         command="sync status",
-        status="ok",
+        status=_status_from_issues(issues),
         summary="sync command surface is scaffolded and ready for migration work",
         details=details,
-        issues=_report_issues(list(load_result.issues)),
+        issues=_report_issues(issues),
     )
 
 
 def cmd_sync_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
-    print(render_report(_sync_status_report(paths), as_json=args.json))
-    return 0
+    report = _sync_status_report(paths)
+    print(render_report(report, as_json=args.json))
+    return 1 if report.status == "error" else 0
 
 
 def cmd_placeholder(command: str) -> int:
