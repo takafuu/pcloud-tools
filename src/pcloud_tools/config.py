@@ -248,7 +248,7 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
     except ConfigError as exc:
         issues.append(ConfigIssue(key="config", level="error", message=str(exc)))
         fallback = _build_fallback_config(paths, defaults)
-        source = "env" if paths.env_file.exists() else "defaults"
+        source = "env-error" if paths.env_file.exists() else "defaults"
         return ConfigLoadResult(config=fallback, source=source, issues=tuple(issues))
 
     issues.extend(validate_config(config))
