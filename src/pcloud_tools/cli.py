@@ -216,6 +216,11 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
     issues = _sort_issues(list(load_result.issues))
     has_errors = _has_errors(issues)
     status = _status_from_issues(issues)
+    sync_state = read_sync_state(load_result.config)
+    lock_state = read_sync_lock_state(load_result.config)
+    log_pointers = read_latest_sync_logs(load_result.config)
+    scope_info = sync_allowlist_info(load_result.config)
+    progress = parse_sync_progress(load_result.config)
     details = {
         "config dir": f"{'present' if paths.config_dir.exists() else 'missing'} ({paths.config_dir})",
         "state dir": f"{'present' if paths.state_dir.exists() else 'missing'} ({paths.state_dir})",
@@ -227,6 +232,24 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "core remote": load_result.config.core_remote,
         "vault layer": "enabled" if load_result.config.enable_vault_layer else "disabled",
         "crypt layer": "enabled" if load_result.config.enable_crypt_layer else "disabled",
+        "sync state": sync_state.state,
+        "sync activity": sync_state.activity,
+        "scope status": scope_info.allowlist_status,
+        "scope entries": scope_info.allowlist_count,
+        "scope baseline": _readable_baseline(
+            scope_info.baseline.file,
+            scope_info.baseline.mode,
+            scope_info.baseline.status,
+        ),
+        "filter file": str(sync_filter_file(load_result.config)),
+        "sync lock active": "yes" if lock_state.active else "no",
+        "sync lock pid": lock_state.pid,
+        "sync lock mode": lock_state.mode,
+        "sync lock started": lock_state.started_at,
+        "latest rclone log": log_pointers.latest_rclone_log,
+        "latest stdout log": log_pointers.latest_stdout_log,
+        "latest stderr log": log_pointers.latest_stderr_log,
+        "progress source": str(progress.log_path) if progress is not None else "-",
     }
     if repaired_items:
         details["repair"] = "; ".join(f"created {item}" for item in repaired_items)
