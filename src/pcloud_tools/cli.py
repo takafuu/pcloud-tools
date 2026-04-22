@@ -1,11 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 from pathlib import Path
 
 from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
+from .sync_exec import (
+    SyncExecutionError,
+    build_sync_plan,
+    enforce_sync_scope_guard,
+    execute_sync_plan,
+)
 from .sync_runtime import (
     parse_sync_progress,
     read_latest_sync_logs,
@@ -85,7 +92,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Emit structured JSON output.",
     )
     for name in ("resync", "full-resync", "track-renames"):
-        sync_subparsers.add_parser(name)
+        command_parser = sync_subparsers.add_parser(name)
+        command_parser.add_argument(
+            "--execute",
+            action="store_true",
+            help="Run the rclone bisync command instead of only previewing it.",
+        )
+        command_parser.add_argument(
+            "--json",
+            action="store_true",
+            help="Emit structured JSON output.",
+        )
 
     for name in ("mount", "umount", "index"):
         subparsers.add_parser(name, help=f"Placeholder for `{name}` migration.")
@@ -377,6 +394,88 @@ def cmd_sync_progress(args: argparse.Namespace, paths: RuntimePaths) -> int:
     return _exit_code_for_report(report)
 
 
+def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: str) -> CommandReport:
+    load_result = load_config(paths)
+    scope_info = sync_allowlist_info(load_result.config)
+    issues = _sort_issues(
+        list(load_result.issues)
+        + scope_issues(scope_info)
+        + list(enforce_sync_scope_guard(load_result.config, mode))
+    )
+
+    if issues and _has_errors(issues):
+        return CommandReport(
+            command=f"sync {mode}",
+            status="error",
+            summary="sync command cannot run until configuration issues are resolved",
+            details={
+                "mode": mode,
+                "execute": "yes" if args.execute else "no",
+            },
+            issues=_report_issues(issues),
+        )
+
+    try:
+        rclone_bin = shutil.which("rclone")
+        if not rclone_bin:
+            raise SyncExecutionError("rclone command not found")
+        plan = build_sync_plan(
+            load_result.config,
+            mode,
+            scope_info.entries,
+            rclone_bin=rclone_bin,
+        )
+    except SyncExecutionError as exc:
+        return CommandReport(
+            command=f"sync {mode}",
+            status="error",
+            summary="sync plan could not be built",
+            details={"mode": mode},
+            issues=_report_issues(
+                [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message=str(exc))]
+            ),
+        )
+
+    details: dict[str, object] = {
+        "mode": mode,
+        "scope mode": plan.scope_mode,
+        "execute": "yes" if args.execute else "no",
+        "command": list(plan.command),
+        "rclone log": str(plan.rclone_log),
+        "stdout log": str(plan.stdout_log),
+        "stderr log": str(plan.stderr_log),
+    }
+    if plan.filter_file is not None:
+        details["filter file"] = str(plan.filter_file)
+
+    if not args.execute:
+        return CommandReport(
+            command=f"sync {mode}",
+            status=_status_from_issues(issues),
+            summary="sync command preview is ready",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    result = execute_sync_plan(load_result.config, plan)
+    details["exit code"] = result.exit_code
+    details["scope recorded"] = "yes" if result.scope_recorded else "no"
+    status = "ok" if result.exit_code == 0 else "error"
+    return CommandReport(
+        command=f"sync {mode}",
+        status=status,
+        summary="sync command executed" if result.exit_code == 0 else "sync command failed",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_execution(args: argparse.Namespace, paths: RuntimePaths, mode: str) -> int:
+    report = _sync_execution_report(args, paths, mode)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
 def _readable_baseline(info_file: Path, mode: str, status: str) -> str:
     if status == "defaulted":
         return f"{mode} (default)"
@@ -477,6 +576,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sync_status(args, paths)
         if args.sync_command == "progress":
             return cmd_sync_progress(args, paths)
+        if args.sync_command in {"resync", "full-resync", "track-renames"}:
+            return cmd_sync_execution(args, paths, args.sync_command)
         if args.sync_command == "scope":
             return cmd_sync_scope(args, paths)
         if args.sync_command == "check-allowlist":

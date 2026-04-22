@@ -4,3 +4,5 @@ __pycache__/
 *.pyc
 todo.md
 thread-status.md
+bisync_status.log
+bisync_error.log
