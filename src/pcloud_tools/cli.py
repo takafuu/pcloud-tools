@@ -6,6 +6,7 @@ from pathlib import Path
 from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
+from .sync_runtime import parse_sync_progress, read_latest_sync_logs, read_sync_state
 from .sync_scope import (
     prepare_sync_filter_rules,
     scope_issues,
@@ -70,7 +71,13 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit structured JSON output.",
     )
-    for name in ("progress", "resync", "full-resync", "track-renames"):
+    sync_progress_parser = sync_subparsers.add_parser("progress")
+    sync_progress_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+    for name in ("resync", "full-resync", "track-renames"):
         sync_subparsers.add_parser(name)
 
     for name in ("mount", "umount", "index"):
@@ -126,6 +133,8 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
     load_result = load_config(paths)
     issues = _sort_issues(list(load_result.issues))
     mode = "dev" if paths.dev_mode else "default"
+    sync_state = read_sync_state(load_result.config)
+    log_pointers = read_latest_sync_logs(load_result.config)
     details = {
         "workspace": str(paths.workspace_root),
         "config dir": str(paths.config_dir),
@@ -135,6 +144,18 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
     }
     if args.detail:
         details.update(_config_summary(paths))
+        details.update(
+            {
+                "sync state": sync_state.state,
+                "sync activity": sync_state.activity,
+                "current sync log": sync_state.current_log,
+                "last sync result": sync_state.last_sync,
+                "last sync error": sync_state.last_error,
+                "latest rclone log": log_pointers.latest_rclone_log,
+                "latest stdout log": log_pointers.latest_stdout_log,
+                "latest stderr log": log_pointers.latest_stderr_log,
+            }
+        )
     return CommandReport(
         command="status",
         status=_status_from_issues(issues),
@@ -209,20 +230,27 @@ def cmd_doctor(args: argparse.Namespace, paths: RuntimePaths) -> int:
 def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     issues = _sort_issues(list(load_result.issues))
+    sync_state = read_sync_state(load_result.config)
+    log_pointers = read_latest_sync_logs(load_result.config)
     details = {
         "runtime": "development",
         "sync engine": "bisync fallback scaffold",
-        "running": "no",
+        "running": "yes" if sync_state.state == "syncing" else "no",
         "config source": load_result.source,
         "state dir": str(load_result.config.state_dir),
         "allowlist": str(load_result.config.allowlist_file),
         "core remote": load_result.config.core_remote,
-        "next milestone": "port sync status/progress/scope compatibility",
+        "sync state": sync_state.state,
+        "sync activity": sync_state.activity,
+        "current log": sync_state.current_log,
+        "last result": sync_state.last_sync,
+        "last error": sync_state.last_error,
+        "last log": log_pointers.latest_rclone_log,
     }
     return CommandReport(
         command="sync status",
         status=_status_from_issues(issues),
-        summary="sync command surface is scaffolded and ready for migration work",
+        summary="sync status is available for migration diagnostics",
         details=details,
         issues=_report_issues(issues),
     )
@@ -230,6 +258,60 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
 
 def cmd_sync_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_status_report(paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
+def _sync_progress_report(paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    issues = _sort_issues(list(load_result.issues))
+    progress = parse_sync_progress(load_result.config)
+    sync_state = read_sync_state(load_result.config)
+
+    if progress is None:
+        details: dict[str, object] = {
+            "sync state": sync_state.state,
+            "progress source": "-",
+            "reason": "no sync log available for progress",
+        }
+        warning_issues = issues + [
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_PROGRESS",
+                level="warning" if not issues else "error" if _has_errors(issues) else "warning",
+                message="no sync log available for progress",
+            )
+        ]
+        return CommandReport(
+            command="sync progress",
+            status=_status_from_issues(_sort_issues(warning_issues)),
+            summary="sync progress is not available yet",
+            details=details,
+            issues=_report_issues(_sort_issues(warning_issues)),
+        )
+
+    details = {
+        "sync state": sync_state.state,
+        "progress source": str(progress.log_path),
+        "activity": progress.activity,
+        "scanned entries": progress.scanned_entries,
+        "compared entries": progress.compared_entries,
+        "files transferred": progress.files_transferred,
+        "bytes transferred": progress.bytes_transferred,
+        "rate": progress.rate,
+        "eta": progress.eta,
+        "elapsed": progress.elapsed,
+    }
+    return CommandReport(
+        command="sync progress",
+        status=_status_from_issues(issues),
+        summary="sync progress is available",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_progress(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_progress_report(paths)
     print(render_report(report, as_json=args.json))
     return _exit_code_for_report(report)
 
@@ -332,6 +414,8 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "sync":
         if args.sync_command == "status":
             return cmd_sync_status(args, paths)
+        if args.sync_command == "progress":
+            return cmd_sync_progress(args, paths)
         if args.sync_command == "scope":
             return cmd_sync_scope(args, paths)
         if args.sync_command == "check-allowlist":
