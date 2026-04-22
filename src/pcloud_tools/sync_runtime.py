@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import re
+import shlex
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
@@ -140,8 +141,25 @@ def _pid_matches_sync_process(pid: str, config: AppConfig) -> bool:
     if not command:
         return False
 
-    required_parts = ("rclone", "bisync", str(config.core_dir), config.core_remote)
-    return all(part in command for part in required_parts)
+    try:
+        parts = shlex.split(command)
+    except ValueError:
+        return False
+
+    if len(parts) < 4:
+        return False
+
+    executable = Path(parts[0]).name
+    if executable != "rclone":
+        return False
+    if parts[1] != "bisync":
+        return False
+    if parts[2] != str(config.core_dir):
+        return False
+    if parts[3] != config.core_remote:
+        return False
+
+    return True
 
 
 def read_latest_sync_logs(config: AppConfig) -> SyncLogPointers:
