@@ -169,14 +169,16 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
 def load_config(paths: RuntimePaths) -> ConfigLoadResult:
     defaults = _defaults_for_runtime(paths)
     issues: list[ConfigIssue] = []
-    env_values = parse_env_file(paths.env_file)
-    values = {**defaults, **env_values}
-
-    for key, value in os.environ.items():
-        if key.startswith("PCLOUD_TOOLS_"):
-            values[key] = value
+    env_values: dict[str, str] = {}
 
     try:
+        env_values = parse_env_file(paths.env_file)
+        values = {**defaults, **env_values}
+
+        for key, value in os.environ.items():
+            if key.startswith("PCLOUD_TOOLS_"):
+                values[key] = value
+
         config = AppConfig(
             env_file=paths.env_file,
             core_dir=_path_value("PCLOUD_TOOLS_CORE_DIR", values, defaults["PCLOUD_TOOLS_CORE_DIR"]),
