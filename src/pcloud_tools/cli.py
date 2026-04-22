@@ -6,11 +6,18 @@ from pathlib import Path
 from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
-from .sync_runtime import parse_sync_progress, read_latest_sync_logs, read_sync_state
+from .sync_runtime import (
+    parse_sync_progress,
+    read_latest_sync_logs,
+    read_sync_lock_state,
+    read_sync_state,
+)
 from .sync_scope import (
     prepare_sync_filter_rules,
     scope_issues,
     sync_allowlist_info,
+    sync_filter_file,
+    sync_scope_baseline_info,
     write_sync_filter_file,
 )
 
@@ -134,7 +141,9 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
     issues = _sort_issues(list(load_result.issues))
     mode = "dev" if paths.dev_mode else "default"
     sync_state = read_sync_state(load_result.config)
+    lock_state = read_sync_lock_state(load_result.config)
     log_pointers = read_latest_sync_logs(load_result.config)
+    scope_info = sync_allowlist_info(load_result.config)
     details = {
         "workspace": str(paths.workspace_root),
         "config dir": str(paths.config_dir),
@@ -151,6 +160,18 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
                 "current sync log": sync_state.current_log,
                 "last sync result": sync_state.last_sync,
                 "last sync error": sync_state.last_error,
+                "scope status": scope_info.allowlist_status,
+                "scope entries": scope_info.allowlist_count,
+                "scope baseline": _readable_baseline(
+                    scope_info.baseline.file,
+                    scope_info.baseline.mode,
+                    scope_info.baseline.status,
+                ),
+                "filter file": str(sync_filter_file(load_result.config)),
+                "sync lock active": "yes" if lock_state.active else "no",
+                "sync lock pid": lock_state.pid,
+                "sync lock mode": lock_state.mode,
+                "sync lock started": lock_state.started_at,
                 "latest rclone log": log_pointers.latest_rclone_log,
                 "latest stdout log": log_pointers.latest_stdout_log,
                 "latest stderr log": log_pointers.latest_stderr_log,
@@ -231,7 +252,9 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     issues = _sort_issues(list(load_result.issues))
     sync_state = read_sync_state(load_result.config)
+    lock_state = read_sync_lock_state(load_result.config)
     log_pointers = read_latest_sync_logs(load_result.config)
+    scope_info = sync_allowlist_info(load_result.config)
     details = {
         "runtime": "development",
         "sync engine": "bisync fallback scaffold",
@@ -239,13 +262,27 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
         "config source": load_result.source,
         "state dir": str(load_result.config.state_dir),
         "allowlist": str(load_result.config.allowlist_file),
+        "scope status": scope_info.allowlist_status,
+        "scope entries": scope_info.allowlist_count,
+        "last resync scope": _readable_baseline(
+            scope_info.baseline.file,
+            scope_info.baseline.mode,
+            scope_info.baseline.status,
+        ),
+        "filter file": str(sync_filter_file(load_result.config)),
         "core remote": load_result.config.core_remote,
         "sync state": sync_state.state,
         "sync activity": sync_state.activity,
         "current log": sync_state.current_log,
+        "sync lock active": "yes" if lock_state.active else "no",
+        "sync lock pid": lock_state.pid,
+        "sync lock mode": lock_state.mode,
+        "sync lock started": lock_state.started_at,
         "last result": sync_state.last_sync,
         "last error": sync_state.last_error,
         "last log": log_pointers.latest_rclone_log,
+        "stdout log": log_pointers.latest_stdout_log,
+        "stderr log": log_pointers.latest_stderr_log,
     }
     return CommandReport(
         command="sync status",
