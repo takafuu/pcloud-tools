@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import os
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -183,6 +182,10 @@ def _acquire_sync_lock(config: AppConfig, mode: str) -> None:
     sync_lock_started_file(config).write_text(f"{_now()}\n")
 
 
+def _record_sync_child_pid(config: AppConfig, pid: int) -> None:
+    sync_lock_pid_file(config).write_text(f"{pid}\n")
+
+
 def _release_sync_lock(config: AppConfig) -> None:
     lock_dir = sync_lock_dir(config)
     if lock_dir.exists():
@@ -202,14 +205,14 @@ def execute_sync_plan(config: AppConfig, plan: SyncPlan) -> SyncExecutionResult:
     scope_recorded = False
     try:
         with plan.stdout_log.open("w") as stdout_fh, plan.stderr_log.open("w") as stderr_fh:
-            completed = subprocess.run(
+            process = subprocess.Popen(
                 list(plan.command),
-                check=False,
                 stdout=stdout_fh,
                 stderr=stderr_fh,
                 text=True,
             )
-        exit_code = completed.returncode
+            _record_sync_child_pid(config, process.pid)
+            exit_code = process.wait()
 
         if exit_code == 0:
             _append_status_line(sync_status_log_path(config), f"{_now()} SUCCESS mode={plan.mode}")

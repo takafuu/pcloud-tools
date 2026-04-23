@@ -401,7 +401,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
         list(load_result.issues)
         + scope_issues(scope_info)
         + list(enforce_sync_scope_guard(load_result.config, mode))
-    )
+        )
 
     if issues and _has_errors(issues):
         return CommandReport(
@@ -413,6 +413,28 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
                 "execute": "yes" if args.execute else "no",
             },
             issues=_report_issues(issues),
+        )
+
+    if args.execute and paths.dev_mode:
+        return CommandReport(
+            command=f"sync {mode}",
+            status="error",
+            summary="dev mode refuses to execute bisync against a configured remote",
+            details={
+                "mode": mode,
+                "execute": "yes",
+                "core remote": load_result.config.core_remote,
+                "reason": "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime",
+            },
+            issues=_report_issues(
+                [
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_DEV_EXECUTION",
+                        level="error",
+                        message="refusing --execute from pcloud-manager-dev",
+                    )
+                ]
+            ),
         )
 
     try:
