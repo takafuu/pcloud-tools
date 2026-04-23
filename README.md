@@ -17,6 +17,9 @@ Development entrypoint:
 ./pcloud-manager-dev doctor
 ./pcloud-manager-dev doctor --repair
 ./pcloud-manager-dev sync status --json
+./pcloud-manager-dev mount vault
+./pcloud-manager-dev umount all
+./pcloud-manager-dev index stats all
 ```
 
 The development wrapper keeps config, state, and logs under `.dev-state/` in this workspace so early implementation work does not touch the live `~/.pcloud` setup.
@@ -27,3 +30,5 @@ Config notes:
 - `.env.example` captures the intended key set for the migrated tool
 - `doctor --repair` creates a starter `.env` when one does not exist
 - `status`, `doctor`, and `sync status` already support a shared JSON report schema
+- `mount` / `umount` now expose preview-first reports and use `--execute` for side effects
+- `index` delegates to the configured indexer script, with a legacy fallback to `~/.zsh/functions/pcloud-indexer.py`

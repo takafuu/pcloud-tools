@@ -160,7 +160,6 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"] = str(
             paths.workspace_root / ".dev-state/com.example.pcloud-bisync.dev.plist"
         )
-        defaults["PCLOUD_TOOLS_INDEXER_BIN"] = str(paths.workspace_root / "scripts/pcloud-indexer.py")
         defaults["PCLOUD_TOOLS_NOTIFY_BIN"] = str(paths.workspace_root / "scripts/notify")
 
     return defaults
