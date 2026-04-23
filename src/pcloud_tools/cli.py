@@ -28,6 +28,7 @@ from .sync_exec import (
     execute_sync_plan,
 )
 from .sync_runtime import (
+    clear_sync_lock,
     parse_sync_progress,
     read_latest_sync_logs,
     read_sync_lock_state,
@@ -128,6 +129,17 @@ def build_parser() -> argparse.ArgumentParser:
         help="Apply the launchctl changes instead of only previewing them.",
     )
     sync_disable_autosync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+    sync_clear_stale_lock_parser = sync_subparsers.add_parser("clear-stale-lock")
+    sync_clear_stale_lock_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Remove the stale lock instead of only previewing it.",
+    )
+    sync_clear_stale_lock_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit structured JSON output.",
@@ -261,6 +273,7 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
                 ),
                 "filter file": str(sync_filter_file(load_result.config)),
                 "sync lock active": "yes" if lock_state.active else "no",
+                "sync lock status": lock_state.status,
                 "sync lock pid": lock_state.pid,
                 "sync lock mode": lock_state.mode,
                 "sync lock started": lock_state.started_at,
@@ -340,6 +353,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         ),
         "filter file": str(sync_filter_file(load_result.config)),
         "sync lock active": "yes" if lock_state.active else "no",
+        "sync lock status": lock_state.status,
         "sync lock pid": lock_state.pid,
         "sync lock mode": lock_state.mode,
         "sync lock started": lock_state.started_at,
@@ -400,6 +414,7 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
         "sync activity": sync_state.activity,
         "current log": sync_state.current_log,
         "sync lock active": "yes" if lock_state.active else "no",
+        "sync lock status": lock_state.status,
         "sync lock pid": lock_state.pid,
         "sync lock mode": lock_state.mode,
         "sync lock started": lock_state.started_at,
@@ -664,6 +679,81 @@ def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) 
 
 def cmd_sync_check_allowlist(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_check_allowlist_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
+def _sync_clear_stale_lock_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    issues = _sort_issues(list(load_result.issues))
+    lock_state = read_sync_lock_state(load_result.config)
+    details: dict[str, object] = {
+        "execute": "yes" if args.execute else "no",
+        "sync lock status": lock_state.status,
+        "sync lock active": "yes" if lock_state.active else "no",
+        "sync lock pid": lock_state.pid,
+        "sync lock mode": lock_state.mode,
+        "sync lock started": lock_state.started_at,
+        "sync lock dir": str(paths.state_dir / "bisync.lock"),
+    }
+
+    if lock_state.status == "active":
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_LOCK",
+                    level="error",
+                    message=f"sync lock is active (pid={lock_state.pid})",
+                )
+            ]
+        )
+        return CommandReport(
+            command="sync clear-stale-lock",
+            status="error",
+            summary="active sync lock cannot be cleared",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    details["planned action"] = (
+        "remove lock directory"
+        if lock_state.status in {"stale", "invalid"}
+        else "no-op"
+    )
+
+    if not args.execute:
+        return CommandReport(
+            command="sync clear-stale-lock",
+            status=_status_from_issues(issues),
+            summary="stale lock preview is ready",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    removed = False
+    if lock_state.status in {"stale", "invalid"}:
+        removed = clear_sync_lock(load_result.config)
+
+    details["removed"] = "yes" if removed else "no"
+    refreshed = read_sync_lock_state(load_result.config)
+    details["sync lock status"] = refreshed.status
+    details["sync lock active"] = "yes" if refreshed.active else "no"
+    details["sync lock pid"] = refreshed.pid
+    details["sync lock mode"] = refreshed.mode
+    details["sync lock started"] = refreshed.started_at
+
+    return CommandReport(
+        command="sync clear-stale-lock",
+        status=_status_from_issues(issues),
+        summary="stale lock cleared" if removed else "no stale lock to clear",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_clear_stale_lock(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_clear_stale_lock_report(args, paths)
     print(render_report(report, as_json=args.json))
     return _exit_code_for_report(report)
 
@@ -1069,6 +1159,8 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sync_status(args, paths)
         if args.sync_command == "progress":
             return cmd_sync_progress(args, paths)
+        if args.sync_command == "clear-stale-lock":
+            return cmd_sync_clear_stale_lock(args, paths)
         if args.sync_command == "enable-autosync":
             return cmd_sync_autosync(args, paths, "enable-autosync")
         if args.sync_command == "disable-autosync":

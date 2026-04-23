@@ -35,6 +35,7 @@ class SyncState:
 
 @dataclass(frozen=True)
 class SyncLockState:
+    status: str
     active: bool
     pid: str
     mode: str
@@ -176,17 +177,58 @@ def read_latest_sync_logs(config: AppConfig) -> SyncLogPointers:
 def read_sync_lock_state(config: AppConfig) -> SyncLockState:
     lock_dir = sync_lock_dir(config)
     if not lock_dir.exists() or not lock_dir.is_dir():
-        return SyncLockState(active=False, pid="-", mode="-", started_at="-")
+        return SyncLockState(status="missing", active=False, pid="-", mode="-", started_at="-")
 
     pid = _read_pointer(sync_lock_pid_file(config))
     mode = _read_pointer(sync_lock_mode_file(config))
     started_at = _read_pointer(sync_lock_started_file(config))
+    active = _pid_matches_sync_process(pid, config)
+    status = _sync_lock_status(lock_dir, pid, mode, started_at, active)
     return SyncLockState(
-        active=_pid_matches_sync_process(pid, config),
+        status=status,
+        active=active,
         pid=pid,
         mode=mode,
         started_at=started_at,
     )
+
+
+def clear_sync_lock(config: AppConfig) -> bool:
+    lock_dir = sync_lock_dir(config)
+    if not lock_dir.exists() or not lock_dir.is_dir():
+        return False
+    for child in lock_dir.iterdir():
+        if child.is_dir():
+            clear_sync_lock_dir(child)
+        else:
+            child.unlink()
+    lock_dir.rmdir()
+    return True
+
+
+def clear_sync_lock_dir(path: Path) -> None:
+    for child in path.iterdir():
+        if child.is_dir():
+            clear_sync_lock_dir(child)
+            child.rmdir()
+        else:
+            child.unlink()
+
+
+def _sync_lock_status(
+    lock_dir: Path,
+    pid: str,
+    mode: str,
+    started_at: str,
+    active: bool,
+) -> str:
+    if not lock_dir.exists() or not lock_dir.is_dir():
+        return "missing"
+    if active:
+        return "active"
+    if pid == "-" and mode == "-" and started_at == "-":
+        return "invalid"
+    return "stale"
 
 
 def latest_sync_activity(log_path: Path) -> str:
