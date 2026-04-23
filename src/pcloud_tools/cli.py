@@ -876,6 +876,27 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
             issues=_report_issues(issues),
         )
 
+    if lock_state.status in {"stale", "invalid"}:
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_LOCK",
+                    level="error",
+                    message=(
+                        f"sync lock is {lock_state.status}; run `sync clear-stale-lock` before launching background sync"
+                    ),
+                )
+            ]
+        )
+        return CommandReport(
+            command="sync background",
+            status="error",
+            summary="background sync requires clearing the stale lock first",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
     child_command = (
         sys.executable,
         "-m",
