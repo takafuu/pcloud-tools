@@ -30,5 +30,5 @@ Config notes:
 - `.env.example` captures the intended key set for the migrated tool
 - `doctor --repair` creates a starter `.env` when one does not exist
 - `status`, `doctor`, and `sync status` already support a shared JSON report schema
-- `mount` / `umount` now expose preview-first reports and use `--execute` for side effects
-- `index` delegates to the configured indexer script, with a legacy fallback to `~/.zsh/functions/pcloud-indexer.py`
+- `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
+- `index` now uses the repo-local `scripts/pcloud-indexer.py`, and its default DB lives under `.dev-state/state/index/`

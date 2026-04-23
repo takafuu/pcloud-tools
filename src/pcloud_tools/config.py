@@ -156,10 +156,13 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
     if paths.dev_mode:
         defaults["PCLOUD_TOOLS_CORE_DIR"] = str(paths.workspace_root)
         defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"] = str(paths.workspace_root / ".pcloud-sync-allowlist")
+        defaults["PCLOUD_TOOLS_VAULT_DIR"] = str(paths.workspace_root / ".dev-state/links/vault")
+        defaults["PCLOUD_TOOLS_CRYPT_DIR"] = str(paths.workspace_root / ".dev-state/links/crypt")
         defaults["PCLOUD_TOOLS_AUTOSYNC_LABEL"] = "com.example.pcloud-bisync.dev"
         defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"] = str(
             paths.workspace_root / ".dev-state/com.example.pcloud-bisync.dev.plist"
         )
+        defaults["PCLOUD_TOOLS_INDEXER_BIN"] = str(paths.workspace_root / "scripts/pcloud-indexer.py")
         defaults["PCLOUD_TOOLS_NOTIFY_BIN"] = str(paths.workspace_root / "scripts/notify")
 
     return defaults

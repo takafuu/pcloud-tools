@@ -759,6 +759,26 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
             issues=_report_issues(issues),
         )
 
+    if paths.dev_mode:
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DEV_MOUNT_EXECUTION",
+                    level="error",
+                    message=f"refusing --execute for `{action}` from pcloud-manager-dev",
+                )
+            ]
+        )
+        details["reason"] = "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime"
+        return CommandReport(
+            command=action,
+            status="error",
+            summary=f"dev mode refuses to execute {action}",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
     try:
         if action == "mount":
             rclone_bin = shutil.which("rclone")
@@ -814,15 +834,11 @@ def cmd_index(args: argparse.Namespace, paths: RuntimePaths) -> int:
     load_result = load_config(paths)
     issues = _sort_issues(list(load_result.issues))
     configured_indexer = load_result.config.indexer_bin
-    legacy_indexer = Path.home() / ".zsh/functions/pcloud-indexer.py"
-    indexer = configured_indexer if configured_indexer.exists() else legacy_indexer
+    indexer = configured_indexer
     details: dict[str, object] = {
         "indexer": str(indexer),
-        "configured indexer": str(configured_indexer),
         "args": list(args.index_args),
     }
-    if indexer != configured_indexer:
-        details["fallback"] = "using legacy indexer path because configured script is missing"
     if not indexer.exists():
         issues = _sort_issues(
             issues
@@ -830,7 +846,7 @@ def cmd_index(args: argparse.Namespace, paths: RuntimePaths) -> int:
                 ConfigIssue(
                     key="PCLOUD_TOOLS_INDEXER_BIN",
                     level="error",
-                    message=f"indexer not found: {configured_indexer}",
+                    message=f"indexer not found: {indexer}",
                 )
             ]
         )
