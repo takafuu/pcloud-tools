@@ -47,6 +47,16 @@ class SyncExecutionError(ValueError):
     """Raised when a sync plan cannot be executed safely."""
 
 
+@dataclass(frozen=True)
+class BackgroundSyncLaunch:
+    mode: str
+    notify_on_finish: bool
+    command: tuple[str, ...]
+    stdout_log: Path
+    stderr_log: Path
+    pid: int
+
+
 def sync_scope_mode_for_sync_mode(mode: str) -> str:
     return "full" if mode == "full-resync" else "allowlist"
 
@@ -162,6 +172,13 @@ def _record_log_pointers(config: AppConfig, plan: SyncPlan) -> None:
     sync_last_stderr_log_file(config).write_text(f"{plan.stderr_log}\n")
 
 
+def record_background_log_pointers(config: AppConfig, stdout_log: Path, stderr_log: Path) -> None:
+    config.state_dir.mkdir(parents=True, exist_ok=True)
+    sync_last_rclone_log_file(config).write_text("\n")
+    sync_last_stdout_log_file(config).write_text(f"{stdout_log}\n")
+    sync_last_stderr_log_file(config).write_text(f"{stderr_log}\n")
+
+
 def _append_status_line(path: Path, line: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     with path.open("a") as fh:
@@ -192,6 +209,52 @@ def _release_sync_lock(config: AppConfig) -> None:
         for child in lock_dir.iterdir():
             child.unlink()
         lock_dir.rmdir()
+
+
+def launch_background_sync(
+    config: AppConfig,
+    mode: str,
+    notify_on_finish: bool,
+    child_command: tuple[str, ...],
+) -> BackgroundSyncLaunch:
+    ts = _timestamp()
+    stdout_log = config.state_dir / f"sync-background-{mode}-{ts}.out"
+    stderr_log = config.state_dir / f"sync-background-{mode}-{ts}.err"
+    stdout_log.parent.mkdir(parents=True, exist_ok=True)
+    stderr_log.parent.mkdir(parents=True, exist_ok=True)
+    record_background_log_pointers(config, stdout_log, stderr_log)
+
+    with stdout_log.open("w") as stdout_fh, stderr_log.open("w") as stderr_fh:
+        process = subprocess.Popen(
+            list(child_command),
+            stdout=stdout_fh,
+            stderr=stderr_fh,
+            text=True,
+            start_new_session=True,
+        )
+
+    return BackgroundSyncLaunch(
+        mode=mode,
+        notify_on_finish=notify_on_finish,
+        command=child_command,
+        stdout_log=stdout_log,
+        stderr_log=stderr_log,
+        pid=process.pid,
+    )
+
+
+def send_sync_notification(config: AppConfig, exit_code: int, mode: str) -> None:
+    notify_bin = config.notify_bin
+    if not notify_bin.exists():
+        return
+    title = "pcloud sync completed" if exit_code == 0 else "pcloud sync failed"
+    message = f"mode={mode} exit_code={exit_code}"
+    subprocess.run(
+        [str(notify_bin), "send", "--title", title, message],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
 
 
 def execute_sync_plan(config: AppConfig, plan: SyncPlan) -> SyncExecutionResult:

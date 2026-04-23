@@ -26,6 +26,8 @@ from .sync_exec import (
     build_sync_plan,
     enforce_sync_scope_guard,
     execute_sync_plan,
+    launch_background_sync,
+    send_sync_notification,
 )
 from .sync_runtime import (
     clear_sync_lock,
@@ -106,6 +108,37 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit structured JSON output.",
     )
+    sync_background_parser = sync_subparsers.add_parser("background")
+    sync_background_parser.add_argument(
+        "--resync",
+        action="store_true",
+        help="Run background sync in resync mode.",
+    )
+    sync_background_parser.add_argument(
+        "--track-renames",
+        action="store_true",
+        help="Run background sync in track-renames mode.",
+    )
+    sync_background_parser.add_argument(
+        "--notify",
+        action="store_true",
+        help="Send a completion notification.",
+    )
+    sync_background_parser.add_argument(
+        "--no-notify",
+        action="store_true",
+        help="Disable the completion notification.",
+    )
+    sync_background_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Launch the background sync instead of only previewing it.",
+    )
+    sync_background_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
     sync_enable_autosync_parser = sync_subparsers.add_parser("enable-autosync")
     sync_enable_autosync_parser.add_argument(
         "--execute",
@@ -144,6 +177,9 @@ def build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="Emit structured JSON output.",
     )
+    sync_internal_run_parser = sync_subparsers.add_parser("_run", help=argparse.SUPPRESS)
+    sync_internal_run_parser.add_argument("mode", choices=("normal", "resync", "full-resync", "track-renames"))
+    sync_internal_run_parser.add_argument("notify_flag", nargs="?", default="0")
     for name in ("resync", "full-resync", "track-renames"):
         command_parser = sync_subparsers.add_parser(name)
         command_parser.add_argument(
@@ -758,6 +794,248 @@ def cmd_sync_clear_stale_lock(args: argparse.Namespace, paths: RuntimePaths) -> 
     return _exit_code_for_report(report)
 
 
+def _background_mode(args: argparse.Namespace) -> tuple[str | None, list[ConfigIssue]]:
+    issues: list[ConfigIssue] = []
+    mode = "normal"
+    if args.resync and args.track_renames:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_BACKGROUND_MODE",
+                level="error",
+                message="--resync and --track-renames cannot be used together",
+            )
+        )
+        return None, issues
+    if args.resync:
+        mode = "resync"
+    elif args.track_renames:
+        mode = "track-renames"
+    return mode, issues
+
+
+def _background_notify(args: argparse.Namespace) -> tuple[bool, list[ConfigIssue]]:
+    issues: list[ConfigIssue] = []
+    if args.notify and args.no_notify:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_BACKGROUND_NOTIFY",
+                level="error",
+                message="--notify and --no-notify cannot be used together",
+            )
+        )
+        return False, issues
+    if args.no_notify:
+        return False, issues
+    if args.notify:
+        return True, issues
+    return True, issues
+
+
+def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    mode, mode_issues = _background_mode(args)
+    notify_on_finish, notify_issues = _background_notify(args)
+    issues = _sort_issues(list(load_result.issues) + mode_issues + notify_issues)
+    lock_state = read_sync_lock_state(config)
+
+    details: dict[str, object] = {
+        "execute": "yes" if args.execute else "no",
+        "mode": mode or "-",
+        "notify on finish": "yes" if notify_on_finish else "no",
+        "sync lock status": lock_state.status,
+        "sync lock active": "yes" if lock_state.active else "no",
+        "sync lock pid": lock_state.pid,
+    }
+
+    if issues and _has_errors(issues):
+        return CommandReport(
+            command="sync background",
+            status="error",
+            summary="background sync options are invalid",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    if lock_state.status == "active":
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_LOCK",
+                    level="error",
+                    message=f"sync already running (pid={lock_state.pid})",
+                )
+            ]
+        )
+        return CommandReport(
+            command="sync background",
+            status="error",
+            summary="background sync cannot start while another sync is active",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    child_command = (
+        sys.executable,
+        "-m",
+        "pcloud_tools.cli",
+        "sync",
+        "_run",
+        mode,
+        "1" if notify_on_finish else "0",
+    )
+    details["launcher command"] = list(child_command)
+
+    if not args.execute:
+        return CommandReport(
+            command="sync background",
+            status=_status_from_issues(issues),
+            summary="background sync preview is ready",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    if paths.dev_mode:
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DEV_BACKGROUND_EXECUTION",
+                    level="error",
+                    message="refusing --execute for `sync background` from pcloud-manager-dev",
+                )
+            ]
+        )
+        details["reason"] = "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime"
+        return CommandReport(
+            command="sync background",
+            status="error",
+            summary="dev mode refuses to execute sync background",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    try:
+        launch = launch_background_sync(config, mode, notify_on_finish, child_command)
+    except SyncExecutionError as exc:
+        issues = _sort_issues(
+            issues + [ConfigIssue(key="PCLOUD_TOOLS_SYNC_BACKGROUND", level="error", message=str(exc))]
+        )
+        return CommandReport(
+            command="sync background",
+            status="error",
+            summary="background sync launch failed",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    details.update(
+        {
+            "child pid": str(launch.pid),
+            "stdout log": str(launch.stdout_log),
+            "stderr log": str(launch.stderr_log),
+        }
+    )
+    return CommandReport(
+        command="sync background",
+        status=_status_from_issues(issues),
+        summary="background sync launched",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_background(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_background_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
+def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    load_result = load_config(paths)
+    config = load_result.config
+    issues = _sort_issues(
+        list(load_result.issues) + list(enforce_sync_scope_guard(config, args.mode))
+    )
+    if issues and _has_errors(issues):
+        report = CommandReport(
+            command="sync _run",
+            status="error",
+            summary="internal sync run cannot start until configuration issues are resolved",
+            details={"mode": args.mode},
+            issues=_report_issues(issues),
+        )
+        print(render_report(report))
+        return 1
+
+    if paths.dev_mode:
+        report = CommandReport(
+            command="sync _run",
+            status="error",
+            summary="dev mode refuses internal sync execution",
+            details={"mode": args.mode},
+            issues=_report_issues(
+                [
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_DEV_SYNC_INTERNAL",
+                        level="error",
+                        message="refusing internal sync execution from pcloud-manager-dev",
+                    )
+                ]
+            ),
+        )
+        print(render_report(report))
+        return 1
+
+    rclone_bin = shutil.which("rclone")
+    if not rclone_bin:
+        report = CommandReport(
+            command="sync _run",
+            status="error",
+            summary="rclone command not found",
+            details={"mode": args.mode},
+            issues=_report_issues(
+                [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message="rclone command not found")]
+            ),
+        )
+        print(render_report(report))
+        return 1
+
+    scope_info = sync_allowlist_info(config)
+    scope_validation = _sort_issues(scope_issues(scope_info))
+    if scope_validation and _has_errors(scope_validation):
+        report = CommandReport(
+            command="sync _run",
+            status="error",
+            summary="internal sync run cannot start until scope issues are resolved",
+            details={"mode": args.mode},
+            issues=_report_issues(scope_validation),
+        )
+        print(render_report(report))
+        return 1
+
+    try:
+        plan = build_sync_plan(config, args.mode, scope_info.entries, rclone_bin=rclone_bin)
+        result = execute_sync_plan(config, plan)
+    except SyncExecutionError as exc:
+        report = CommandReport(
+            command="sync _run",
+            status="error",
+            summary="internal sync run failed before launch",
+            details={"mode": args.mode},
+            issues=_report_issues(
+                [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message=str(exc))]
+            ),
+        )
+        print(render_report(report))
+        return 1
+
+    if args.notify_flag == "1":
+        send_sync_notification(config, result.exit_code, args.mode)
+    return result.exit_code
+
+
 def _sync_autosync_report(
     args: argparse.Namespace, paths: RuntimePaths, action: str
 ) -> CommandReport:
@@ -1159,12 +1437,16 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sync_status(args, paths)
         if args.sync_command == "progress":
             return cmd_sync_progress(args, paths)
+        if args.sync_command == "background":
+            return cmd_sync_background(args, paths)
         if args.sync_command == "clear-stale-lock":
             return cmd_sync_clear_stale_lock(args, paths)
         if args.sync_command == "enable-autosync":
             return cmd_sync_autosync(args, paths, "enable-autosync")
         if args.sync_command == "disable-autosync":
             return cmd_sync_autosync(args, paths, "disable-autosync")
+        if args.sync_command == "_run":
+            return cmd_sync_internal_run(args, paths)
         if args.sync_command in {"resync", "full-resync", "track-renames"}:
             return cmd_sync_execution(args, paths, args.sync_command)
         if args.sync_command == "scope":

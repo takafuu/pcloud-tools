@@ -17,6 +17,7 @@ Development entrypoint:
 ./pcloud-manager-dev doctor
 ./pcloud-manager-dev doctor --repair
 ./pcloud-manager-dev sync status --json
+./pcloud-manager-dev sync background --no-notify
 ./pcloud-manager-dev sync clear-stale-lock
 ./pcloud-manager-dev sync enable-autosync
 ./pcloud-manager-dev sync disable-autosync
@@ -35,6 +36,7 @@ Config notes:
 - `status`, `doctor`, and `sync status` already support a shared JSON report schema
 - `status`, `doctor`, and `sync status` now include autosync launchd diagnostics
 - `status`, `doctor`, and `sync status` now include `sync lock status` (`missing` / `active` / `stale` / `invalid`)
+- `sync background` now previews the detached launcher command and supports `--resync`, `--track-renames`, `--notify`, and `--no-notify`
 - `sync clear-stale-lock` uses the same preview-first report style and can remove a stale local sync lock from the dev state
 - `sync enable-autosync` / `sync disable-autosync` use preview-first reports; `pcloud-manager-dev` keeps them non-destructive
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
