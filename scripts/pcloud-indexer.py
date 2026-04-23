@@ -16,6 +16,16 @@ def env(name: str, default: str) -> str:
     return value if value else default
 
 
+def config_env(primary: str, legacy: str, default: str) -> str:
+    value = os.environ.get(primary)
+    if value:
+        return value
+    legacy_value = os.environ.get(legacy)
+    if legacy_value:
+        return legacy_value
+    return default
+
+
 def now_epoch() -> int:
     return int(time.time())
 
@@ -193,8 +203,10 @@ def main(argv: list[str]) -> int:
     indexer = Indexer(
         db_path=Path(args.db),
         rclone_bin=rclone_bin,
-        vault_remote=env("PCLOUD_VAULT_REMOTE", "pcloud:vault"),
-        crypt_remote=env("PCLOUD_CRYPT_REMOTE", "pcloud-crypt:"),
+        vault_remote=config_env("PCLOUD_TOOLS_VAULT_REMOTE", "PCLOUD_VAULT_REMOTE", "pcloud:vault"),
+        crypt_remote=config_env(
+            "PCLOUD_TOOLS_CRYPT_REMOTE", "PCLOUD_CRYPT_REMOTE", "pcloud-crypt:"
+        ),
     )
 
     if args.command in {"build", "update"}:
