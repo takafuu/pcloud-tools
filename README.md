@@ -17,6 +17,8 @@ Development entrypoint:
 ./pcloud-manager-dev doctor
 ./pcloud-manager-dev doctor --repair
 ./pcloud-manager-dev sync status --json
+./pcloud-manager-dev sync enable-autosync
+./pcloud-manager-dev sync disable-autosync
 ./pcloud-manager-dev mount vault
 ./pcloud-manager-dev umount all
 ./pcloud-manager-dev index stats all
@@ -30,5 +32,7 @@ Config notes:
 - `.env.example` captures the intended key set for the migrated tool
 - `doctor --repair` creates a starter `.env` when one does not exist
 - `status`, `doctor`, and `sync status` already support a shared JSON report schema
+- `status`, `doctor`, and `sync status` now include autosync launchd diagnostics
+- `sync enable-autosync` / `sync disable-autosync` use preview-first reports; `pcloud-manager-dev` keeps them non-destructive
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
 - `index` now uses the repo-local `scripts/pcloud-indexer.py`, and its default DB lives under `.dev-state/state/index/`

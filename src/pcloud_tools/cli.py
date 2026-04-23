@@ -7,6 +7,7 @@ import subprocess
 import sys
 from pathlib import Path
 
+from .autosync_runtime import disable_autosync, enable_autosync, read_autosync_state
 from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
 from .mount_ops import (
     MountCommandError,
@@ -100,6 +101,33 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sync_progress_parser = sync_subparsers.add_parser("progress")
     sync_progress_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+    sync_enable_autosync_parser = sync_subparsers.add_parser("enable-autosync")
+    sync_enable_autosync_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Apply the launchctl changes instead of only previewing them.",
+    )
+    sync_enable_autosync_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+    sync_disable_autosync_parser = sync_subparsers.add_parser("disable-autosync")
+    sync_disable_autosync_parser.add_argument(
+        "--yes",
+        action="store_true",
+        help="Acknowledge the disable action without prompting.",
+    )
+    sync_disable_autosync_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Apply the launchctl changes instead of only previewing them.",
+    )
+    sync_disable_autosync_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit structured JSON output.",
@@ -207,6 +235,7 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
     lock_state = read_sync_lock_state(load_result.config)
     log_pointers = read_latest_sync_logs(load_result.config)
     scope_info = sync_allowlist_info(load_result.config)
+    autosync = read_autosync_state(load_result.config)
     details = {
         "workspace": str(paths.workspace_root),
         "config dir": str(paths.config_dir),
@@ -238,6 +267,10 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
                 "latest rclone log": log_pointers.latest_rclone_log,
                 "latest stdout log": log_pointers.latest_stdout_log,
                 "latest stderr log": log_pointers.latest_stderr_log,
+                "autosync state": autosync.state,
+                "autosync runs": autosync.runs,
+                "autosync label": autosync.label,
+                "autosync plist": autosync.plist,
             }
         )
     return CommandReport(
@@ -284,6 +317,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
     log_pointers = read_latest_sync_logs(load_result.config)
     scope_info = sync_allowlist_info(load_result.config)
     progress = parse_sync_progress(load_result.config)
+    autosync = read_autosync_state(load_result.config)
     details = {
         "config dir": f"{'present' if paths.config_dir.exists() else 'missing'} ({paths.config_dir})",
         "state dir": f"{'present' if paths.state_dir.exists() else 'missing'} ({paths.state_dir})",
@@ -313,6 +347,10 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "latest stdout log": log_pointers.latest_stdout_log,
         "latest stderr log": log_pointers.latest_stderr_log,
         "progress source": str(progress.log_path) if progress is not None else "-",
+        "autosync state": autosync.state,
+        "autosync runs": autosync.runs,
+        "autosync label": autosync.label,
+        "autosync plist": autosync.plist,
     }
     if repaired_items:
         details["repair"] = "; ".join(f"created {item}" for item in repaired_items)
@@ -341,6 +379,7 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     lock_state = read_sync_lock_state(load_result.config)
     log_pointers = read_latest_sync_logs(load_result.config)
     scope_info = sync_allowlist_info(load_result.config)
+    autosync = read_autosync_state(load_result.config)
     details = {
         "runtime": "development",
         "sync engine": "bisync fallback scaffold",
@@ -369,6 +408,10 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
         "last log": log_pointers.latest_rclone_log,
         "stdout log": log_pointers.latest_stdout_log,
         "stderr log": log_pointers.latest_stderr_log,
+        "autosync state": autosync.state,
+        "autosync runs": autosync.runs,
+        "autosync label": autosync.label,
+        "autosync plist": autosync.plist,
     }
     return CommandReport(
         command="sync status",
@@ -621,6 +664,141 @@ def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) 
 
 def cmd_sync_check_allowlist(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_check_allowlist_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
+def _sync_autosync_report(
+    args: argparse.Namespace, paths: RuntimePaths, action: str
+) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    issues = _sort_issues(list(load_result.issues))
+    autosync = read_autosync_state(config)
+    details: dict[str, object] = {
+        "execute": "yes" if args.execute else "no",
+        "autosync state": autosync.state,
+        "autosync runs": autosync.runs,
+        "autosync label": autosync.label,
+        "autosync plist": autosync.plist,
+    }
+    if action == "disable-autosync":
+        details["assume yes"] = "yes" if args.yes else "no"
+
+    plist_required = action == "enable-autosync"
+    if plist_required and not config.autosync_plist.exists():
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_AUTOSYNC_PLIST",
+                    level="warning" if not args.execute else "error",
+                    message=f"autosync plist not found: {config.autosync_plist}",
+                )
+            ]
+        )
+
+    if issues and _has_errors(issues):
+        return CommandReport(
+            command=f"sync {action}",
+            status="error",
+            summary="autosync command cannot run until configuration issues are resolved",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    details["planned action"] = (
+        f"launchctl enable gui/<uid>/{config.autosync_label} and bootstrap {config.autosync_plist}"
+        if action == "enable-autosync"
+        else f"launchctl bootout/disable gui/<uid>/{config.autosync_label}"
+    )
+
+    if not args.execute:
+        return CommandReport(
+            command=f"sync {action}",
+            status=_status_from_issues(issues),
+            summary="autosync preview is ready",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    if paths.dev_mode:
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DEV_AUTOSYNC_EXECUTION",
+                    level="error",
+                    message=f"refusing --execute for `sync {action}` from pcloud-manager-dev",
+                )
+            ]
+        )
+        details["reason"] = (
+            "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime"
+        )
+        return CommandReport(
+            command=f"sync {action}",
+            status="error",
+            summary=f"dev mode refuses to execute sync {action}",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    if action == "disable-autosync" and not args.yes:
+        issues = _sort_issues(
+            issues
+            + [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_AUTOSYNC_CONFIRMATION",
+                    level="error",
+                    message="disable-autosync requires --yes together with --execute",
+                )
+            ]
+        )
+        return CommandReport(
+            command=f"sync {action}",
+            status="error",
+            summary="disable-autosync requires confirmation",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    try:
+        if action == "enable-autosync":
+            enable_autosync(config)
+        else:
+            disable_autosync(config)
+    except RuntimeError as exc:
+        issues = _sort_issues(
+            issues
+            + [ConfigIssue(key="PCLOUD_TOOLS_AUTOSYNC_EXEC", level="error", message=str(exc))]
+        )
+        return CommandReport(
+            command=f"sync {action}",
+            status="error",
+            summary="autosync command failed",
+            details=details,
+            issues=_report_issues(issues),
+        )
+
+    refreshed = read_autosync_state(config)
+    details.update(
+        {
+            "autosync state": refreshed.state,
+            "autosync runs": refreshed.runs,
+        }
+    )
+    return CommandReport(
+        command=f"sync {action}",
+        status="ok",
+        summary="autosync command executed",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_autosync(args: argparse.Namespace, paths: RuntimePaths, action: str) -> int:
+    report = _sync_autosync_report(args, paths, action)
     print(render_report(report, as_json=args.json))
     return _exit_code_for_report(report)
 
@@ -891,6 +1069,10 @@ def main(argv: list[str] | None = None) -> int:
             return cmd_sync_status(args, paths)
         if args.sync_command == "progress":
             return cmd_sync_progress(args, paths)
+        if args.sync_command == "enable-autosync":
+            return cmd_sync_autosync(args, paths, "enable-autosync")
+        if args.sync_command == "disable-autosync":
+            return cmd_sync_autosync(args, paths, "disable-autosync")
         if args.sync_command in {"resync", "full-resync", "track-renames"}:
             return cmd_sync_execution(args, paths, args.sync_command)
         if args.sync_command == "scope":
