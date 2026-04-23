@@ -1,0 +1,20 @@
+#!/bin/sh
+
+set -eu
+
+LEGACY_NOTIFY="${HOME}/bin/notify"
+
+if [ -x "${LEGACY_NOTIFY}" ]; then
+  exec "${LEGACY_NOTIFY}" "$@"
+fi
+
+if [ "${1:-}" = "local" ] && [ $# -ge 2 ]; then
+  shift
+  MESSAGE="$*"
+  if command -v osascript >/dev/null 2>&1; then
+    exec osascript -e "display notification \"${MESSAGE}\" with title \"pcloud-manager\""
+  fi
+fi
+
+echo "notify helper unavailable: ${LEGACY_NOTIFY}" >&2
+exit 1

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import shutil
 import subprocess
 from dataclasses import dataclass
 from datetime import datetime
@@ -245,12 +246,27 @@ def launch_background_sync(
 
 def send_sync_notification(config: AppConfig, exit_code: int, mode: str) -> None:
     notify_bin = config.notify_bin
-    if not notify_bin.exists():
+    if exit_code == 0:
+        message = f"pCloud sync completed ({mode})"
+    else:
+        message = f"pCloud sync failed ({mode}) exit={exit_code}"
+
+    if notify_bin.exists():
+        result = subprocess.run(
+            [str(notify_bin), "local", message],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return
+
+    osascript = shutil.which("osascript")
+    if osascript is None:
         return
-    title = "pcloud sync completed" if exit_code == 0 else "pcloud sync failed"
-    message = f"mode={mode} exit_code={exit_code}"
+
     subprocess.run(
-        [str(notify_bin), "send", "--title", title, message],
+        [osascript, "-e", f'display notification "{message}" with title "pcloud-manager"'],
         check=False,
         capture_output=True,
         text=True,
