@@ -177,7 +177,7 @@ def _acquire_sync_lock(config: AppConfig, mode: str) -> None:
     if lock_dir.exists():
         raise SyncExecutionError("sync already running")
     lock_dir.mkdir(parents=True, exist_ok=False)
-    sync_lock_pid_file(config).write_text(f"{os.getpid()}\n")
+    sync_lock_pid_file(config).write_text("pending\n")
     sync_lock_mode_file(config).write_text(f"{mode}\n")
     sync_lock_started_file(config).write_text(f"{_now()}\n")
 
