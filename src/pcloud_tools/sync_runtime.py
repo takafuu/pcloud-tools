@@ -227,6 +227,24 @@ def clear_sync_lock(config: AppConfig) -> bool:
 
 
 def recover_bisync_listings_from_err(config: AppConfig) -> BisyncListingRecovery:
+    recovery = bisync_listing_recovery_state(config)
+    if recovery.can_recover:
+        recovery.path1_lst.parent.mkdir(parents=True, exist_ok=True)
+        recovery.path2_lst.parent.mkdir(parents=True, exist_ok=True)
+        recovery.path1_lst.write_bytes(recovery.path1_err.read_bytes())
+        recovery.path2_lst.write_bytes(recovery.path2_err.read_bytes())
+        return BisyncListingRecovery(
+            can_recover=True,
+            recovered=True,
+            path1_lst=recovery.path1_lst,
+            path2_lst=recovery.path2_lst,
+            path1_err=recovery.path1_err,
+            path2_err=recovery.path2_err,
+        )
+    return recovery
+
+
+def bisync_listing_recovery_state(config: AppConfig) -> BisyncListingRecovery:
     path1_lst = bisync_cache_entry_path(config, "path1.lst")
     path2_lst = bisync_cache_entry_path(config, "path2.lst")
     path1_err = bisync_cache_entry_path(config, "path1.lst-err")
@@ -243,17 +261,9 @@ def recover_bisync_listings_from_err(config: AppConfig) -> BisyncListingRecovery
         )
 
     can_recover = path1_err.exists() and path2_err.exists()
-    recovered = False
-    if can_recover:
-        path1_lst.parent.mkdir(parents=True, exist_ok=True)
-        path2_lst.parent.mkdir(parents=True, exist_ok=True)
-        path1_lst.write_bytes(path1_err.read_bytes())
-        path2_lst.write_bytes(path2_err.read_bytes())
-        recovered = True
-
     return BisyncListingRecovery(
         can_recover=can_recover,
-        recovered=recovered,
+        recovered=False,
         path1_lst=path1_lst,
         path2_lst=path2_lst,
         path1_err=path1_err,
