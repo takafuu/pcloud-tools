@@ -56,6 +56,16 @@ class SyncProgress:
     trailing_lines: tuple[str, ...]
 
 
+@dataclass(frozen=True)
+class BisyncListingRecovery:
+    can_recover: bool
+    recovered: bool
+    path1_lst: Path
+    path2_lst: Path
+    path1_err: Path
+    path2_err: Path
+
+
 def sync_status_log_path(config: AppConfig) -> Path:
     return config.core_dir / "bisync_status.log"
 
@@ -90,6 +100,16 @@ def sync_lock_mode_file(config: AppConfig) -> Path:
 
 def sync_lock_started_file(config: AppConfig) -> Path:
     return sync_lock_dir(config) / "started_at"
+
+
+def bisync_cache_dir() -> Path:
+    return Path.home() / "Library" / "Caches" / "rclone" / "bisync"
+
+
+def bisync_cache_entry_path(config: AppConfig, suffix: str) -> Path:
+    local_part = _sanitize_bisync_session_part(str(config.core_dir))
+    remote_part = _sanitize_bisync_session_part(config.core_remote)
+    return bisync_cache_dir() / f"local__{local_part}..{remote_part}.{suffix}"
 
 
 def _read_last_line(path: Path) -> str:
@@ -206,6 +226,41 @@ def clear_sync_lock(config: AppConfig) -> bool:
     return True
 
 
+def recover_bisync_listings_from_err(config: AppConfig) -> BisyncListingRecovery:
+    path1_lst = bisync_cache_entry_path(config, "path1.lst")
+    path2_lst = bisync_cache_entry_path(config, "path2.lst")
+    path1_err = bisync_cache_entry_path(config, "path1.lst-err")
+    path2_err = bisync_cache_entry_path(config, "path2.lst-err")
+
+    if path1_lst.exists() or path2_lst.exists():
+        return BisyncListingRecovery(
+            can_recover=False,
+            recovered=False,
+            path1_lst=path1_lst,
+            path2_lst=path2_lst,
+            path1_err=path1_err,
+            path2_err=path2_err,
+        )
+
+    can_recover = path1_err.exists() and path2_err.exists()
+    recovered = False
+    if can_recover:
+        path1_lst.parent.mkdir(parents=True, exist_ok=True)
+        path2_lst.parent.mkdir(parents=True, exist_ok=True)
+        path1_lst.write_bytes(path1_err.read_bytes())
+        path2_lst.write_bytes(path2_err.read_bytes())
+        recovered = True
+
+    return BisyncListingRecovery(
+        can_recover=can_recover,
+        recovered=recovered,
+        path1_lst=path1_lst,
+        path2_lst=path2_lst,
+        path1_err=path1_err,
+        path2_err=path2_err,
+    )
+
+
 def clear_sync_lock_dir(path: Path) -> None:
     for child in path.iterdir():
         if child.is_dir():
@@ -229,6 +284,13 @@ def _sync_lock_status(
     if pid == "-" and mode == "-" and started_at == "-":
         return "invalid"
     return "stale"
+
+
+def _sanitize_bisync_session_part(value: str) -> str:
+    sanitized = value.removeprefix("/")
+    sanitized = sanitized.replace("/", "_")
+    sanitized = sanitized.replace(":", "_")
+    return sanitized
 
 
 def latest_sync_activity(log_path: Path) -> str:

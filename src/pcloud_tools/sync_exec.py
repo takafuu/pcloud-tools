@@ -8,6 +8,9 @@ from pathlib import Path
 
 from .config import AppConfig, ConfigIssue
 from .sync_runtime import (
+    BisyncListingRecovery,
+    bisync_cache_entry_path,
+    recover_bisync_listings_from_err,
     sync_error_log_path,
     sync_last_rclone_log_file,
     sync_last_stderr_log_file,
@@ -42,6 +45,7 @@ class SyncExecutionResult:
     exit_code: int
     issues: tuple[ConfigIssue, ...]
     scope_recorded: bool
+    listings_recovered: bool
 
 
 class SyncExecutionError(ValueError):
@@ -274,6 +278,7 @@ def send_sync_notification(config: AppConfig, exit_code: int, mode: str) -> None
 
 
 def execute_sync_plan(config: AppConfig, plan: SyncPlan) -> SyncExecutionResult:
+    listing_recovery = recover_bisync_listings_from_err(config)
     _acquire_sync_lock(config, plan.mode)
     _record_log_pointers(config, plan)
     plan.rclone_log.parent.mkdir(parents=True, exist_ok=True)
@@ -312,4 +317,21 @@ def execute_sync_plan(config: AppConfig, plan: SyncPlan) -> SyncExecutionResult:
         exit_code=exit_code,
         issues=(),
         scope_recorded=scope_recorded,
+        listings_recovered=listing_recovery.recovered,
+    )
+
+
+def bisync_listing_recovery_state(config: AppConfig) -> BisyncListingRecovery:
+    path1_lst = bisync_cache_entry_path(config, "path1.lst")
+    path2_lst = bisync_cache_entry_path(config, "path2.lst")
+    path1_err = bisync_cache_entry_path(config, "path1.lst-err")
+    path2_err = bisync_cache_entry_path(config, "path2.lst-err")
+    can_recover = (not path1_lst.exists() and not path2_lst.exists() and path1_err.exists() and path2_err.exists())
+    return BisyncListingRecovery(
+        can_recover=can_recover,
+        recovered=False,
+        path1_lst=path1_lst,
+        path2_lst=path2_lst,
+        path1_err=path1_err,
+        path2_err=path2_err,
     )

@@ -23,6 +23,7 @@ from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths, detect_runtime_paths
 from .sync_exec import (
     SyncExecutionError,
+    bisync_listing_recovery_state,
     build_sync_plan,
     enforce_sync_scope_guard,
     execute_sync_plan,
@@ -581,6 +582,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
         rclone_bin = shutil.which("rclone")
         if not rclone_bin:
             raise SyncExecutionError("rclone command not found")
+        listing_recovery = bisync_listing_recovery_state(load_result.config)
         plan = build_sync_plan(
             load_result.config,
             mode,
@@ -606,6 +608,11 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
         "rclone log": str(plan.rclone_log),
         "stdout log": str(plan.stdout_log),
         "stderr log": str(plan.stderr_log),
+        "listing recovery available": "yes" if listing_recovery.can_recover else "no",
+        "path1 list": str(listing_recovery.path1_lst),
+        "path2 list": str(listing_recovery.path2_lst),
+        "path1 err": str(listing_recovery.path1_err),
+        "path2 err": str(listing_recovery.path2_err),
     }
     if plan.filter_file is not None:
         details["filter file"] = str(plan.filter_file)
@@ -622,6 +629,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
     result = execute_sync_plan(load_result.config, plan)
     details["exit code"] = result.exit_code
     details["scope recorded"] = "yes" if result.scope_recorded else "no"
+    details["listings recovered"] = "yes" if result.listings_recovered else "no"
     status = "ok" if result.exit_code == 0 else "error"
     return CommandReport(
         command=f"sync {mode}",

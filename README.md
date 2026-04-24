@@ -38,6 +38,7 @@ Config notes:
 - `status`, `doctor`, and `sync status` now include `sync lock status` (`missing` / `active` / `stale` / `invalid`)
 - `sync background` now previews the detached launcher command and supports `--resync`, `--track-renames`, `--notify`, and `--no-notify`
 - sync completion notifications now follow the legacy `notify local ...` path, with `osascript` fallback when needed
+- sync preview now surfaces bisync listing recovery candidates, and execute recovers `path1.lst-err` / `path2.lst-err` when the primary listing files are missing
 - `sync clear-stale-lock` uses the same preview-first report style and can remove a stale local sync lock from the dev state
 - `sync enable-autosync` / `sync disable-autosync` use preview-first reports; `pcloud-manager-dev` keeps them non-destructive
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
