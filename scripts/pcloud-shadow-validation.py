@@ -307,6 +307,60 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer checklist sample-ready", "ok", "first planned transfer ready"))
         else:
             checks.append(CheckResult("diffd transfer checklist sample-ready", "error", "first planned transfer missing"))
+        pushd_confirmed_check = _check_json_command(
+            checks,
+            env,
+            "pushd transfer confirmed checklist",
+            (
+                "pushd",
+                "transfer",
+                "check",
+                "--confirm-path",
+                "Documents/shadow-upload.pdf",
+                "--confirm-direction",
+                "upload",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+            ),
+        )
+        diffd_confirmed_check = _check_json_command(
+            checks,
+            env,
+            "diffd transfer confirmed checklist",
+            (
+                "diffd",
+                "transfer",
+                "check",
+                "--confirm-path",
+                "Documents/shadow-download.pdf",
+                "--confirm-direction",
+                "download",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+            ),
+        )
+        if (
+            pushd_confirmed_check.get("details", {}).get("operator target confirmation status") == "ok"
+            and pushd_confirmed_check.get("details", {}).get("consume policy status") == "ok"
+            and pushd_confirmed_check.get("details", {}).get("timeout policy status") == "ok"
+            and pushd_confirmed_check.get("details", {}).get("real transfer gate status") == "closed"
+        ):
+            checks.append(CheckResult("pushd transfer confirmation accepted", "ok", "operator review accepted"))
+        else:
+            checks.append(CheckResult("pushd transfer confirmation accepted", "error", "confirmation mismatch"))
+        if (
+            diffd_confirmed_check.get("details", {}).get("operator target confirmation status") == "ok"
+            and diffd_confirmed_check.get("details", {}).get("consume policy status") == "ok"
+            and diffd_confirmed_check.get("details", {}).get("timeout policy status") == "ok"
+            and diffd_confirmed_check.get("details", {}).get("real transfer gate status") == "closed"
+        ):
+            checks.append(CheckResult("diffd transfer confirmation accepted", "ok", "operator review accepted"))
+        else:
+            checks.append(CheckResult("diffd transfer confirmation accepted", "error", "confirmation mismatch"))
 
         fake_bin_dir = workspace / ".dev-state" / "bin"
         fake_bin_dir.mkdir(parents=True, exist_ok=True)

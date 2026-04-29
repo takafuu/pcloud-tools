@@ -73,6 +73,15 @@ _SIMPLE_TRANSFER_ACTIONS = {
     "upload",
 }
 _MANUAL_REVIEW_ACTION_TOKENS = ("delete", "remove", "rename", "move")
+_CONSUME_POLICIES = (
+    "remove-on-success-retain-on-failure",
+    "retain-all",
+    "manual-review",
+)
+_TIMEOUT_POLICIES = (
+    "reuse-fake-rclone-cleanup",
+    "manual-review",
+)
 
 
 def add_service_daemon_parsers(subparsers: argparse._SubParsersAction) -> None:
@@ -147,6 +156,25 @@ def _add_service_parser(
         transfer_check_parser.add_argument(
             "--sample-path",
             help="Relative allowlisted path to use in the displayed dev-state sample setup command.",
+        )
+        transfer_check_parser.add_argument(
+            "--confirm-path",
+            help="Operator-confirmed relative path for the first real upload review.",
+        )
+        transfer_check_parser.add_argument(
+            "--confirm-direction",
+            choices=("upload", "download"),
+            help="Operator-confirmed direction for the first real transfer review.",
+        )
+        transfer_check_parser.add_argument(
+            "--consume-policy",
+            choices=_CONSUME_POLICIES,
+            help="Reviewer-approved record consumption policy for the first real transfer review.",
+        )
+        transfer_check_parser.add_argument(
+            "--timeout-policy",
+            choices=_TIMEOUT_POLICIES,
+            help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
         )
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -254,6 +282,25 @@ def _add_service_parser(
         transfer_check_parser.add_argument(
             "--sample-path",
             help="Relative allowlisted path to use in the displayed dev-state sample setup command.",
+        )
+        transfer_check_parser.add_argument(
+            "--confirm-path",
+            help="Operator-confirmed relative path for the first real download review.",
+        )
+        transfer_check_parser.add_argument(
+            "--confirm-direction",
+            choices=("upload", "download"),
+            help="Operator-confirmed direction for the first real transfer review.",
+        )
+        transfer_check_parser.add_argument(
+            "--consume-policy",
+            choices=_CONSUME_POLICIES,
+            help="Reviewer-approved record consumption policy for the first real transfer review.",
+        )
+        transfer_check_parser.add_argument(
+            "--timeout-policy",
+            choices=_TIMEOUT_POLICIES,
+            help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
         )
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -408,6 +455,23 @@ def _render_transfer_check_human(report: CommandReport) -> str:
         f"sample detail: {details.get('sample path detail', '-')}",
         f"first target: {details.get('first planned transfer status', '-')}",
     ]
+    if "operator target confirmation status" in details:
+        lines.append(
+            "target confirmation: "
+            f"{details.get('operator target confirmation status', '-')}"
+        )
+    if "consume policy status" in details:
+        lines.append(
+            "consume policy: "
+            f"{details.get('consume policy', '-')} "
+            f"({details.get('consume policy status', '-')})"
+        )
+    if "timeout policy status" in details:
+        lines.append(
+            "timeout policy: "
+            f"{details.get('timeout policy', '-')} "
+            f"({details.get('timeout policy status', '-')})"
+        )
     checks = details.get("preflight checks")
     if isinstance(checks, list) and checks:
         shadow_check = checks[0]
@@ -823,6 +887,88 @@ def _transfer_plan_summary(service: ServiceDefinition, counts: dict[str, int]) -
         f"remote changes: {counts['remote changes']}; pending downloads: {counts['pending downloads']}; "
         f"skipped: {counts['skipped download records']}"
     )
+
+
+def _real_transfer_target_confirmation(
+    args: argparse.Namespace,
+    service: ServiceDefinition,
+    commands: list[dict[str, object]],
+) -> tuple[dict[str, object], list[ConfigIssue]]:
+    confirmed_path_raw = getattr(args, "confirm_path", None)
+    confirmed_direction = getattr(args, "confirm_direction", None)
+    confirmed_path = normalize_plan_path(confirmed_path_raw) if confirmed_path_raw else ""
+    expected = commands[0] if commands else {}
+    expected_path = str(expected.get("path", "")) if isinstance(expected, dict) else ""
+    expected_direction = str(expected.get("direction", "")) if isinstance(expected, dict) else ""
+
+    details: dict[str, object] = {
+        "name": "first real run target",
+        "confirmed path": confirmed_path or "-",
+        "confirmed direction": confirmed_direction or "-",
+        "expected path": expected_path or "-",
+        "expected direction": expected_direction or "-",
+    }
+    if not confirmed_path_raw and not confirmed_direction:
+        details.update(
+            {
+                "status": "pending",
+                "detail": "operator must confirm exact path and direction before opening the real gate",
+            }
+        )
+        return details, []
+
+    problems: list[str] = []
+    if len(commands) != 1:
+        problems.append(f"expected exactly one planned transfer, found {len(commands)}")
+    if not confirmed_path:
+        problems.append("missing confirmed path")
+    elif confirmed_path != expected_path:
+        problems.append(f"confirmed path {confirmed_path!r} does not match planned path {expected_path!r}")
+    if not confirmed_direction:
+        problems.append("missing confirmed direction")
+    elif confirmed_direction != expected_direction:
+        problems.append(
+            f"confirmed direction {confirmed_direction!r} does not match planned direction {expected_direction!r}"
+        )
+
+    if problems:
+        detail = "; ".join(problems)
+        details.update({"status": "not-ok", "detail": detail})
+        return details, [
+            ConfigIssue(
+                key=f"PCLOUD_TOOLS_{service.name.upper()}_REAL_TRANSFER_TARGET_CONFIRMATION",
+                level="warning",
+                message=f"first real transfer target confirmation failed: {detail}",
+            )
+        ]
+
+    details.update(
+        {
+            "status": "ok",
+            "detail": f"confirmed {confirmed_direction} target {confirmed_path}",
+        }
+    )
+    return details, []
+
+
+def _real_transfer_policy_check(
+    args: argparse.Namespace,
+    option_name: str,
+    checklist_name: str,
+    pending_detail: str,
+) -> dict[str, object]:
+    value = getattr(args, option_name, None)
+    if not value:
+        return {
+            "name": checklist_name,
+            "status": "pending",
+            "detail": pending_detail,
+        }
+    return {
+        "name": checklist_name,
+        "status": "ok",
+        "detail": value,
+    }
 
 
 def _pushd_preview_details(
@@ -1973,6 +2119,18 @@ def _real_transfer_check_report(
     report_path = getattr(args, "report_path", None)
     if report_path is not None:
         check_command.extend(["--report-path", str(report_path)])
+    confirmed_path_raw = getattr(args, "confirm_path", None)
+    if confirmed_path_raw:
+        check_command.extend(["--confirm-path", normalize_plan_path(confirmed_path_raw)])
+    confirmed_direction = getattr(args, "confirm_direction", None)
+    if confirmed_direction:
+        check_command.extend(["--confirm-direction", confirmed_direction])
+    consume_policy = getattr(args, "consume_policy", None)
+    if consume_policy:
+        check_command.extend(["--consume-policy", consume_policy])
+    timeout_policy = getattr(args, "timeout_policy", None)
+    if timeout_policy:
+        check_command.extend(["--timeout-policy", timeout_policy])
     check_command.append("--json")
     sample_record = PlanRecord(sample_path, direction, "real-transfer-gate-sample")
     if service.name == "pushd":
@@ -2051,6 +2209,20 @@ def _real_transfer_check_report(
         ]
     first_command = commands[0] if commands else {}
     first_target_status = "ready" if commands else "missing"
+    target_check, target_issues = _real_transfer_target_confirmation(args, service, commands)
+    issues.extend(target_issues)
+    consume_check = _real_transfer_policy_check(
+        args,
+        "consume_policy",
+        "queue/change consumption policy",
+        "reviewer must approve whether records are consumed, retained, or rolled back on failure",
+    )
+    timeout_check = _real_transfer_policy_check(
+        args,
+        "timeout_policy",
+        "timeout/process cleanup policy",
+        "fake-rclone timeout cleanup exists; real transfer behavior still needs explicit approval",
+    )
     checklist = [
         shadow_check,
         {
@@ -2058,21 +2230,9 @@ def _real_transfer_check_report(
             "status": "ok" if commands else "pending",
             "detail": " ".join(preview_command),
         },
-        {
-            "name": "first real run target",
-            "status": "pending",
-            "detail": "operator must confirm exact path and direction before opening the real gate",
-        },
-        {
-            "name": "queue/change consumption policy",
-            "status": "pending",
-            "detail": "reviewer must approve whether records are consumed, retained, or rolled back on failure",
-        },
-        {
-            "name": "timeout/process cleanup policy",
-            "status": "pending",
-            "detail": "fake-rclone timeout cleanup exists; real transfer behavior still needs explicit approval",
-        },
+        target_check,
+        consume_check,
+        timeout_check,
         {
             "name": "parallel dangerous gates",
             "status": "ok",
@@ -2104,6 +2264,13 @@ def _real_transfer_check_report(
         },
         "first planned transfer status": first_target_status,
         "first planned transfer": first_command,
+        "operator confirmed path": target_check.get("confirmed path", "-"),
+        "operator confirmed direction": target_check.get("confirmed direction", "-"),
+        "operator target confirmation status": target_check.get("status", "-"),
+        "consume policy": consume_policy or "-",
+        "consume policy status": consume_check.get("status", "-"),
+        "timeout policy": timeout_policy or "-",
+        "timeout policy status": timeout_check.get("status", "-"),
         "planned transfer commands": commands,
         "manual review transfer record details": _plan_records(manual_review_records),
         "preflight checks": checklist,
