@@ -484,9 +484,23 @@ def _render_transfer_check_human(report: CommandReport) -> str:
         )
     if details.get("final review requested"):
         lines.append(f"final review: {details.get('final review status', '-')}")
-        blockers = details.get("final review blockers")
-        if isinstance(blockers, list) and blockers:
-            lines.append(f"final blockers: {', '.join(str(item) for item in blockers)}")
+        blocker_details = details.get("final review blocker details")
+        if isinstance(blocker_details, list) and blocker_details:
+            lines.append("blocked checks:")
+            for blocker in blocker_details:
+                if not isinstance(blocker, dict):
+                    continue
+                lines.append(
+                    "- "
+                    f"{blocker.get('name', '-')}: "
+                    f"{blocker.get('status', '-')} - "
+                    f"{blocker.get('detail', '-')}"
+                )
+        elif isinstance(details.get("final review blockers"), list) and details["final review blockers"]:
+            lines.append(f"final blockers: {', '.join(str(item) for item in details['final review blockers'])}")
+        note = details.get("dry-run display note")
+        if note:
+            lines.append(f"dry-run note: {note}")
         dry_run_command = details.get("dry-run transfer command")
         if dry_run_command:
             lines.append(f"dry-run command: {_shell_command(dry_run_command)}")
@@ -1012,25 +1026,57 @@ def _final_real_transfer_review_details(
         }
 
     blockers: list[str] = []
+    blocker_details: list[dict[str, object]] = []
     for check in checklist:
         if check.get("status") != "ok":
-            blockers.append(str(check.get("name", "unknown check")))
+            name = str(check.get("name", "unknown check"))
+            blockers.append(name)
+            blocker_details.append(
+                {
+                    "name": name,
+                    "status": str(check.get("status", "-")),
+                    "detail": str(check.get("detail", "-")),
+                }
+            )
     if len(commands) != 1:
-        blockers.append(f"planned transfer count is {len(commands)}")
+        detail = f"planned transfer count is {len(commands)}"
+        blockers.append(detail)
+        blocker_details.append(
+            {
+                "name": "planned transfer count",
+                "status": "not-ok",
+                "detail": detail,
+            }
+        )
     if manual_review_count:
-        blockers.append(f"manual review transfer records = {manual_review_count}")
+        detail = f"manual review transfer records = {manual_review_count}"
+        blockers.append(detail)
+        blocker_details.append(
+            {
+                "name": "manual review transfer records",
+                "status": "not-ok",
+                "detail": detail,
+            }
+        )
 
     first = commands[0] if len(commands) == 1 else {}
     real_command = first.get("command") if isinstance(first, dict) else []
-    dry_run_command = _dry_run_transfer_command(real_command)
+    dry_run_command = [] if blockers else _dry_run_transfer_command(real_command)
+    if blockers:
+        display_status = "blocked"
+        display_note = "blocked; fix the listed checks before displaying dry-run or real transfer commands"
+    else:
+        display_status = "ready" if dry_run_command else "missing"
+        display_note = "display only; rclone is not executed and the real-transfer gate remains closed"
     return {
         "final review requested": True,
         "final review status": "ready" if not blockers else "blocked",
         "final review blockers": blockers,
+        "final review blocker details": blocker_details,
         "dry-run transfer command": dry_run_command,
-        "real transfer command": real_command if isinstance(real_command, list) else [],
-        "dry-run display status": "ready" if dry_run_command else "missing",
-        "dry-run display note": "display only; rclone is not executed and the real-transfer gate remains closed",
+        "real transfer command": real_command if isinstance(real_command, list) and not blockers else [],
+        "dry-run display status": display_status,
+        "dry-run display note": display_note,
     }
 
 

@@ -1351,6 +1351,72 @@ def test_transfer_check_final_review_shows_dry_run_commands_without_opening_gate
     assert diffd_payload["details"]["state writes"] == "none"
 
 
+def test_transfer_check_final_review_blocked_human_output_is_actionable(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+
+    human = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "check",
+            "--final-review",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    structured = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "check",
+            "--final-review",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(structured)
+    blocker_names = {
+        item["name"] for item in payload["details"]["final review blocker details"]
+    }
+
+    assert human.returncode == 0
+    assert structured.returncode == 0
+    assert "final review: blocked" in human.stdout
+    assert "blocked checks:" in human.stdout
+    assert "- saved shadow validation report: pending" in human.stdout
+    assert "- first real run target: pending" in human.stdout
+    assert "- queue/change consumption policy: pending" in human.stdout
+    assert "- timeout/process cleanup policy: pending" in human.stdout
+    assert "- planned transfer count: not-ok" in human.stdout
+    assert "dry-run note: blocked; fix the listed checks" in human.stdout
+    assert "dry-run command:" not in human.stdout
+    assert "real command:" not in human.stdout
+
+    assert payload["details"]["final review status"] == "blocked"
+    assert payload["details"]["dry-run display status"] == "blocked"
+    assert payload["details"]["dry-run transfer command"] == []
+    assert payload["details"]["real transfer command"] == []
+    assert "saved shadow validation report" in blocker_names
+    assert "first real run target" in blocker_names
+    assert "planned transfer count" in blocker_names
+    assert payload["details"]["real transfer gate status"] == "closed"
+    assert payload["details"]["state writes"] == "none"
+
+
 def test_transfer_check_warns_on_mismatched_operator_confirmation(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
