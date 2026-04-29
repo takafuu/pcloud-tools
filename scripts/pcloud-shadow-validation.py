@@ -149,6 +149,22 @@ def run_validation() -> dict[str, Any]:
                     f"state dir {actual_state_dir} does not match {expected_state_dir}",
                 )
             )
+        saved_shadow_report = workspace / "saved-shadow-validation.json"
+        saved_shadow_report.write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "workspace": str(workspace),
+                    "state_dir": str(state_dir),
+                    "checks": [
+                        {"name": "temporary workspace guard", "status": "ok"},
+                        {"name": "temporary state dir guard", "status": "ok"},
+                        {"name": "unsafe state dir guard", "status": "ok"},
+                    ],
+                },
+                sort_keys=True,
+            )
+        )
 
         _check_json_command(
             checks,
@@ -315,6 +331,8 @@ def run_validation() -> dict[str, Any]:
                 "pushd",
                 "transfer",
                 "check",
+                "--report-path",
+                str(saved_shadow_report),
                 "--confirm-path",
                 "Documents/shadow-upload.pdf",
                 "--confirm-direction",
@@ -323,6 +341,7 @@ def run_validation() -> dict[str, Any]:
                 "remove-on-success-retain-on-failure",
                 "--timeout-policy",
                 "reuse-fake-rclone-cleanup",
+                "--final-review",
             ),
         )
         diffd_confirmed_check = _check_json_command(
@@ -333,6 +352,8 @@ def run_validation() -> dict[str, Any]:
                 "diffd",
                 "transfer",
                 "check",
+                "--report-path",
+                str(saved_shadow_report),
                 "--confirm-path",
                 "Documents/shadow-download.pdf",
                 "--confirm-direction",
@@ -341,26 +362,31 @@ def run_validation() -> dict[str, Any]:
                 "remove-on-success-retain-on-failure",
                 "--timeout-policy",
                 "reuse-fake-rclone-cleanup",
+                "--final-review",
             ),
         )
         if (
             pushd_confirmed_check.get("details", {}).get("operator target confirmation status") == "ok"
             and pushd_confirmed_check.get("details", {}).get("consume policy status") == "ok"
             and pushd_confirmed_check.get("details", {}).get("timeout policy status") == "ok"
+            and pushd_confirmed_check.get("details", {}).get("final review status") == "ready"
+            and pushd_confirmed_check.get("details", {}).get("dry-run display status") == "ready"
             and pushd_confirmed_check.get("details", {}).get("real transfer gate status") == "closed"
         ):
-            checks.append(CheckResult("pushd transfer confirmation accepted", "ok", "operator review accepted"))
+            checks.append(CheckResult("pushd transfer final review ready", "ok", "operator review accepted"))
         else:
-            checks.append(CheckResult("pushd transfer confirmation accepted", "error", "confirmation mismatch"))
+            checks.append(CheckResult("pushd transfer final review ready", "error", "confirmation mismatch"))
         if (
             diffd_confirmed_check.get("details", {}).get("operator target confirmation status") == "ok"
             and diffd_confirmed_check.get("details", {}).get("consume policy status") == "ok"
             and diffd_confirmed_check.get("details", {}).get("timeout policy status") == "ok"
+            and diffd_confirmed_check.get("details", {}).get("final review status") == "ready"
+            and diffd_confirmed_check.get("details", {}).get("dry-run display status") == "ready"
             and diffd_confirmed_check.get("details", {}).get("real transfer gate status") == "closed"
         ):
-            checks.append(CheckResult("diffd transfer confirmation accepted", "ok", "operator review accepted"))
+            checks.append(CheckResult("diffd transfer final review ready", "ok", "operator review accepted"))
         else:
-            checks.append(CheckResult("diffd transfer confirmation accepted", "error", "confirmation mismatch"))
+            checks.append(CheckResult("diffd transfer final review ready", "error", "confirmation mismatch"))
 
         fake_bin_dir = workspace / ".dev-state" / "bin"
         fake_bin_dir.mkdir(parents=True, exist_ok=True)

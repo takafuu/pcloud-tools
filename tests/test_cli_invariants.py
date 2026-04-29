@@ -1239,6 +1239,118 @@ def test_transfer_check_accepts_operator_confirmations_without_opening_gate(tmp_
     ]
 
 
+def test_transfer_check_final_review_shows_dry_run_commands_without_opening_gate(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    diffd_dir = state_dir / "diffd"
+    pushd_dir.mkdir(parents=True)
+    diffd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text(
+        json.dumps([{"path": "Documents/final-upload.txt", "action": "upload", "reason": "test"}])
+    )
+    (diffd_dir / "remote-changes.json").write_text(
+        json.dumps([{"path": "Documents/final-download.txt", "action": "download", "reason": "test"}])
+    )
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-final" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-final.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    pushd = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "check",
+            "--report-path",
+            str(shadow_report),
+            "--confirm-path",
+            "Documents/final-upload.txt",
+            "--confirm-direction",
+            "upload",
+            "--consume-policy",
+            "remove-on-success-retain-on-failure",
+            "--timeout-policy",
+            "reuse-fake-rclone-cleanup",
+            "--final-review",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    diffd = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "transfer",
+            "check",
+            "--report-path",
+            str(shadow_report),
+            "--confirm-path",
+            "Documents/final-download.txt",
+            "--confirm-direction",
+            "download",
+            "--consume-policy",
+            "remove-on-success-retain-on-failure",
+            "--timeout-policy",
+            "reuse-fake-rclone-cleanup",
+            "--final-review",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    pushd_payload = _payload(pushd)
+    diffd_payload = _payload(diffd)
+
+    assert pushd.returncode == 0
+    assert diffd.returncode == 0
+    assert pushd_payload["details"]["final review requested"] is True
+    assert diffd_payload["details"]["final review requested"] is True
+    assert pushd_payload["details"]["final review status"] == "ready"
+    assert diffd_payload["details"]["final review status"] == "ready"
+    assert pushd_payload["details"]["final review blockers"] == []
+    assert diffd_payload["details"]["final review blockers"] == []
+    assert pushd_payload["details"]["dry-run transfer command"][-1] == "--dry-run"
+    assert diffd_payload["details"]["dry-run transfer command"][-1] == "--dry-run"
+    assert pushd_payload["details"]["real transfer command"][-2:] == [
+        str(Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / "Documents" / "final-upload.txt"),
+        "pcloud:core/Documents/final-upload.txt",
+    ]
+    assert diffd_payload["details"]["real transfer command"][-2:] == [
+        "pcloud:core/Documents/final-download.txt",
+        str(Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / "Documents" / "final-download.txt"),
+    ]
+    assert pushd_payload["details"]["real transfer gate status"] == "closed"
+    assert diffd_payload["details"]["real transfer gate status"] == "closed"
+    assert pushd_payload["details"]["state writes"] == "none"
+    assert diffd_payload["details"]["state writes"] == "none"
+
+
 def test_transfer_check_warns_on_mismatched_operator_confirmation(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

@@ -176,6 +176,11 @@ def _add_service_parser(
             choices=_TIMEOUT_POLICIES,
             help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
         )
+        transfer_check_parser.add_argument(
+            "--final-review",
+            action="store_true",
+            help="Show the final read-only dry-run review before opening a separate real-transfer gate.",
+        )
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_run_parser = transfer_subparsers.add_parser(
@@ -301,6 +306,11 @@ def _add_service_parser(
             "--timeout-policy",
             choices=_TIMEOUT_POLICIES,
             help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
+        )
+        transfer_check_parser.add_argument(
+            "--final-review",
+            action="store_true",
+            help="Show the final read-only dry-run review before opening a separate real-transfer gate.",
         )
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -472,6 +482,17 @@ def _render_transfer_check_human(report: CommandReport) -> str:
             f"{details.get('timeout policy', '-')} "
             f"({details.get('timeout policy status', '-')})"
         )
+    if details.get("final review requested"):
+        lines.append(f"final review: {details.get('final review status', '-')}")
+        blockers = details.get("final review blockers")
+        if isinstance(blockers, list) and blockers:
+            lines.append(f"final blockers: {', '.join(str(item) for item in blockers)}")
+        dry_run_command = details.get("dry-run transfer command")
+        if dry_run_command:
+            lines.append(f"dry-run command: {_shell_command(dry_run_command)}")
+        real_command = details.get("real transfer command")
+        if real_command:
+            lines.append(f"real command: {_shell_command(real_command)}")
     checks = details.get("preflight checks")
     if isinstance(checks, list) and checks:
         shadow_check = checks[0]
@@ -968,6 +989,48 @@ def _real_transfer_policy_check(
         "name": checklist_name,
         "status": "ok",
         "detail": value,
+    }
+
+
+def _dry_run_transfer_command(command: object) -> list[str]:
+    if not isinstance(command, list) or not command:
+        return []
+    return [str(part) for part in command] + ["--dry-run"]
+
+
+def _final_real_transfer_review_details(
+    *,
+    requested: bool,
+    checklist: list[dict[str, object]],
+    commands: list[dict[str, object]],
+    manual_review_count: int,
+) -> dict[str, object]:
+    if not requested:
+        return {
+            "final review requested": False,
+            "final review status": "not requested",
+        }
+
+    blockers: list[str] = []
+    for check in checklist:
+        if check.get("status") != "ok":
+            blockers.append(str(check.get("name", "unknown check")))
+    if len(commands) != 1:
+        blockers.append(f"planned transfer count is {len(commands)}")
+    if manual_review_count:
+        blockers.append(f"manual review transfer records = {manual_review_count}")
+
+    first = commands[0] if len(commands) == 1 else {}
+    real_command = first.get("command") if isinstance(first, dict) else []
+    dry_run_command = _dry_run_transfer_command(real_command)
+    return {
+        "final review requested": True,
+        "final review status": "ready" if not blockers else "blocked",
+        "final review blockers": blockers,
+        "dry-run transfer command": dry_run_command,
+        "real transfer command": real_command if isinstance(real_command, list) else [],
+        "dry-run display status": "ready" if dry_run_command else "missing",
+        "dry-run display note": "display only; rclone is not executed and the real-transfer gate remains closed",
     }
 
 
@@ -2131,6 +2194,8 @@ def _real_transfer_check_report(
     timeout_policy = getattr(args, "timeout_policy", None)
     if timeout_policy:
         check_command.extend(["--timeout-policy", timeout_policy])
+    if getattr(args, "final_review", False):
+        check_command.append("--final-review")
     check_command.append("--json")
     sample_record = PlanRecord(sample_path, direction, "real-transfer-gate-sample")
     if service.name == "pushd":
@@ -2239,6 +2304,12 @@ def _real_transfer_check_report(
             "detail": "fswatch resident mode, pCloud API long-poll, launchd changes, and archive work stay out of scope",
         },
     ]
+    final_review = _final_real_transfer_review_details(
+        requested=getattr(args, "final_review", False),
+        checklist=checklist,
+        commands=commands,
+        manual_review_count=len(manual_review_records),
+    )
     details: dict[str, object] = {
         "planned action": f"check {service.name} real {direction} transfer gate prerequisites",
         "implementation status": "read-only checklist; rclone is not executed",
@@ -2274,6 +2345,7 @@ def _real_transfer_check_report(
         "planned transfer commands": commands,
         "manual review transfer record details": _plan_records(manual_review_records),
         "preflight checks": checklist,
+        **final_review,
         **counts,
     }
     issues = _sort_issues(issues)

@@ -38,7 +38,7 @@ Development entrypoint:
 ./pcloud-manager-dev pushd fswatch probe
 ./pcloud-manager-dev pushd transfer preview
 ./pcloud-manager-dev pushd transfer check
-./pcloud-manager-dev pushd transfer check --confirm-path Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup
+./pcloud-manager-dev pushd transfer check --confirm-path Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
 ./pcloud-manager-dev pushd transfer consume preview
 ./pcloud-manager-dev pushd queue add Documents/example.pdf
 ./pcloud-manager-dev pushd queue remove Documents/example.pdf
@@ -51,7 +51,7 @@ Development entrypoint:
 ./pcloud-manager-dev diffd api-poll preview
 ./pcloud-manager-dev diffd transfer preview
 ./pcloud-manager-dev diffd transfer check
-./pcloud-manager-dev diffd transfer check --confirm-path Documents/example.pdf --confirm-direction download --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup
+./pcloud-manager-dev diffd transfer check --confirm-path Documents/example.pdf --confirm-direction download --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
 ./pcloud-manager-dev diffd transfer consume preview
 ./pcloud-manager-dev diffd remote-change add Documents/example.pdf
 ./pcloud-manager-dev diffd remote-change remove Documents/example.pdf
@@ -101,7 +101,7 @@ Config notes:
 - `diffd diff preview --fixture <path>` parses fixture-backed pCloud diff responses and previews the download plan without calling the pCloud API or writing diffd state
 - `diffd api-poll preview` reports the intended one-shot pCloud API poll request shape without calling the API, configuring credentials, or writing diffd state
 - `pushd transfer preview` and `diffd transfer preview` emit concise human summaries and detailed `--json` planned `rclone copyto` argv from the current upload/download plans without running rclone or writing service state; delete/rename/move-style records and same-path pushd/diffd conflicts are routed to manual review and excluded from planned transfer commands
-- `pushd transfer check` and `diffd transfer check` are read-only real-transfer gate checklists; human output stays concise, while `--json` retains the full AI/reviewer audit detail. They can inspect a saved shadow validation report with `--report-path`, accept `--sample-path <relative allowlisted path>` for the displayed dev-state sample setup, require the temp workspace/state guard and unsafe state dir guard checks to be present, show the first planned transfer, emit a dev-state-only setup -> preview -> check -> cleanup review command sequence when the plan is empty, and keep the real rclone/pCloud transfer gate closed. Operator/reviewer confirmations can be recorded with `--confirm-path`, `--confirm-direction`, `--consume-policy`, and `--timeout-policy`; mismatches stay warnings and still do not open the gate
+- `pushd transfer check` and `diffd transfer check` are read-only real-transfer gate checklists; human output stays concise, while `--json` retains the full AI/reviewer audit detail. They can inspect a saved shadow validation report with `--report-path`, accept `--sample-path <relative allowlisted path>` for the displayed dev-state sample setup, require the temp workspace/state guard and unsafe state dir guard checks to be present, show the first planned transfer, emit a dev-state-only setup -> preview -> check -> cleanup review command sequence when the plan is empty, and keep the real rclone/pCloud transfer gate closed. Operator/reviewer confirmations can be recorded with `--confirm-path`, `--confirm-direction`, `--consume-policy`, and `--timeout-policy`; mismatches stay warnings and still do not open the gate. `--final-review` adds a display-only dry-run command and the exact real command when all preflight checks are ready
 - `pushd transfer run --execute` and `diffd transfer run --execute` are limited to dev-mode fake-rclone execution: `PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE=dev-fake-rclone`, `PCLOUD_TOOLS_RCLONE_BIN=<workspace>/.dev-state/.../fake-rclone`, and state dir under `workspace/.dev-state/state` are all required; fake-rclone runs use `PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS`, clean up the fake process group on timeout, record `last-transfer.json`, and never consume queue/change files; real rclone and pCloud transfer remain blocked
 - `pushd transfer consume preview` and `diffd transfer consume preview` read the latest dev-state `last-transfer.json` and current queue/change file to show which successful fake-rclone records would be removed; they are read-only, write no state, and do not consume queue/change files
 - `pushd transfer consume run --execute` and `diffd transfer consume run --execute` are dev-state guarded consume paths; they remove only queue/change records matching successful fake-rclone results, and still do not open real rclone/pCloud transfer
