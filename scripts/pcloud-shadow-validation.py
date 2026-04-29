@@ -387,6 +387,62 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer final review ready", "ok", "operator review accepted"))
         else:
             checks.append(CheckResult("diffd transfer final review ready", "error", "confirmation mismatch"))
+        pushd_real_gate = _check_json_command(
+            checks,
+            env,
+            "pushd transfer real-gate",
+            (
+                "pushd",
+                "transfer",
+                "real-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-upload.pdf",
+                "--confirm-direction",
+                "upload",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+            ),
+        )
+        diffd_real_gate = _check_json_command(
+            checks,
+            env,
+            "diffd transfer real-gate",
+            (
+                "diffd",
+                "transfer",
+                "real-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-download.pdf",
+                "--confirm-direction",
+                "download",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+            ),
+        )
+        if (
+            pushd_real_gate.get("details", {}).get("real transfer execution gate status")
+            == "closed: no accepted value in this build"
+            and pushd_real_gate.get("details", {}).get("fake-rclone gate reuse") == "forbidden"
+        ):
+            checks.append(CheckResult("pushd transfer real-gate closed", "ok", "real execution unavailable"))
+        else:
+            checks.append(CheckResult("pushd transfer real-gate closed", "error", "real gate unexpectedly open"))
+        if (
+            diffd_real_gate.get("details", {}).get("real transfer execution gate status")
+            == "closed: no accepted value in this build"
+            and diffd_real_gate.get("details", {}).get("fake-rclone gate reuse") == "forbidden"
+        ):
+            checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
+        else:
+            checks.append(CheckResult("diffd transfer real-gate closed", "error", "real gate unexpectedly open"))
 
         fake_bin_dir = workspace / ".dev-state" / "bin"
         fake_bin_dir.mkdir(parents=True, exist_ok=True)

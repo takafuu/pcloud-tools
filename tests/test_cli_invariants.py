@@ -1335,6 +1335,15 @@ def test_transfer_check_final_review_shows_dry_run_commands_without_opening_gate
     assert diffd_payload["details"]["final review status"] == "ready"
     assert pushd_payload["details"]["final review blockers"] == []
     assert diffd_payload["details"]["final review blockers"] == []
+    assert pushd_payload["details"]["real transfer gate opening status"] == "ready-for-separate-gate"
+    assert diffd_payload["details"]["real transfer gate opening status"] == "ready-for-separate-gate"
+    assert "real transfer execution is still unavailable" in pushd_payload["details"][
+        "real transfer gate opening note"
+    ]
+    assert any(
+        "real execute gate must be added separately" in item
+        for item in pushd_payload["details"]["separate real gate next checks"]
+    )
     assert pushd_payload["details"]["dry-run transfer command"][-1] == "--dry-run"
     assert diffd_payload["details"]["dry-run transfer command"][-1] == "--dry-run"
     assert pushd_payload["details"]["real transfer command"][-2:] == [
@@ -1408,6 +1417,8 @@ def test_transfer_check_final_review_blocked_human_output_is_actionable(tmp_path
 
     assert payload["details"]["final review status"] == "blocked"
     assert payload["details"]["dry-run display status"] == "blocked"
+    assert payload["details"]["real transfer gate opening status"] == "blocked"
+    assert payload["details"]["separate real gate next checks"] == []
     assert payload["details"]["dry-run transfer command"] == []
     assert payload["details"]["real transfer command"] == []
     assert "saved shadow validation report" in blocker_names
@@ -1415,6 +1426,93 @@ def test_transfer_check_final_review_blocked_human_output_is_actionable(tmp_path
     assert "planned transfer count" in blocker_names
     assert payload["details"]["real transfer gate status"] == "closed"
     assert payload["details"]["state writes"] == "none"
+
+
+def test_transfer_real_gate_is_read_only_scaffold(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text(
+        json.dumps([{"path": "Documents/real-gate.txt", "action": "upload", "reason": "test"}])
+    )
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-real-gate" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-real-gate.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "real-gate",
+            "--report-path",
+            str(shadow_report),
+            "--confirm-path",
+            "Documents/real-gate.txt",
+            "--confirm-direction",
+            "upload",
+            "--consume-policy",
+            "remove-on-success-retain-on-failure",
+            "--timeout-policy",
+            "reuse-fake-rclone-cleanup",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    standalone = subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            (
+                "from pcloud_tools.cli_service_daemon import main_pushd; "
+                "raise SystemExit(main_pushd(['transfer','real-gate','--json']))"
+            ),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    standalone_payload = _payload(standalone)
+
+    assert result.returncode == 0
+    assert standalone.returncode == 0
+    assert payload["command"] == "pushd transfer real-gate"
+    assert standalone_payload["command"] == "pushd transfer real-gate"
+    assert payload["summary"] == "pushd real transfer execution gate is closed"
+    assert payload["details"]["implementation status"].startswith("read-only real execution gate scaffold")
+    assert payload["details"]["final review status"] == "ready"
+    assert payload["details"]["real transfer gate opening status"] == "ready-for-separate-gate"
+    assert payload["details"]["real transfer execution gate status"] == "closed: no accepted value in this build"
+    assert payload["details"]["future real gate env var"] == "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE"
+    assert payload["details"]["future real gate accepted value"] == "-"
+    assert payload["details"]["fake-rclone gate reuse"] == "forbidden"
+    assert payload["details"]["state writes"] == "none"
+    assert "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE" in [issue["key"] for issue in payload["issues"]]
+    assert not (pushd_dir / "last-transfer.json").exists()
 
 
 def test_transfer_check_warns_on_mismatched_operator_confirmation(tmp_path: Path) -> None:
@@ -1588,6 +1686,22 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
     )
+    pushd_real_gate = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.transfer.real-gate"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    diffd_real_gate = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "diffd.transfer.real-gate"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
     diffd_check = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "action", "diffd.transfer.check"],
         check=False,
@@ -1605,6 +1719,10 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
     assert "pushd real transfer gate checklist is not open" in pushd_check.stdout
     assert diffd_check.returncode == 0
     assert "diffd real transfer gate checklist is not open" in diffd_check.stdout
+    assert pushd_real_gate.returncode == 0
+    assert "pushd real transfer execution gate is closed" in pushd_real_gate.stdout
+    assert diffd_real_gate.returncode == 0
+    assert "diffd real transfer execution gate is closed" in diffd_real_gate.stdout
 
 
 def test_transfer_run_without_execute_is_preview_only(tmp_path: Path) -> None:

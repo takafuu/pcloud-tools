@@ -24,6 +24,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "pushd.gate": ("pushd", "gate"),
     "pushd.transfer.preview": ("pushd", "transfer", "preview"),
     "pushd.transfer.check": ("pushd", "transfer", "check"),
+    "pushd.transfer.real-gate": ("pushd", "transfer", "real-gate"),
     "pushd.queue.clear.preview": ("pushd", "queue", "clear"),
     "diffd.status.refresh": ("diffd", "status", "--xbar"),
     "diffd.preview": ("diffd", "preview"),
@@ -31,6 +32,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "diffd.gate": ("diffd", "gate"),
     "diffd.transfer.preview": ("diffd", "transfer", "preview"),
     "diffd.transfer.check": ("diffd", "transfer", "check"),
+    "diffd.transfer.real-gate": ("diffd", "transfer", "real-gate"),
     "diffd.remote-change.clear.preview": ("diffd", "remote-change", "clear"),
 }
 

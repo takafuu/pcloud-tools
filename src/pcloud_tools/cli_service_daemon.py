@@ -183,6 +183,40 @@ def _add_service_parser(
         )
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        transfer_real_gate_parser = transfer_subparsers.add_parser(
+            "real-gate",
+            help="Read-only scaffold for the separate real upload execution gate.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--report-path",
+            type=Path,
+            help="Optional saved shadow validation report to inspect without running validation.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--sample-path",
+            help="Relative allowlisted path to use in the displayed dev-state sample setup command.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--confirm-path",
+            help="Operator-confirmed relative path for the first real upload review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--confirm-direction",
+            choices=("upload", "download"),
+            help="Operator-confirmed direction for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--consume-policy",
+            choices=_CONSUME_POLICIES,
+            help="Reviewer-approved record consumption policy for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--timeout-policy",
+            choices=_TIMEOUT_POLICIES,
+            help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_run_parser = transfer_subparsers.add_parser(
             "run", help="Run dev-mode fake-rclone upload executor commands behind the transfer gate."
         )
@@ -314,6 +348,40 @@ def _add_service_parser(
         )
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        transfer_real_gate_parser = transfer_subparsers.add_parser(
+            "real-gate",
+            help="Read-only scaffold for the separate real download execution gate.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--report-path",
+            type=Path,
+            help="Optional saved shadow validation report to inspect without running validation.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--sample-path",
+            help="Relative allowlisted path to use in the displayed dev-state sample setup command.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--confirm-path",
+            help="Operator-confirmed relative path for the first real download review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--confirm-direction",
+            choices=("upload", "download"),
+            help="Operator-confirmed direction for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--consume-policy",
+            choices=_CONSUME_POLICIES,
+            help="Reviewer-approved record consumption policy for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--timeout-policy",
+            choices=_TIMEOUT_POLICIES,
+            help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_run_parser = transfer_subparsers.add_parser(
             "run", help="Run dev-mode fake-rclone download executor commands behind the transfer gate."
         )
@@ -465,6 +533,16 @@ def _render_transfer_check_human(report: CommandReport) -> str:
         f"sample detail: {details.get('sample path detail', '-')}",
         f"first target: {details.get('first planned transfer status', '-')}",
     ]
+    if "real transfer execution gate status" in details:
+        lines.append(f"execution gate: {details.get('real transfer execution gate status', '-')}")
+    if "future real gate env var" in details:
+        lines.append(
+            "future gate env: "
+            f"{details.get('future real gate env var', '-')}="
+            f"{details.get('future real gate accepted value', '-')}"
+        )
+    if "fake-rclone gate reuse" in details:
+        lines.append(f"fake-rclone gate reuse: {details.get('fake-rclone gate reuse', '-')}")
     if "operator target confirmation status" in details:
         lines.append(
             "target confirmation: "
@@ -484,6 +562,10 @@ def _render_transfer_check_human(report: CommandReport) -> str:
         )
     if details.get("final review requested"):
         lines.append(f"final review: {details.get('final review status', '-')}")
+        if "real transfer gate opening status" in details:
+            lines.append(f"gate opening: {details.get('real transfer gate opening status', '-')}")
+        if "real transfer gate opening note" in details:
+            lines.append(f"gate note: {details.get('real transfer gate opening note', '-')}")
         blocker_details = details.get("final review blocker details")
         if isinstance(blocker_details, list) and blocker_details:
             lines.append("blocked checks:")
@@ -507,6 +589,11 @@ def _render_transfer_check_human(report: CommandReport) -> str:
         real_command = details.get("real transfer command")
         if real_command:
             lines.append(f"real command: {_shell_command(real_command)}")
+        next_checks = details.get("separate real gate next checks")
+        if isinstance(next_checks, list) and next_checks:
+            lines.append("next gate checks:")
+            for check in next_checks:
+                lines.append(f"- {check}")
     checks = details.get("preflight checks")
     if isinstance(checks, list) and checks:
         shadow_check = checks[0]
@@ -537,6 +624,12 @@ def _print_transfer_check_report(report: CommandReport, args: argparse.Namespace
         print(_render_transfer_check_human(report))
         return
     _print_report(report, args)
+
+
+def _real_gate_args(args: argparse.Namespace) -> argparse.Namespace:
+    values = vars(args).copy()
+    values["final_review"] = True
+    return argparse.Namespace(**values)
 
 
 def _render_transfer_preview_human(report: CommandReport) -> str:
@@ -676,6 +769,13 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             id=f"{service.name}.transfer.check",
             label=f"Check {service.name} transfer gate",
             command=_action_command(paths, f"{service.name}.transfer.check"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id=f"{service.name}.transfer.real-gate",
+            label=f"Check {service.name} real transfer gate",
+            command=_action_command(paths, f"{service.name}.transfer.real-gate"),
             terminal=True,
             refresh=False,
         ),
@@ -1065,9 +1165,22 @@ def _final_real_transfer_review_details(
     if blockers:
         display_status = "blocked"
         display_note = "blocked; fix the listed checks before displaying dry-run or real transfer commands"
+        gate_opening_status = "blocked"
+        gate_opening_note = "real transfer gate cannot be considered until all final-review checks are ready"
+        next_checks: list[str] = []
     else:
         display_status = "ready" if dry_run_command else "missing"
         display_note = "display only; rclone is not executed and the real-transfer gate remains closed"
+        gate_opening_status = "ready-for-separate-gate"
+        gate_opening_note = (
+            "ready for a separate implementation gate review; real transfer execution is still unavailable"
+        )
+        next_checks = [
+            "operator confirms the displayed dry-run command was reviewed",
+            "reviewer approves the exact real command path and direction",
+            "real execute gate must be added separately and must not reuse the fake-rclone gate",
+            "record consumption must follow the displayed consume policy after transfer success",
+        ]
     return {
         "final review requested": True,
         "final review status": "ready" if not blockers else "blocked",
@@ -1077,6 +1190,9 @@ def _final_real_transfer_review_details(
         "real transfer command": real_command if isinstance(real_command, list) and not blockers else [],
         "dry-run display status": display_status,
         "dry-run display note": display_note,
+        "real transfer gate opening status": gate_opening_status,
+        "real transfer gate opening note": gate_opening_note,
+        "separate real gate next checks": next_checks,
     }
 
 
@@ -2405,6 +2521,49 @@ def _real_transfer_check_report(
     )
 
 
+def _real_transfer_gate_report(
+    args: argparse.Namespace,
+    paths: RuntimePaths,
+    service: ServiceDefinition,
+) -> CommandReport:
+    report = _real_transfer_check_report(_real_gate_args(args), paths, service)
+    details = dict(report.details)
+    details.update(
+        {
+            "planned action": f"inspect {service.name} separate real transfer execution gate",
+            "implementation status": (
+                "read-only real execution gate scaffold; no real rclone/pCloud execution path exists"
+            ),
+            "real transfer gate command status": "read-only",
+            "real transfer execution gate status": "closed: no accepted value in this build",
+            "future real gate env var": "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE",
+            "future real gate accepted value": "-",
+            "fake-rclone gate reuse": "forbidden",
+            "state writes": "none",
+        }
+    )
+    issues = [
+        ConfigIssue(
+            key="PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE",
+            level="warning",
+            message=(
+                "real rclone/pCloud transfer execution gate is not implemented; "
+                "this command is a read-only scaffold"
+            ),
+        )
+    ]
+    issues.extend(ConfigIssue(level=issue.level, key=issue.key, message=issue.message) for issue in report.issues)
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command=f"{service.name} transfer real-gate",
+        status=_status_from_issues(issues),
+        summary=f"{service.name} real transfer execution gate is closed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_service_actions(paths, service),
+    )
+
+
 def _service_transfer_report(
     paths: RuntimePaths,
     service: ServiceDefinition,
@@ -2546,6 +2705,10 @@ def cmd_service_transfer(
         return _exit_code_for_report(report)
     if args.transfer_command == "check":
         report = _real_transfer_check_report(args, paths, service)
+        _print_transfer_check_report(report, args)
+        return _exit_code_for_report(report)
+    if args.transfer_command == "real-gate":
+        report = _real_transfer_gate_report(args, paths, service)
         _print_transfer_check_report(report, args)
         return _exit_code_for_report(report)
     if args.transfer_command == "run":
@@ -2940,8 +3103,24 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         )
         transfer_check_parser.add_argument("--report-path", type=Path)
         transfer_check_parser.add_argument("--sample-path")
+        transfer_check_parser.add_argument("--confirm-path")
+        transfer_check_parser.add_argument("--confirm-direction", choices=("upload", "download"))
+        transfer_check_parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
+        transfer_check_parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
+        transfer_check_parser.add_argument("--final-review", action="store_true")
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        transfer_real_gate_parser = transfer_subparsers.add_parser(
+            "real-gate", help="Read-only scaffold for the separate real upload execution gate."
+        )
+        transfer_real_gate_parser.add_argument("--report-path", type=Path)
+        transfer_real_gate_parser.add_argument("--sample-path")
+        transfer_real_gate_parser.add_argument("--confirm-path")
+        transfer_real_gate_parser.add_argument("--confirm-direction", choices=("upload", "download"))
+        transfer_real_gate_parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
+        transfer_real_gate_parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
+        transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_run_parser = transfer_subparsers.add_parser(
             "run", help="Run dev-mode fake-rclone upload executor commands behind the transfer gate."
         )
@@ -3012,8 +3191,24 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         )
         transfer_check_parser.add_argument("--report-path", type=Path)
         transfer_check_parser.add_argument("--sample-path")
+        transfer_check_parser.add_argument("--confirm-path")
+        transfer_check_parser.add_argument("--confirm-direction", choices=("upload", "download"))
+        transfer_check_parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
+        transfer_check_parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
+        transfer_check_parser.add_argument("--final-review", action="store_true")
         transfer_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_check_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        transfer_real_gate_parser = transfer_subparsers.add_parser(
+            "real-gate", help="Read-only scaffold for the separate real download execution gate."
+        )
+        transfer_real_gate_parser.add_argument("--report-path", type=Path)
+        transfer_real_gate_parser.add_argument("--sample-path")
+        transfer_real_gate_parser.add_argument("--confirm-path")
+        transfer_real_gate_parser.add_argument("--confirm-direction", choices=("upload", "download"))
+        transfer_real_gate_parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
+        transfer_real_gate_parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
+        transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_run_parser = transfer_subparsers.add_parser(
             "run", help="Run dev-mode fake-rclone download executor commands behind the transfer gate."
         )
