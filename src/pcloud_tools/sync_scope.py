@@ -10,6 +10,18 @@ class AllowlistError(ValueError):
     """Raised when the allowlist file cannot be normalized."""
 
 
+_UNSAFE_ROOT_ENTRIES = {
+    "apps",
+    "bin",
+    "codex",
+    "config",
+    "dev",
+    "dotfiles",
+    "project",
+    "tools",
+}
+
+
 @dataclass(frozen=True)
 class ScopeBaseline:
     mode: str
@@ -156,6 +168,15 @@ def prepare_sync_filter_rules(config: AppConfig, entries: tuple[str, ...]) -> tu
     return tuple(rules)
 
 
+def unsafe_allowlist_entries(entries: tuple[str, ...]) -> tuple[str, ...]:
+    unsafe: list[str] = []
+    for entry in entries:
+        root = entry.strip("/").split("/", 1)[0]
+        if root in _UNSAFE_ROOT_ENTRIES:
+            unsafe.append(entry)
+    return tuple(unsafe)
+
+
 def write_sync_filter_file(config: AppConfig, entries: tuple[str, ...]) -> Path:
     filter_file = sync_filter_file(config)
     filter_file.parent.mkdir(parents=True, exist_ok=True)
@@ -191,4 +212,18 @@ def scope_issues(info: SyncScopeInfo) -> list[ConfigIssue]:
                 message=f"stored sync scope is invalid: {info.baseline.file}",
             )
         )
+
+    if info.allowlist_status == "loaded":
+        unsafe_entries = unsafe_allowlist_entries(info.entries)
+        if unsafe_entries:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SCOPE_POLICY",
+                    level="warning",
+                    message=(
+                        "allowlist includes source/tool roots outside document-only sync policy: "
+                        + ", ".join(unsafe_entries)
+                    ),
+                )
+            )
     return issues

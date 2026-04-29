@@ -55,6 +55,13 @@ class AppConfig:
     autosync_plist: Path
     indexer_bin: Path
     notify_bin: Path
+    rclone_bin: str
+    transfer_execution_gate: str
+    transfer_exec_timeout_seconds: int
+    pushd_debounce_seconds: int
+    pushd_queue_limit: int
+    diffd_poll_interval_seconds: int
+    diffd_batch_limit: int
 
 
 def _expand_value(value: str, mapping: dict[str, str]) -> str:
@@ -145,12 +152,19 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         "PCLOUD_TOOLS_LOG_DIR": str(base_log_dir),
         "PCLOUD_TOOLS_ALLOWLIST_FILE": str(home / "p-core" / ".pcloud-sync-allowlist"),
         "PCLOUD_TOOLS_DEFAULT_EXCLUDES": "config/dotfiles/.ssh/agent/**,.DS_Store,**/.DS_Store",
-        "PCLOUD_TOOLS_AUTOSYNC_LABEL": "com.example.pcloud-bisync",
+        "PCLOUD_TOOLS_AUTOSYNC_LABEL": "com.takafumi.pcloud-bisync",
         "PCLOUD_TOOLS_AUTOSYNC_PLIST": str(
-            home / "Library/LaunchAgents/com.example.pcloud-bisync.plist"
+            home / "Library/LaunchAgents/com.takafumi.pcloud-bisync.plist"
         ),
         "PCLOUD_TOOLS_INDEXER_BIN": str(home / ".zsh/functions/pcloud-indexer.py"),
         "PCLOUD_TOOLS_NOTIFY_BIN": str(home / "bin/notify"),
+        "PCLOUD_TOOLS_RCLONE_BIN": "rclone",
+        "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE": "",
+        "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS": "5",
+        "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS": "3",
+        "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT": "1000",
+        "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS": "60",
+        "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT": "100",
     }
 
     if paths.dev_mode:
@@ -246,6 +260,32 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
             notify_bin=_path_value(
                 "PCLOUD_TOOLS_NOTIFY_BIN", values, defaults["PCLOUD_TOOLS_NOTIFY_BIN"]
             ),
+            rclone_bin=_string_value("PCLOUD_TOOLS_RCLONE_BIN", values, defaults["PCLOUD_TOOLS_RCLONE_BIN"]),
+            transfer_execution_gate=_string_value(
+                "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",
+                values,
+                defaults["PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"],
+            ),
+            transfer_exec_timeout_seconds=_int_from_value(
+                "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
+                values["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"],
+            ),
+            pushd_debounce_seconds=_int_from_value(
+                "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS",
+                values["PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS"],
+            ),
+            pushd_queue_limit=_int_from_value(
+                "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT",
+                values["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"],
+            ),
+            diffd_poll_interval_seconds=_int_from_value(
+                "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS",
+                values["PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS"],
+            ),
+            diffd_batch_limit=_int_from_value(
+                "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT",
+                values["PCLOUD_TOOLS_DIFFD_BATCH_LIMIT"],
+            ),
         )
     except ConfigError as exc:
         issues.append(ConfigIssue(key="config", level="error", message=str(exc)))
@@ -284,6 +324,13 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
         autosync_plist=Path(defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"]).expanduser(),
         indexer_bin=Path(defaults["PCLOUD_TOOLS_INDEXER_BIN"]).expanduser(),
         notify_bin=Path(defaults["PCLOUD_TOOLS_NOTIFY_BIN"]).expanduser(),
+        rclone_bin=defaults["PCLOUD_TOOLS_RCLONE_BIN"],
+        transfer_execution_gate=defaults["PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"],
+        transfer_exec_timeout_seconds=int(defaults["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"]),
+        pushd_debounce_seconds=int(defaults["PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS"]),
+        pushd_queue_limit=int(defaults["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"]),
+        diffd_poll_interval_seconds=int(defaults["PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS"]),
+        diffd_batch_limit=int(defaults["PCLOUD_TOOLS_DIFFD_BATCH_LIMIT"]),
     )
 
 
@@ -324,6 +371,21 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
             issues.append(
                 ConfigIssue(key=key, level="error", message=f"port out of range: {port}")
             )
+
+    for key, value in (
+        ("PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", config.transfer_exec_timeout_seconds),
+        ("PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", config.pushd_debounce_seconds),
+        ("PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", config.diffd_poll_interval_seconds),
+    ):
+        if value < 1:
+            issues.append(ConfigIssue(key=key, level="error", message=f"value must be >= 1: {value}"))
+
+    for key, value in (
+        ("PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT", config.pushd_queue_limit),
+        ("PCLOUD_TOOLS_DIFFD_BATCH_LIMIT", config.diffd_batch_limit),
+    ):
+        if value < 1:
+            issues.append(ConfigIssue(key=key, level="error", message=f"value must be >= 1: {value}"))
 
     if not config.remote.endswith(":"):
         issues.append(
@@ -438,10 +500,18 @@ def render_env_template(paths: RuntimePaths) -> str:
         "PCLOUD_TOOLS_VAULT_PORT",
         "PCLOUD_TOOLS_CRYPT_PORT",
         "PCLOUD_TOOLS_AUTOSYNC_LABEL",
+        "PCLOUD_TOOLS_AUTOSYNC_PLIST",
         "PCLOUD_TOOLS_ALLOWLIST_FILE",
         "PCLOUD_TOOLS_DEFAULT_EXCLUDES",
         "PCLOUD_TOOLS_INDEXER_BIN",
         "PCLOUD_TOOLS_NOTIFY_BIN",
+        "PCLOUD_TOOLS_RCLONE_BIN",
+        "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",
+        "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
+        "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS",
+        "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT",
+        "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS",
+        "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT",
     ]
     for key in ordered_keys:
         lines.append(f"{key}={defaults[key]}")

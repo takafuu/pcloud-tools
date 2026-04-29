@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import os
+import shutil
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -49,3 +51,22 @@ def detect_runtime_paths() -> RuntimePaths:
         state_dir=_env_path("PCLOUD_TOOLS_STATE_DIR", dev_root / "state"),
         log_dir=_env_path("PCLOUD_TOOLS_LOG_DIR", dev_root / "logs"),
     )
+
+
+def action_entrypoint_command(paths: RuntimePaths) -> str:
+    if paths.dev_mode:
+        dev_entrypoint = paths.workspace_root / "pcloud-manager-dev"
+        if dev_entrypoint.exists() and os.access(dev_entrypoint, os.X_OK):
+            return str(dev_entrypoint)
+        resolved_dev = shutil.which("pcloud-manager-dev")
+        if resolved_dev:
+            return resolved_dev
+
+    resolved_public = shutil.which("pcloud-manager")
+    if resolved_public:
+        return resolved_public
+
+    argv0 = Path(sys.argv[0])
+    if argv0.exists() and os.access(argv0, os.X_OK):
+        return str(argv0)
+    return sys.executable

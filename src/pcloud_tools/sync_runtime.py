@@ -396,6 +396,16 @@ def read_sync_state(config: AppConfig) -> SyncState:
     )
 
 
+def sync_last_error_status(sync_state: SyncState) -> str:
+    if sync_state.last_error == "(none)":
+        return "none"
+    if sync_state.state == "sync_error":
+        return "current"
+    if "SUCCESS" in sync_state.last_sync:
+        return "historical"
+    return "recorded"
+
+
 def _extract_after_prefix(line: str, prefix: str) -> str:
     if not line.startswith(prefix):
         return ""

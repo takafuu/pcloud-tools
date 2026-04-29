@@ -10,8 +10,15 @@ readme = "README.md"
 requires-python = ">=3.11"
 dependencies = []
 
+[project.optional-dependencies]
+test = [
+    "pytest>=8.0",
+]
+
 [project.scripts]
 pcloud-tools = "pcloud_tools.cli:main"
+pcloud-pushd = "pcloud_tools.cli_service_daemon:main_pushd"
+pcloud-diffd = "pcloud_tools.cli_service_daemon:main_diffd"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pcloud_tools"]

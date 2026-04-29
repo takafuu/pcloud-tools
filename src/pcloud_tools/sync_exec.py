@@ -33,6 +33,7 @@ from .sync_scope import (
 class SyncPlan:
     mode: str
     scope_mode: str
+    resync_mode: str | None
     command: tuple[str, ...]
     rclone_log: Path
     stdout_log: Path
@@ -51,6 +52,10 @@ class SyncExecutionResult:
 
 class SyncExecutionError(ValueError):
     """Raised when a sync plan cannot be executed safely."""
+
+
+RESYNC_MODES = ("path1", "path2", "newer", "older", "larger", "smaller")
+DEFAULT_RESYNC_MODE = "path1"
 
 
 @dataclass(frozen=True)
@@ -128,9 +133,15 @@ def build_sync_plan(
     mode: str,
     allowlist_entries: tuple[str, ...],
     rclone_bin: str,
+    resync_mode: str = DEFAULT_RESYNC_MODE,
 ) -> SyncPlan:
-    if mode not in {"normal", "resync", "full-resync", "track-renames"}:
+    if mode not in {"normal", "autosync", "resync", "full-resync", "track-renames"}:
         raise SyncExecutionError(f"invalid sync mode: {mode}")
+    if sync_mode_is_resync(mode) and resync_mode not in RESYNC_MODES:
+        choices = ", ".join(RESYNC_MODES)
+        raise SyncExecutionError(f"invalid resync mode: {resync_mode} (expected one of: {choices})")
+    if not sync_mode_is_resync(mode) and resync_mode != DEFAULT_RESYNC_MODE:
+        raise SyncExecutionError(f"--resync-mode is only valid for resync modes: {mode}")
 
     ts = _timestamp()
     rclone_log = _rclone_log_dir(config) / f"bisync-{mode}-{ts}.log"
@@ -154,8 +165,10 @@ def build_sync_plan(
         filter_file = _write_filter_file(config, allowlist_entries)
         command.extend(["--filter-from", str(filter_file)])
 
-    if mode in {"resync", "full-resync"}:
-        command.append("--resync")
+    plan_resync_mode: str | None = None
+    if sync_mode_is_resync(mode):
+        plan_resync_mode = resync_mode
+        command.extend(["--resync-mode", resync_mode])
     elif mode == "track-renames":
         command.append("--track-renames")
 
@@ -163,6 +176,7 @@ def build_sync_plan(
     return SyncPlan(
         mode=mode,
         scope_mode=scope_mode,
+        resync_mode=plan_resync_mode,
         command=tuple(command),
         rclone_log=rclone_log,
         stdout_log=stdout_log,
