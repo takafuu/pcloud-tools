@@ -443,6 +443,36 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
             checks.append(CheckResult("diffd transfer real-gate closed", "error", "real gate unexpectedly open"))
+        pushd_real_run = _check_json_command(
+            checks,
+            env,
+            "pushd transfer real-run refusal",
+            ("pushd", "transfer", "real-run", "--execute"),
+            allowed_status={"error"},
+        )
+        diffd_real_run = _check_json_command(
+            checks,
+            env,
+            "diffd transfer real-run refusal",
+            ("diffd", "transfer", "real-run", "--execute"),
+            allowed_status={"error"},
+        )
+        if (
+            pushd_real_run.get("details", {}).get("real transfer execution gate status")
+            == "closed: no accepted value in this build"
+            and pushd_real_run.get("details", {}).get("state writes") == "none"
+        ):
+            checks.append(CheckResult("pushd transfer real-run blocked", "ok", "real execution refused"))
+        else:
+            checks.append(CheckResult("pushd transfer real-run blocked", "error", "real-run not refused"))
+        if (
+            diffd_real_run.get("details", {}).get("real transfer execution gate status")
+            == "closed: no accepted value in this build"
+            and diffd_real_run.get("details", {}).get("state writes") == "none"
+        ):
+            checks.append(CheckResult("diffd transfer real-run blocked", "ok", "real execution refused"))
+        else:
+            checks.append(CheckResult("diffd transfer real-run blocked", "error", "real-run not refused"))
 
         fake_bin_dir = workspace / ".dev-state" / "bin"
         fake_bin_dir.mkdir(parents=True, exist_ok=True)
