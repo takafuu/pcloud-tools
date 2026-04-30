@@ -684,6 +684,38 @@ def _print_transfer_check_report(report: CommandReport, args: argparse.Namespace
     _print_report(report, args)
 
 
+def _render_real_transfer_run_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"execution gate: {details.get('real transfer execution gate status', '-')}",
+        f"execute requested: {details.get('execute requested', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"real gate env provided: {details.get('real gate env provided', '-')}",
+        f"real gate env honored: {details.get('real gate env honored', '-')}",
+        f"fake-rclone gate reuse: {details.get('fake-rclone gate reuse', '-')}",
+        f"fake-rclone gate env provided: {details.get('fake-rclone gate env provided', '-')}",
+        f"fake-rclone gate env honored: {details.get('fake-rclone gate env honored', '-')}",
+    ]
+    safe_alternative = details.get("safe alternative command")
+    if safe_alternative:
+        lines.append(f"safe alternative: {_shell_command(safe_alternative)}")
+    if report.issues:
+        lines.append("errors:")
+        for issue in report.issues:
+            if issue.level == "error":
+                lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _print_real_transfer_run_report(report: CommandReport, args: argparse.Namespace) -> None:
+    if _output_format(args) == "human":
+        print(_render_real_transfer_run_human(report))
+        return
+    _print_report(report, args)
+
+
 def _real_gate_args(args: argparse.Namespace) -> argparse.Namespace:
     values = vars(args).copy()
     values["final_review"] = True
@@ -2670,6 +2702,8 @@ def _real_transfer_run_refusal_report(
     service: ServiceDefinition,
 ) -> CommandReport:
     load_result = load_config(paths)
+    real_gate_env = os.environ.get("PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE")
+    fake_gate_env = os.environ.get("PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE")
     issue = ConfigIssue(
         key="PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE",
         level="error",
@@ -2690,7 +2724,11 @@ def _real_transfer_run_refusal_report(
         "core remote": load_result.config.core_remote,
         "future real gate env var": "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE",
         "future real gate accepted value": "-",
+        "real gate env provided": "yes" if real_gate_env else "no",
+        "real gate env honored": "no",
         "fake-rclone gate reuse": "forbidden",
+        "fake-rclone gate env provided": "yes" if fake_gate_env else "no",
+        "fake-rclone gate env honored": "no",
         "safe alternative command": [
             entrypoint,
             service.name,
@@ -2859,7 +2897,7 @@ def cmd_service_transfer(
         return _exit_code_for_report(report)
     if args.transfer_command == "real-run":
         report = _real_transfer_run_refusal_report(args, paths, service)
-        _print_report(report, args)
+        _print_real_transfer_run_report(report, args)
         return _exit_code_for_report(report)
     if args.transfer_command == "run":
         report = _service_transfer_report(

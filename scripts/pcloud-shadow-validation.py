@@ -453,16 +453,20 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
             checks.append(CheckResult("diffd transfer real-gate closed", "error", "real gate unexpectedly open"))
+        real_run_env = env | {
+            "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "shadow-attempt",
+            "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE": "dev-fake-rclone",
+        }
         pushd_real_run = _check_json_command(
             checks,
-            env,
+            real_run_env,
             "pushd transfer real-run refusal",
             ("pushd", "transfer", "real-run", "--execute"),
             allowed_status={"error"},
         )
         diffd_real_run = _check_json_command(
             checks,
-            env,
+            real_run_env,
             "diffd transfer real-run refusal",
             ("diffd", "transfer", "real-run", "--execute"),
             allowed_status={"error"},
@@ -471,6 +475,9 @@ def run_validation() -> dict[str, Any]:
             pushd_real_run.get("details", {}).get("real transfer execution gate status")
             == "closed: no accepted value in this build"
             and pushd_real_run.get("details", {}).get("state writes") == "none"
+            and pushd_real_run.get("details", {}).get("real gate env provided") == "yes"
+            and pushd_real_run.get("details", {}).get("real gate env honored") == "no"
+            and pushd_real_run.get("details", {}).get("fake-rclone gate env honored") == "no"
         ):
             checks.append(CheckResult("pushd transfer real-run blocked", "ok", "real execution refused"))
         else:
@@ -479,6 +486,9 @@ def run_validation() -> dict[str, Any]:
             diffd_real_run.get("details", {}).get("real transfer execution gate status")
             == "closed: no accepted value in this build"
             and diffd_real_run.get("details", {}).get("state writes") == "none"
+            and diffd_real_run.get("details", {}).get("real gate env provided") == "yes"
+            and diffd_real_run.get("details", {}).get("real gate env honored") == "no"
+            and diffd_real_run.get("details", {}).get("fake-rclone gate env honored") == "no"
         ):
             checks.append(CheckResult("diffd transfer real-run blocked", "ok", "real execution refused"))
         else:
