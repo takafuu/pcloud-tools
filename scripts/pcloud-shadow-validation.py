@@ -405,6 +405,9 @@ def run_validation() -> dict[str, Any]:
                 "remove-on-success-retain-on-failure",
                 "--timeout-policy",
                 "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
             ),
         )
         diffd_real_gate = _check_json_command(
@@ -425,12 +428,17 @@ def run_validation() -> dict[str, Any]:
                 "remove-on-success-retain-on-failure",
                 "--timeout-policy",
                 "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
             ),
         )
         if (
             pushd_real_gate.get("details", {}).get("real transfer execution gate status")
             == "closed: no accepted value in this build"
             and pushd_real_gate.get("details", {}).get("fake-rclone gate reuse") == "forbidden"
+            and pushd_real_gate.get("details", {}).get("separate real gate approval status")
+            == "complete-read-only"
         ):
             checks.append(CheckResult("pushd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
@@ -439,6 +447,8 @@ def run_validation() -> dict[str, Any]:
             diffd_real_gate.get("details", {}).get("real transfer execution gate status")
             == "closed: no accepted value in this build"
             and diffd_real_gate.get("details", {}).get("fake-rclone gate reuse") == "forbidden"
+            and diffd_real_gate.get("details", {}).get("separate real gate approval status")
+            == "complete-read-only"
         ):
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
         else:

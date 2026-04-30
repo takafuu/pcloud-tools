@@ -215,6 +215,21 @@ def _add_service_parser(
             choices=_TIMEOUT_POLICIES,
             help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
         )
+        transfer_real_gate_parser.add_argument(
+            "--operator-reviewed-dry-run",
+            action="store_true",
+            help="Record that the operator reviewed the displayed dry-run command.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--reviewer-approved-real-command",
+            action="store_true",
+            help="Record reviewer approval for the exact real transfer command.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--reviewer-approved-consume-policy",
+            action="store_true",
+            help="Record reviewer approval for the post-success consume policy.",
+        )
         transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_real_run_parser = transfer_subparsers.add_parser(
@@ -386,6 +401,21 @@ def _add_service_parser(
             "--timeout-policy",
             choices=_TIMEOUT_POLICIES,
             help="Reviewer-approved timeout/process cleanup policy for the first real transfer review.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--operator-reviewed-dry-run",
+            action="store_true",
+            help="Record that the operator reviewed the displayed dry-run command.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--reviewer-approved-real-command",
+            action="store_true",
+            help="Record reviewer approval for the exact real transfer command.",
+        )
+        transfer_real_gate_parser.add_argument(
+            "--reviewer-approved-consume-policy",
+            action="store_true",
+            help="Record reviewer approval for the post-success consume policy.",
         )
         transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -580,6 +610,20 @@ def _render_transfer_check_human(report: CommandReport) -> str:
             lines.append(f"gate opening: {details.get('real transfer gate opening status', '-')}")
         if "real transfer gate opening note" in details:
             lines.append(f"gate note: {details.get('real transfer gate opening note', '-')}")
+        if "separate real gate approval status" in details:
+            lines.append(f"approval status: {details.get('separate real gate approval status', '-')}")
+        approval_checks = details.get("separate real gate approval checks")
+        if isinstance(approval_checks, list) and approval_checks:
+            lines.append("approval checks:")
+            for check in approval_checks:
+                if not isinstance(check, dict):
+                    continue
+                lines.append(
+                    "- "
+                    f"{check.get('name', '-')}: "
+                    f"{check.get('status', '-')} - "
+                    f"{check.get('detail', '-')}"
+                )
         blocker_details = details.get("final review blocker details")
         if isinstance(blocker_details, list) and blocker_details:
             lines.append("blocked checks:")
@@ -1214,6 +1258,39 @@ def _final_real_transfer_review_details(
         "real transfer gate opening status": gate_opening_status,
         "real transfer gate opening note": gate_opening_note,
         "separate real gate next checks": next_checks,
+    }
+
+
+def _real_gate_approval_details(args: argparse.Namespace, final_review_status: object) -> dict[str, object]:
+    checks = [
+        {
+            "name": "operator dry-run review",
+            "status": "ok" if getattr(args, "operator_reviewed_dry_run", False) else "pending",
+            "detail": "operator reviewed the displayed dry-run command",
+        },
+        {
+            "name": "reviewer real command approval",
+            "status": "ok" if getattr(args, "reviewer_approved_real_command", False) else "pending",
+            "detail": "reviewer approved the exact real command path and direction",
+        },
+        {
+            "name": "reviewer consume policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_consume_policy", False) else "pending",
+            "detail": "reviewer approved post-success record consumption policy",
+        },
+    ]
+    if final_review_status != "ready":
+        status = "blocked"
+    elif all(check["status"] == "ok" for check in checks):
+        status = "complete-read-only"
+    else:
+        status = "pending"
+    return {
+        "separate real gate approval status": status,
+        "separate real gate approval checks": checks,
+        "separate real gate approval note": (
+            "approval checks are recorded only; real transfer execution remains unavailable"
+        ),
     }
 
 
@@ -2549,6 +2626,7 @@ def _real_transfer_gate_report(
 ) -> CommandReport:
     report = _real_transfer_check_report(_real_gate_args(args), paths, service)
     details = dict(report.details)
+    approval_details = _real_gate_approval_details(args, details.get("final review status"))
     details.update(
         {
             "planned action": f"inspect {service.name} separate real transfer execution gate",
@@ -2561,6 +2639,7 @@ def _real_transfer_gate_report(
             "future real gate accepted value": "-",
             "fake-rclone gate reuse": "forbidden",
             "state writes": "none",
+            **approval_details,
         }
     )
     issues = [
@@ -3190,6 +3269,9 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         transfer_real_gate_parser.add_argument("--confirm-direction", choices=("upload", "download"))
         transfer_real_gate_parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
         transfer_real_gate_parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
+        transfer_real_gate_parser.add_argument("--operator-reviewed-dry-run", action="store_true")
+        transfer_real_gate_parser.add_argument("--reviewer-approved-real-command", action="store_true")
+        transfer_real_gate_parser.add_argument("--reviewer-approved-consume-policy", action="store_true")
         transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_real_run_parser = transfer_subparsers.add_parser(
@@ -3284,6 +3366,9 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         transfer_real_gate_parser.add_argument("--confirm-direction", choices=("upload", "download"))
         transfer_real_gate_parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
         transfer_real_gate_parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
+        transfer_real_gate_parser.add_argument("--operator-reviewed-dry-run", action="store_true")
+        transfer_real_gate_parser.add_argument("--reviewer-approved-real-command", action="store_true")
+        transfer_real_gate_parser.add_argument("--reviewer-approved-consume-policy", action="store_true")
         transfer_real_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_real_run_parser = transfer_subparsers.add_parser(
