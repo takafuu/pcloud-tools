@@ -1418,9 +1418,9 @@ def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefini
             "queue consumption against live state",
         ]
         next_units = [
-            "define fswatch event capture schema",
-            "add one-shot read-only fswatch probe",
-            "add upload executor preview that emits commands without running them",
+            "capture first real upload target with transfer check --final-review",
+            "complete read-only real-gate approvals without opening execution",
+            "document real-run queue consumption and rollback behavior before implementation",
         ]
     else:
         blocked = [
@@ -1430,9 +1430,9 @@ def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefini
             "diff cursor mutation against live state",
         ]
         next_units = [
-            "define pCloud diff response fixture schema",
-            "add one-shot read-only diff response parser",
-            "add download executor preview that emits commands without running them",
+            "capture first real download target with transfer check --final-review",
+            "complete read-only real-gate approvals without opening execution",
+            "document real-run remote-change consumption and rollback behavior before implementation",
         ]
     return {
         "gate status": "closed",
