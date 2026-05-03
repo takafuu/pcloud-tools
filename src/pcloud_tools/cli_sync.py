@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import argparse
 import json
+import plistlib
 import shlex
 import subprocess
 import sys
 from pathlib import Path
 
 from .autosync_runtime import disable_autosync, enable_autosync, read_autosync_state
-from .config import ConfigIssue, load_config
+from .config import AppConfig, ConfigIssue, load_config
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .runtime import RuntimePaths, action_entrypoint_command
 from .sync_exec import (
@@ -100,6 +101,15 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Apply the launchctl changes instead of only previewing them.",
     )
     sync_disable_autosync_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_autosync_plist_parser = sync_subparsers.add_parser(
+        "autosync-plist", help="Preview or write the dev autosync LaunchAgent plist."
+    )
+    sync_autosync_plist_parser.add_argument(
+        "--execute",
+        action="store_true",
+        help="Write the plist when running in dev mode with a .dev-state target.",
+    )
+    sync_autosync_plist_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_autosync_gate_parser = sync_subparsers.add_parser(
         "autosync-gate", help="Read-only checklist before changing autosync launchd registration."
     )
@@ -169,6 +179,8 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return cmd_sync_autosync(args, paths, "enable-autosync")
     if args.sync_command == "disable-autosync":
         return cmd_sync_autosync(args, paths, "disable-autosync")
+    if args.sync_command == "autosync-plist":
+        return cmd_sync_autosync_plist(args, paths)
     if args.sync_command == "autosync-gate":
         return cmd_sync_autosync_gate(args, paths)
     if args.sync_command == "migration-gate":
@@ -1147,6 +1159,82 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
         details=details,
         issues=_report_issues(issues),
     )
+
+
+def _is_relative_to(path: Path, parent: Path) -> bool:
+    try:
+        path.resolve().relative_to(parent.resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def _autosync_plist_payload(paths: RuntimePaths, config: AppConfig) -> dict[str, object]:
+    entrypoint = _entrypoint_command(paths)
+    return {
+        "Label": config.autosync_label,
+        "ProgramArguments": [entrypoint, "sync", "background", "--execute"],
+        "RunAtLoad": False,
+        "StartInterval": 300,
+        "StandardOutPath": str(config.log_dir / "autosync-launchd.out"),
+        "StandardErrorPath": str(config.log_dir / "autosync-launchd.err"),
+    }
+
+
+def _sync_autosync_plist_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    issues = list(load_result.issues)
+    payload = _autosync_plist_payload(paths, config)
+    plist_path = config.autosync_plist
+    dev_state_root = paths.workspace_root / ".dev-state"
+    details: dict[str, object] = {
+        "execute": "yes" if args.execute else "no",
+        "planned action": "write autosync LaunchAgent plist" if args.execute else "preview autosync LaunchAgent plist",
+        "autosync label": config.autosync_label,
+        "autosync plist": str(plist_path),
+        "autosync plist status": "present" if plist_path.exists() else "missing",
+        "plist payload": payload,
+        "state writes": "autosync plist only" if args.execute else "none",
+        "launchctl execution": "no",
+        "scheduled sync execution": "no",
+    }
+    if args.execute and not paths.dev_mode:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_PLIST_EXECUTION",
+                level="error",
+                message="autosync-plist --execute is limited to pcloud-manager-dev/dev mode",
+            )
+        )
+    if args.execute and not _is_relative_to(plist_path, dev_state_root):
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_PLIST_PATH",
+                level="error",
+                message=f"refusing to write autosync plist outside {dev_state_root}: {plist_path}",
+            )
+        )
+    issues = _sort_issues(issues)
+    if _has_errors(issues):
+        details["state writes"] = "none"
+    if args.execute and not _has_errors(issues):
+        plist_path.parent.mkdir(parents=True, exist_ok=True)
+        plist_path.write_bytes(plistlib.dumps(payload, sort_keys=True))
+        details["autosync plist status"] = "written"
+    return CommandReport(
+        command="sync autosync-plist",
+        status=_status_from_issues(issues),
+        summary="autosync plist written" if args.execute and not _has_errors(issues) else "autosync plist preview is ready",
+        details=details,
+        issues=_report_issues(issues),
+    )
+
+
+def cmd_sync_autosync_plist(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_autosync_plist_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
 
 
 _REQUIRED_SHADOW_CHECKS = {

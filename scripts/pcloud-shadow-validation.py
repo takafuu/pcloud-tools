@@ -4,6 +4,7 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import plistlib
 import subprocess
 import sys
 import tempfile
@@ -214,7 +215,43 @@ def run_validation() -> dict[str, Any]:
             )
         )
         autosync_plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
-        autosync_plist.write_text("<plist><dict/></plist>\n")
+        dev_entrypoint = workspace / "pcloud-manager-dev"
+        dev_entrypoint.write_text("#!/bin/sh\nexit 0\n")
+        dev_entrypoint.chmod(0o755)
+        autosync_plist_preview = _check_json_command(
+            checks,
+            env,
+            "sync autosync plist preview",
+            ("sync", "autosync-plist"),
+        )
+        if (
+            autosync_plist_preview.get("details", {}).get("state writes") == "none"
+            and autosync_plist_preview.get("details", {}).get("launchctl execution") == "no"
+            and not autosync_plist.exists()
+        ):
+            checks.append(CheckResult("sync autosync plist preview read-only", "ok", "preview writes no plist"))
+        else:
+            checks.append(CheckResult("sync autosync plist preview read-only", "error", "preview mutated state"))
+        autosync_plist_write = _check_json_command(
+            checks,
+            env,
+            "sync autosync plist write",
+            ("sync", "autosync-plist", "--execute"),
+        )
+        if autosync_plist.exists():
+            plist_payload = plistlib.loads(autosync_plist.read_bytes())
+        else:
+            plist_payload = {}
+        if (
+            autosync_plist_write.get("details", {}).get("state writes") == "autosync plist only"
+            and autosync_plist_write.get("details", {}).get("launchctl execution") == "no"
+            and autosync_plist_write.get("details", {}).get("scheduled sync execution") == "no"
+            and plist_payload.get("Label") == "com.example.pcloud-bisync.dev"
+            and plist_payload.get("ProgramArguments", [])[-3:] == ["sync", "background", "--execute"]
+        ):
+            checks.append(CheckResult("sync autosync plist write dev-only", "ok", str(autosync_plist)))
+        else:
+            checks.append(CheckResult("sync autosync plist write dev-only", "error", "plist write mismatch"))
 
         _check_dev_wrapper(
             checks,
@@ -1045,6 +1082,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
+        _check_action(checks, env, "sync.autosync-plist.preview", "autosync plist preview is ready")
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
         _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")

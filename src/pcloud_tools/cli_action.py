@@ -14,6 +14,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "sync.progress": ("sync", "progress"),
     "sync.scope": ("sync", "scope"),
     "sync.background.preview": ("sync", "background"),
+    "sync.autosync-plist.preview": ("sync", "autosync-plist"),
     "sync.autosync.gate": ("sync", "autosync-gate"),
     "sync.migration.gate": ("sync", "migration-gate"),
     "sync.clear-stale-lock.preview": ("sync", "clear-stale-lock"),

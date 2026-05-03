@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import plistlib
 import shlex
 import subprocess
 import sys
@@ -921,6 +922,78 @@ def test_sync_autosync_gate_missing_plist_reports_review_command(tmp_path: Path)
     assert payload["details"]["autosync plist review command"] == ["plutil", "-p", str(plist)]
     assert "autosync-gate does not write it" in payload["details"]["autosync plist note"]
     assert "PCLOUD_TOOLS_AUTOSYNC_PLIST" in [issue["key"] for issue in payload["issues"]]
+
+
+def test_sync_autosync_plist_preview_and_dev_execute_are_guarded(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    dev_entrypoint = workspace / "pcloud-manager-dev"
+    dev_entrypoint.write_text("#!/bin/sh\nexit 0\n")
+    dev_entrypoint.chmod(0o755)
+    plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
+
+    preview = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "sync", "autosync-plist", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    preview_payload = _payload(preview)
+
+    assert preview.returncode == 0
+    assert preview_payload["status"] in {"ok", "warning"}
+    assert preview_payload["details"]["state writes"] == "none"
+    assert preview_payload["details"]["launchctl execution"] == "no"
+    assert not plist.exists()
+
+    written = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "sync", "autosync-plist", "--execute", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    written_payload = _payload(written)
+    plist_payload = plistlib.loads(plist.read_bytes())
+
+    assert written.returncode == 0
+    assert written_payload["status"] in {"ok", "warning"}
+    assert written_payload["summary"] == "autosync plist written"
+    assert written_payload["details"]["state writes"] == "autosync plist only"
+    assert written_payload["details"]["scheduled sync execution"] == "no"
+    assert plist_payload["Label"] == "com.example.pcloud-bisync.dev"
+    assert plist_payload["ProgramArguments"] == [
+        str(dev_entrypoint),
+        "sync",
+        "background",
+        "--execute",
+    ]
+
+
+def test_sync_autosync_plist_execute_refuses_outside_dev_state(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_AUTOSYNC_PLIST": str(tmp_path / "outside.plist")},
+    )
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "sync", "autosync-plist", "--execute", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["details"]["state writes"] == "none"
+    assert not (tmp_path / "outside.plist").exists()
+    assert "PCLOUD_TOOLS_AUTOSYNC_PLIST_PATH" in [issue["key"] for issue in payload["issues"]]
 
 
 def test_sync_migration_gate_is_read_only_checklist(tmp_path: Path) -> None:
