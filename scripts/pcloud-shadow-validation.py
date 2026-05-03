@@ -708,6 +708,8 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.run.preview", "diffd run preview is ready")
         _check_action(checks, env, "pushd.gate", "pushd real-operation gate is closed")
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
+        _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
+        _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))
         _check_json_command(checks, env, "doctor", ("doctor",))
         _check_json_command(checks, env, "daemon status", ("daemon", "status"))

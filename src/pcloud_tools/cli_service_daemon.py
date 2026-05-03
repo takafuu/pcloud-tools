@@ -888,6 +888,13 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             terminal=True,
             refresh=False,
         ),
+        ReportAction(
+            id=f"{service.name}.transfer.consume.preview",
+            label=f"Preview {service.name} transfer consume policy",
+            command=_action_command(paths, f"{service.name}.transfer.consume.preview"),
+            terminal=True,
+            refresh=False,
+        ),
     ]
     if service.name == "pushd":
         actions.append(

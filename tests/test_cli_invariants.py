@@ -1778,6 +1778,22 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
     )
+    pushd_consume = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.transfer.consume.preview"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    diffd_consume = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "diffd.transfer.consume.preview"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
     diffd_check = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "action", "diffd.transfer.check"],
         check=False,
@@ -1799,6 +1815,10 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
     assert "pushd real transfer execution gate is closed" in pushd_real_gate.stdout
     assert diffd_real_gate.returncode == 0
     assert "diffd real transfer execution gate is closed" in diffd_real_gate.stdout
+    assert pushd_consume.returncode == 0
+    assert "pushd transfer consume policy preview is ready" in pushd_consume.stdout
+    assert diffd_consume.returncode == 0
+    assert "diffd transfer consume policy preview is ready" in diffd_consume.stdout
 
 
 def test_transfer_run_without_execute_is_preview_only(tmp_path: Path) -> None:
