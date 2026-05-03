@@ -1486,6 +1486,11 @@ def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefini
     return {
         "gate status": "closed",
         "allowed work": "dev-state preview/status/plan/report/test only",
+        "operator verification required": "no",
+        "operator verification scope": "read-only gate diagnostics; automated validation is enough",
+        "next human check trigger": (
+            "first real target review, real execution gate implementation, or actual pCloud/rclone transfer"
+        ),
         "dev mode": "on" if paths.dev_mode else "off",
         "state dir": str(config.state_dir / service.name),
         "workspace root": str(paths.workspace_root),

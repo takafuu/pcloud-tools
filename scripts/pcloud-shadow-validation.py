@@ -618,6 +618,13 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd gate closed", "ok", "real operations blocked"))
         else:
             checks.append(CheckResult("diffd gate closed", "error", "missing closed gate status"))
+        if (
+            pushd_gate.get("details", {}).get("operator verification required") == "no"
+            and diffd_gate.get("details", {}).get("operator verification required") == "no"
+        ):
+            checks.append(CheckResult("service gate operator verification", "ok", "read-only gate checks are automated"))
+        else:
+            checks.append(CheckResult("service gate operator verification", "error", "unexpected human verification gate"))
 
         pushd_plan = state_dir / "pushd" / "last-plan.json"
         diffd_plan = state_dir / "diffd" / "last-plan.json"

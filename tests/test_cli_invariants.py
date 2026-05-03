@@ -2619,6 +2619,10 @@ def test_service_daemon_real_gates_are_read_only_and_closed(tmp_path: Path) -> N
     assert diffd_payload["status"] == "warning"
     assert pushd_payload["summary"] == "pushd real-operation gate is closed"
     assert diffd_payload["summary"] == "diffd real-operation gate is closed"
+    assert pushd_payload["details"]["operator verification required"] == "no"
+    assert diffd_payload["details"]["operator verification required"] == "no"
+    assert "actual pCloud/rclone transfer" in pushd_payload["details"]["next human check trigger"]
+    assert "actual pCloud/rclone transfer" in diffd_payload["details"]["next human check trigger"]
     assert "fswatch resident daemon" in pushd_payload["details"]["blocked operations"]
     assert "pCloud API long-poll" in diffd_payload["details"]["blocked operations"]
     assert "capture first real upload target with transfer check --final-review" in pushd_payload["details"]["suggested next units"]
