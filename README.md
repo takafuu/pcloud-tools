@@ -125,6 +125,17 @@ Config notes:
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
 - `index` now uses the repo-local `scripts/pcloud-indexer.py`, and its default DB lives under `.dev-state/state/index/`
 
+Limited migration validation:
+
+- On 2026-05-04, a human-approved first real pushd upload was executed for `Documents/DQ2-呪文.png` using guarded `pushd transfer real-run --execute`
+- The upload invoked `/usr/local/bin/rclone copyto /Users/takafumi/p-core/dev/pcloud-tools/Documents/DQ2-呪文.png pcloud:core/Documents/DQ2-呪文.png`, returned `0`, did not time out, and recorded `.dev-state/state/pushd/last-transfer.json` with `mode: real-rclone-transfer`
+- The successful upload was consumed with `pushd transfer consume run --execute` under the approved `remove-on-success-retain-on-failure` policy; `pushd transfer preview` then reported planned transfers `0`
+- On 2026-05-04, a human-approved first real diffd download was executed for the same path after backing up the local file under `.dev-state/real-transfer-backups/DQ2-呪文.png.before-download`
+- The download invoked `/usr/local/bin/rclone copyto pcloud:core/Documents/DQ2-呪文.png /Users/takafumi/p-core/dev/pcloud-tools/Documents/DQ2-呪文.png`, returned `0`, did not time out, and recorded `.dev-state/state/diffd/last-transfer.json` with `mode: real-rclone-transfer`
+- The downloaded file and backup both had SHA-256 `c0412cf18081b35bee90f0fd30dfd6c0d0d0a0c8a10c0f362b326de2c090cccb`
+- The successful download was consumed with `diffd transfer consume run --execute` under the approved policy; `diffd transfer preview` then reported planned transfers `0`
+- Remaining gates are fswatch resident mode, pCloud API long-poll, launchd/autosync integration, normal sync/resync migration validation, and old monolith archive
+
 Live sync operations note:
 
 - the live allowlist is document-only: `Documents/`, `scansnap/`, `screenshots/`, and `sound/`
