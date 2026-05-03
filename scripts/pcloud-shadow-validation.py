@@ -729,10 +729,18 @@ def run_validation() -> dict[str, Any]:
         migration_bin_dir = workspace / ".dev-state" / "migration-bin"
         migration_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_migration_rclone = migration_bin_dir / "rclone"
-        fake_migration_rclone.write_text("#!/bin/sh\nexit 0\n")
+        migration_rclone_log = workspace / ".dev-state" / "fake-migration-rclone.log"
+        fake_migration_rclone.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"$PCLOUD_TOOLS_FAKE_MIGRATION_RCLONE_LOG\" ]; then "
+            "printf '%s\\n' \"$*\" >> \"$PCLOUD_TOOLS_FAKE_MIGRATION_RCLONE_LOG\"; "
+            "fi\n"
+            "exit 0\n"
+        )
         fake_migration_rclone.chmod(0o755)
         migration_gate_env = dict(env)
         migration_gate_env["PATH"] = f"{migration_bin_dir}:{env.get('PATH', '')}"
+        migration_gate_env["PCLOUD_TOOLS_FAKE_MIGRATION_RCLONE_LOG"] = str(migration_rclone_log)
         (workspace / "bisync_status.log").write_text("2026-05-04 12:00:00 SUCCESS mode=autosync\n")
         migration_gate = _check_json_command(
             checks,
@@ -810,6 +818,71 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("sync migration saved status accepted", "ok", str(saved_sync_status_report)))
         else:
             checks.append(CheckResult("sync migration saved status accepted", "error", "saved status mismatch"))
+        migration_run_closed = _check_json_command(
+            checks,
+            migration_gate_env,
+            "sync migration-run gate closed",
+            (
+                "sync",
+                "migration-run",
+                "normal",
+                "--report-path",
+                str(saved_shadow_report),
+                "--sync-status-report-path",
+                str(saved_sync_status_report),
+                "--operator-reviewed-status",
+                "--reviewer-approved-scope",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-stop-conditions",
+                "--execute",
+            ),
+            allowed_status={"error"},
+        )
+        migration_run_state = workspace / ".dev-state" / "state" / "sync" / "migration-last-run.json"
+        closed_migration_rclone_log = migration_rclone_log.read_text() if migration_rclone_log.exists() else ""
+        if (
+            migration_run_closed.get("details", {}).get("state writes") == "none"
+            and migration_run_closed.get("details", {}).get("sync/resync can run") == "no"
+            and "bisync" not in closed_migration_rclone_log
+            and not migration_run_state.exists()
+        ):
+            checks.append(CheckResult("sync migration-run closed no writes", "ok", "sync migration gate refused"))
+        else:
+            checks.append(CheckResult("sync migration-run closed no writes", "error", "closed migration gate ran"))
+        migration_rclone_log.write_text("")
+        migration_run_env = dict(migration_gate_env)
+        migration_run_env["PCLOUD_TOOLS_SYNC_MIGRATION_GATE"] = "operator-approved-sync-migration-v1"
+        migration_run = _check_json_command(
+            checks,
+            migration_run_env,
+            "sync migration-run fake rclone",
+            (
+                "sync",
+                "migration-run",
+                "normal",
+                "--report-path",
+                str(saved_shadow_report),
+                "--sync-status-report-path",
+                str(saved_sync_status_report),
+                "--operator-reviewed-status",
+                "--reviewer-approved-scope",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-stop-conditions",
+                "--execute",
+            ),
+        )
+        open_migration_rclone_log = migration_rclone_log.read_text()
+        if (
+            migration_run.get("details", {}).get("sync/resync can run") == "yes"
+            and migration_run.get("details", {}).get("state writes") == "sync logs, lock, status, and migration run state"
+            and migration_run.get("details", {}).get("exit code") == 0
+            and "bisync" in open_migration_rclone_log
+            and "SUCCESS mode=normal" in (workspace / "bisync_status.log").read_text()
+            and migration_run_state.exists()
+        ):
+            checks.append(CheckResult("sync migration-run fake rclone state", "ok", "fake sync recorded"))
+        else:
+            checks.append(CheckResult("sync migration-run fake rclone state", "error", "migration-run mismatch"))
         pushd_transfer = _check_json_command(
             checks,
             env,
@@ -1369,6 +1442,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
         _check_action(checks, autosync_gate_env, "sync.autosync-run.preview", "autosync launchd execution is gated")
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
+        _check_action(checks, migration_gate_env, "sync.migration-run.preview", "sync migration execution is gated")
         _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")
         _check_action(checks, env, "gates.status", "all execution gates closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")

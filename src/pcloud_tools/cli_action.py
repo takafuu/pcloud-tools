@@ -18,6 +18,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "sync.autosync.gate": ("sync", "autosync-gate"),
     "sync.autosync-run.preview": ("sync", "autosync-run", "enable"),
     "sync.migration.gate": ("sync", "migration-gate"),
+    "sync.migration-run.preview": ("sync", "migration-run", "normal"),
     "sync.clear-stale-lock.preview": ("sync", "clear-stale-lock"),
     "gates.status": ("gates", "status"),
     "daemon.status.refresh": ("daemon", "status", "--xbar"),

@@ -158,6 +158,7 @@ def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Pa
         pushd_fswatch_resident_gate="",
         diffd_api_long_poll_gate="",
         autosync_launchd_gate="",
+        sync_migration_gate="",
         transfer_exec_timeout_seconds=5,
         pushd_debounce_seconds=2,
         pushd_queue_limit=100,
@@ -1456,6 +1457,181 @@ def test_sync_migration_gate_can_use_saved_sync_status_report(tmp_path: Path) ->
     assert checks["saved sync status report"]["status"] == "ok"
     assert checks["latest sync status"]["status"] == "ok"
     assert checks["sync lock"]["status"] == "ok"
+
+
+def test_sync_migration_run_refuses_without_execution_gate(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "rclone.log"
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RCLONE_LOG\"\nexit 0\n")
+    rclone.chmod(0o755)
+    env = _base_env(tmp_path, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    env["RCLONE_LOG"] = str(log)
+    state_dir = _use_default_dev_state_dir(env)
+    shadow_report = tmp_path / "shadow-validation-migration-run.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-migration-run" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    status_report = tmp_path / "sync-status.json"
+    status_report.write_text(
+        json.dumps(
+            {
+                "command": "sync status",
+                "details": {
+                    "sync state": "synced",
+                    "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                    "last error status": "historical",
+                    "sync lock status": "missing",
+                    "sync lock active": "no",
+                    "scope status": "loaded",
+                    "scope entries": 4,
+                    "last resync scope": "allowlist",
+                },
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "migration-run",
+            "normal",
+            "--report-path",
+            str(shadow_report),
+            "--sync-status-report-path",
+            str(status_report),
+            "--operator-reviewed-status",
+            "--reviewer-approved-scope",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-stop-conditions",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["summary"] == "sync migration execution is gated"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["sync/resync can run"] == "no"
+    assert "PCLOUD_TOOLS_SYNC_MIGRATION_EXECUTION_GATE" in [issue["key"] for issue in payload["issues"]]
+    assert not log.exists()
+    assert not (state_dir / "sync" / "migration-last-run.json").exists()
+
+
+def test_sync_migration_run_executes_fake_rclone_in_dev_state(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "rclone.log"
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RCLONE_LOG\"\nexit 0\n")
+    rclone.chmod(0o755)
+    env = _base_env(
+        tmp_path,
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PCLOUD_TOOLS_SYNC_MIGRATION_GATE": "operator-approved-sync-migration-v1",
+        },
+    )
+    env["RCLONE_LOG"] = str(log)
+    state_dir = _use_default_dev_state_dir(env)
+    shadow_report = tmp_path / "shadow-validation-migration-run-ok.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-migration-run-ok" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    status_report = tmp_path / "sync-status-ok.json"
+    status_report.write_text(
+        json.dumps(
+            {
+                "command": "sync status",
+                "details": {
+                    "sync state": "synced",
+                    "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                    "last error status": "historical",
+                    "sync lock status": "missing",
+                    "sync lock active": "no",
+                    "scope status": "loaded",
+                    "scope entries": 4,
+                    "last resync scope": "allowlist",
+                },
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "migration-run",
+            "normal",
+            "--report-path",
+            str(shadow_report),
+            "--sync-status-report-path",
+            str(status_report),
+            "--operator-reviewed-status",
+            "--reviewer-approved-scope",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-stop-conditions",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    run_state = json.loads((state_dir / "sync" / "migration-last-run.json").read_text())
+    status_log = (Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / "bisync_status.log").read_text()
+
+    assert result.returncode == 0
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["summary"] == "sync migration run completed"
+    assert payload["details"]["sync/resync can run"] == "yes"
+    assert payload["details"]["state writes"] == "sync logs, lock, status, and migration run state"
+    assert "bisync" in log.read_text()
+    assert "SUCCESS mode=normal" in status_log
+    assert run_state["mode"] == "normal"
+    assert run_state["exit_code"] == 0
 
 
 def test_archive_old_monolith_gate_is_read_only_checklist(tmp_path: Path) -> None:

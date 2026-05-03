@@ -42,6 +42,7 @@ from .sync_scope import (
 )
 
 _AUTOSYNC_LAUNCHD_GATE_VALUE = "operator-approved-autosync-launchd-v1"
+_SYNC_MIGRATION_GATE_VALUE = "operator-approved-sync-migration-v1"
 
 
 def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -147,6 +148,20 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_migration_gate_parser.add_argument("--reviewer-approved-stop-conditions", action="store_true")
     sync_migration_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_migration_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+    sync_migration_run_parser = sync_subparsers.add_parser(
+        "migration-run", help="Run guarded normal/resync migration validation after the dedicated gate opens."
+    )
+    sync_migration_run_parser.add_argument("mode", choices=("normal", "resync"))
+    sync_migration_run_parser.add_argument("--resync-mode", choices=RESYNC_MODES, default=DEFAULT_RESYNC_MODE)
+    sync_migration_run_parser.add_argument("--report-path", type=Path)
+    sync_migration_run_parser.add_argument("--sync-status-report-path", type=Path)
+    sync_migration_run_parser.add_argument("--operator-reviewed-status", action="store_true")
+    sync_migration_run_parser.add_argument("--reviewer-approved-scope", action="store_true")
+    sync_migration_run_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    sync_migration_run_parser.add_argument("--reviewer-approved-stop-conditions", action="store_true")
+    sync_migration_run_parser.add_argument("--execute", action="store_true")
+    sync_migration_run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_migration_run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     sync_clear_stale_lock_parser = sync_subparsers.add_parser("clear-stale-lock")
     sync_clear_stale_lock_parser.add_argument(
         "--execute",
@@ -204,6 +219,8 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return cmd_sync_autosync_run(args, paths)
     if args.sync_command == "migration-gate":
         return cmd_sync_migration_gate(args, paths)
+    if args.sync_command == "migration-run":
+        return cmd_sync_migration_run(args, paths)
     if args.sync_command == "_run":
         return cmd_sync_internal_run(args, paths)
     if args.sync_command in {"resync", "full-resync", "track-renames"}:
@@ -342,6 +359,13 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
             id="sync.migration.gate",
             label="Check sync migration gate",
             command=_action_command(paths, "sync.migration.gate"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id="sync.migration-run.preview",
+            label="Preview sync migration run",
+            command=_action_command(paths, "sync.migration-run.preview"),
             terminal=True,
             refresh=False,
         ),
@@ -1874,6 +1898,55 @@ def _render_migration_gate_human(report: CommandReport) -> str:
     return "\n".join(lines)
 
 
+def _sync_migration_run_state_file(config: AppConfig) -> Path:
+    return config.state_dir / "sync" / "migration-last-run.json"
+
+
+def _sync_migration_gate_open(config: AppConfig) -> bool:
+    return config.sync_migration_gate == _SYNC_MIGRATION_GATE_VALUE
+
+
+def _render_migration_run_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"migration run gate: {details.get('migration run gate status', '-')}",
+        f"sync/resync can run: {details.get('sync/resync can run', '-')}",
+        f"mode: {details.get('mode', '-')}",
+        f"execute requested: {details.get('execute requested', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"sync state: {details.get('sync state', '-')}",
+        f"last result: {details.get('last result', '-')}",
+        f"sync lock: {details.get('sync lock status', '-')}",
+        f"rclone: {details.get('rclone availability', '-')} ({details.get('rclone binary', '-')})",
+        f"approval status: {details.get('migration approval status', '-')}",
+    ]
+    command = details.get("planned sync command")
+    if command:
+        lines.append(f"planned sync command: {_shell_command(command)}")
+    state_file = details.get("migration run state file")
+    if state_file:
+        lines.append(f"migration run state: {state_file}")
+    checks = details.get("preflight checks")
+    blocked_checks: list[str] = []
+    if isinstance(checks, list):
+        for check in checks:
+            if isinstance(check, dict) and check.get("status") != "ok":
+                blocked_checks.append(
+                    f"{check.get('name', '-')}: {check.get('status', '-')} - {check.get('detail', '-')}"
+                )
+    if blocked_checks:
+        lines.append("blocked checks:")
+        for check in blocked_checks:
+            lines.append(f"- {check}")
+    if report.issues:
+        lines.append("warnings:" if report.status != "error" else "issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
 def _saved_sync_status_report(
     path: Path | None,
 ) -> tuple[dict[str, object] | None, dict[str, str] | None, list[ConfigIssue]]:
@@ -2143,6 +2216,196 @@ def cmd_sync_migration_gate(args: argparse.Namespace, paths: RuntimePaths) -> in
     output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
     if output_format == "human":
         print(_render_migration_gate_human(report))
+    else:
+        print(render_report(report, output_format=output_format))
+    return _exit_code_for_report(report)
+
+
+def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    gate_report = _sync_migration_gate_report(args, paths)
+    load_result = load_config(paths)
+    config = load_result.config
+    mode = str(getattr(args, "mode", "normal"))
+    plan_mode = "normal" if mode == "normal" else "resync"
+    execute = bool(getattr(args, "execute", False))
+    details = dict(gate_report.details)
+    issues = [
+        ConfigIssue(key=issue.key, level=issue.level, message=issue.message)
+        for issue in gate_report.issues
+        if issue.key != "PCLOUD_TOOLS_SYNC_MIGRATION_GATE"
+    ]
+    approval_status = str(details.get("migration approval status", "pending"))
+    gate_open = _sync_migration_gate_open(config)
+    state_file = _sync_migration_run_state_file(config)
+    rclone_bin = _command_path("rclone")
+    plan = None
+
+    details.update(
+        {
+            "planned action": "run sync migration validation" if execute else "preview sync migration run",
+            "implementation status": (
+                "guarded rclone bisync validation path"
+                if execute
+                else "sync migration run preview only; rclone bisync is not executed"
+            ),
+            "mode": mode,
+            "migration run gate status": (
+                f"open: {_SYNC_MIGRATION_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE}"
+            ),
+            "migration gate status": (
+                f"open: {_SYNC_MIGRATION_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE}"
+            ),
+            "sync/resync can run": "yes" if gate_open and approval_status == "complete-read-only" else "no",
+            "execute requested": "yes" if execute else "no",
+            "state writes": "sync logs, lock, status, and migration run state" if execute else "none",
+            "migration run state file": str(state_file),
+            "future gate env": f"PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE}",
+        }
+    )
+
+    if approval_status != "complete-read-only":
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_APPROVAL",
+                level="error" if execute else "warning",
+                message="sync migration execution requires complete read-only approvals",
+            )
+        )
+    if not gate_open:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_EXECUTION_GATE",
+                level="error" if execute else "warning",
+                message=(
+                    "sync migration execution requires "
+                    f"PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE!r}"
+                ),
+            )
+        )
+    if not rclone_bin:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_RCLONE",
+                level="error" if execute else "warning",
+                message="rclone command not found",
+            )
+        )
+
+    if rclone_bin and gate_open and approval_status == "complete-read-only":
+        try:
+            scope_info = sync_allowlist_info(config)
+            plan = build_sync_plan(
+                config,
+                plan_mode,
+                scope_info.entries,
+                rclone_bin=rclone_bin,
+                resync_mode=getattr(args, "resync_mode", DEFAULT_RESYNC_MODE),
+            )
+            details.update(
+                {
+                    "scope mode": plan.scope_mode,
+                    "planned sync command": list(plan.command),
+                    "rclone log": str(plan.rclone_log),
+                    "stdout log": str(plan.stdout_log),
+                    "stderr log": str(plan.stderr_log),
+                    "filter file": str(plan.filter_file) if plan.filter_file is not None else "-",
+                    "resync mode": plan.resync_mode or "-",
+                }
+            )
+        except SyncExecutionError as exc:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_MIGRATION_PLAN",
+                    level="error",
+                    message=str(exc),
+                )
+            )
+
+    if not execute or _has_errors(issues):
+        if _has_errors(issues):
+            details["state writes"] = "none"
+        issues = _sort_issues(issues)
+        return CommandReport(
+            command="sync migration-run",
+            status=_status_from_issues(issues),
+            summary=(
+                "sync migration execution is gated"
+                if _has_errors(issues) or not gate_open
+                else "sync migration run is ready"
+            ),
+            details=details,
+            issues=_report_issues(issues),
+            actions=_sync_status_actions(paths, "missing"),
+        )
+
+    assert plan is not None
+    started_at = datetime.now(timezone.utc).isoformat()
+    result = None
+    try:
+        result = execute_sync_plan(config, plan)
+    except SyncExecutionError as exc:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_EXEC",
+                level="error",
+                message=str(exc),
+            )
+        )
+    finished_at = datetime.now(timezone.utc).isoformat()
+    exit_code = result.exit_code if result is not None else 1
+    run_state = {
+        "mode": mode,
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "command": list(plan.command),
+        "exit_code": exit_code,
+        "scope_recorded": result.scope_recorded if result is not None else False,
+        "listings_recovered": result.listings_recovered if result is not None else False,
+        "rclone_log": str(plan.rclone_log),
+        "stdout_log": str(plan.stdout_log),
+        "stderr_log": str(plan.stderr_log),
+    }
+    if result is not None and result.exit_code != 0:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_EXIT",
+                level="error",
+                message=f"sync migration validation failed with exit={result.exit_code}",
+            )
+        )
+    if not _has_errors(issues):
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+    details.update(
+        {
+            "exit code": exit_code,
+            "scope recorded": "yes" if run_state["scope_recorded"] else "no",
+            "listings recovered": "yes" if run_state["listings_recovered"] else "no",
+            "process result": run_state,
+            "state writes": "sync logs, lock, status, and migration run state" if not _has_errors(issues) else "none",
+        }
+    )
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command="sync migration-run",
+        status=_status_from_issues(issues),
+        summary="sync migration run completed" if not _has_errors(issues) else "sync migration run failed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_sync_status_actions(paths, "missing"),
+    )
+
+
+def cmd_sync_migration_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_migration_run_report(args, paths)
+    output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
+    if output_format == "human":
+        print(_render_migration_run_human(report))
     else:
         print(render_report(report, output_format=output_format))
     return _exit_code_for_report(report)
