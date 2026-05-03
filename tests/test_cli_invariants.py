@@ -1528,6 +1528,9 @@ def test_transfer_real_gate_is_read_only_scaffold(tmp_path: Path) -> None:
     assert payload["details"]["operator verification required"] == "not-now"
     assert "actual pCloud/rclone transfer" in payload["details"]["next human check trigger"]
     assert standalone_payload["details"]["operator verification required"] == "no"
+    assert payload["details"]["human gate status"] == "required-before-implementation"
+    assert "execution path is intentionally absent" in payload["details"]["human gate reason"]
+    assert standalone_payload["details"]["human gate status"] == "not-yet"
     assert payload["details"]["real execution readiness"] == "blocked-implementation"
     assert payload["details"]["real execution can run"] == "no"
     assert standalone_payload["details"]["real execution readiness"] == "blocked-final-review"
@@ -2663,6 +2666,10 @@ def test_service_daemon_real_gates_are_read_only_and_closed(tmp_path: Path) -> N
     assert diffd_payload["summary"] == "diffd real-operation gate is closed"
     assert pushd_payload["details"]["operator verification required"] == "no"
     assert diffd_payload["details"]["operator verification required"] == "no"
+    assert pushd_payload["details"]["human gate status"] == "required-before-real-work"
+    assert diffd_payload["details"]["human gate status"] == "required-before-real-work"
+    assert "real validation" in pushd_payload["details"]["human gate reason"]
+    assert "archive decisions" in diffd_payload["details"]["human gate reason"]
     assert "actual pCloud/rclone transfer" in pushd_payload["details"]["next human check trigger"]
     assert "actual pCloud/rclone transfer" in diffd_payload["details"]["next human check trigger"]
     assert "fswatch resident daemon" in pushd_payload["details"]["blocked operations"]

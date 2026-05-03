@@ -616,6 +616,10 @@ def _render_transfer_check_human(report: CommandReport) -> str:
             lines.append(f"approval status: {details.get('separate real gate approval status', '-')}")
         if "operator verification required" in details:
             lines.append(f"operator verification required: {details.get('operator verification required', '-')}")
+        if "human gate status" in details:
+            lines.append(f"human gate: {details.get('human gate status', '-')}")
+        if "human gate reason" in details:
+            lines.append(f"human gate reason: {details.get('human gate reason', '-')}")
         if "next human check trigger" in details:
             lines.append(f"next human check trigger: {details.get('next human check trigger', '-')}")
         if "real execution readiness" in details:
@@ -1359,15 +1363,23 @@ def _operator_verification_details(final_review_status: object, approval_status:
     if final_review_status != "ready":
         required = "no"
         scope = "blocked/read-only diagnostics; automated validation is enough"
+        human_gate_status = "not-yet"
+        human_gate_reason = "final-review checks are blocked before any human real-transfer review"
     elif approval_status == "complete-read-only":
         required = "not-now"
         scope = "read-only approvals are complete; real execution is still unavailable"
+        human_gate_status = "required-before-implementation"
+        human_gate_reason = "real upload/download execution path is intentionally absent"
     else:
         required = "yes-before-real-gate"
         scope = "operator/reviewer approval remains pending before any future real execution gate"
+        human_gate_status = "required-before-real-gate"
+        human_gate_reason = "operator/reviewer approval is pending for the first real target"
     return {
         "operator verification required": required,
         "operator verification scope": scope,
+        "human gate status": human_gate_status,
+        "human gate reason": human_gate_reason,
         "next human check trigger": (
             "first real target review, real execution gate implementation, or actual pCloud/rclone transfer"
         ),
@@ -1522,6 +1534,10 @@ def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefini
         "allowed work": "dev-state preview/status/plan/report/test only",
         "operator verification required": "no",
         "operator verification scope": "read-only gate diagnostics; automated validation is enough",
+        "human gate status": "required-before-real-work",
+        "human gate reason": (
+            "remaining work includes real rclone/pCloud transfer, real validation, or archive decisions"
+        ),
         "next human check trigger": (
             "first real target review, real execution gate implementation, or actual pCloud/rclone transfer"
         ),
