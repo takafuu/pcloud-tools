@@ -135,7 +135,19 @@ def _add_service_parser(
         )
         fswatch_probe_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         fswatch_probe_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
-
+        fswatch_resident_gate_parser = fswatch_subparsers.add_parser(
+            "resident-gate", help="Read-only checklist before starting a resident fswatch watcher."
+        )
+        fswatch_resident_gate_parser.add_argument("--report-path", type=Path)
+        fswatch_resident_gate_parser.add_argument("--operator-reviewed-probe", action="store_true")
+        fswatch_resident_gate_parser.add_argument("--reviewer-approved-queue-policy", action="store_true")
+        fswatch_resident_gate_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        fswatch_resident_gate_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        fswatch_resident_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
         transfer_parser = service_subparsers.add_parser(
             "transfer", help="Preview upload executor commands without running transfers."
         )
@@ -724,6 +736,65 @@ def _print_transfer_check_report(report: CommandReport, args: argparse.Namespace
     _print_report(report, args)
 
 
+def _render_fswatch_resident_gate_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"resident gate: {details.get('resident gate status', '-')}",
+        f"resident can start: {details.get('resident can start', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"watch root: {details.get('watch root', '-')}",
+        (
+            "scope: "
+            f"{details.get('scope status', '-')}; "
+            f"{details.get('scope baseline', '-')}; "
+            f"entries={details.get('scope entries', '-')}"
+        ),
+        (
+            "fswatch: "
+            f"{details.get('fswatch availability', '-')} "
+            f"({details.get('fswatch binary', '-')})"
+        ),
+        f"approval status: {details.get('resident approval status', '-')}",
+        f"human gate: {details.get('human gate status', '-')}",
+        f"next human check trigger: {details.get('next human check trigger', '-')}",
+    ]
+    resident_command = details.get("resident command preview")
+    if resident_command:
+        lines.append(f"resident command preview: {_shell_command(resident_command)}")
+    checks = details.get("preflight checks")
+    if isinstance(checks, list) and checks:
+        lines.append("preflight checks:")
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            lines.append(
+                "- "
+                f"{check.get('name', '-')}: "
+                f"{check.get('status', '-')} - "
+                f"{check.get('detail', '-')}"
+            )
+    blocked = details.get("blocked operations")
+    if isinstance(blocked, list) and blocked:
+        lines.append("blocked operations:")
+        for item in blocked:
+            lines.append(f"- {item}")
+    if report.issues:
+        lines.append("warnings:")
+        for issue in report.issues:
+            if issue.level == "warning":
+                lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _print_fswatch_resident_gate_report(report: CommandReport, args: argparse.Namespace) -> None:
+    if _output_format(args) == "human":
+        print(_render_fswatch_resident_gate_human(report))
+        return
+    _print_report(report, args)
+
+
 def _render_real_transfer_run_human(report: CommandReport) -> str:
     details = report.details
     lines = [
@@ -928,6 +999,15 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
         ),
     ]
     if service.name == "pushd":
+        actions.append(
+            ReportAction(
+                id="pushd.fswatch.resident-gate",
+                label="Check pushd fswatch resident gate",
+                command=_action_command(paths, "pushd.fswatch.resident-gate"),
+                terminal=True,
+                refresh=False,
+            )
+        )
         actions.append(
             ReportAction(
                 id="pushd.queue.clear.preview",
@@ -1806,6 +1886,16 @@ def _pushd_fswatch_probe_command(config: AppConfig, fswatch_bin: str) -> tuple[s
     )
 
 
+def _pushd_fswatch_resident_command(config: AppConfig, fswatch_bin: str) -> tuple[str, ...]:
+    return (
+        fswatch_bin,
+        "--recursive",
+        "--event-flag-separator",
+        ",",
+        str(config.core_dir),
+    )
+
+
 def _pushd_fswatch_probe_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     issues = list(load_result.issues)
@@ -1845,6 +1935,117 @@ def _pushd_fswatch_probe_report(paths: RuntimePaths) -> CommandReport:
     )
 
 
+def _command_v(command_name: str) -> str | None:
+    result = subprocess.run(
+        ["/bin/sh", "-lc", f"command -v {shlex.quote(command_name)}"],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    found = result.stdout.strip()
+    return found or None
+
+
+def _pushd_fswatch_resident_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    scope = sync_allowlist_info(load_result.config)
+    baseline_label = f"{scope.baseline.mode} ({scope.baseline.status})"
+    issues = list(load_result.issues) + scope_issues(scope)
+    shadow_check, shadow_issues = _shadow_report_check(
+        getattr(args, "report_path", None),
+        issue_key="PCLOUD_TOOLS_PUSHD_FSWATCH_SHADOW_REPORT",
+    )
+    issues.extend(shadow_issues)
+    fswatch_bin = _command_v("fswatch")
+    fswatch_check = {
+        "name": "fswatch binary",
+        "status": "ok" if fswatch_bin else "pending",
+        "detail": fswatch_bin or "fswatch not found by command -v; install/verify before resident mode",
+    }
+    if not fswatch_bin:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_BIN",
+                level="warning",
+                message="fswatch was not found by command -v; resident gate remains closed",
+            )
+        )
+    resident_command = _pushd_fswatch_resident_command(load_result.config, fswatch_bin or "fswatch")
+    checks = [
+        shadow_check,
+        fswatch_check,
+        {
+            "name": "watch scope",
+            "status": "ok" if scope.allowlist_status == "loaded" else "pending",
+            "detail": f"{baseline_label}; entries={scope.allowlist_count}; root={load_result.config.core_dir}",
+        },
+        {
+            "name": "operator probe review",
+            "status": "ok" if getattr(args, "operator_reviewed_probe", False) else "pending",
+            "detail": "operator reviewed pushd fswatch probe output and watch root",
+        },
+        {
+            "name": "queue policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_queue_policy", False) else "pending",
+            "detail": "reviewer approved event-to-queue append policy and manual review handling",
+        },
+        {
+            "name": "process lifecycle approval",
+            "status": "ok" if getattr(args, "reviewer_approved_process_policy", False) else "pending",
+            "detail": "reviewer approved timeout, restart, log, and cleanup behavior before resident start",
+        },
+        {
+            "name": "parallel dangerous gates",
+            "status": "ok",
+            "detail": "launchd registration, pCloud API long-poll, normal sync/resync, and archive work stay out of scope",
+        },
+    ]
+    approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
+    details: dict[str, object] = {
+        "planned action": "check pushd fswatch resident gate prerequisites",
+        "implementation status": "read-only checklist; fswatch resident process is not started",
+        "resident gate status": "closed",
+        "resident can start": "no",
+        "operator verification required": "yes-before-resident-gate",
+        "human gate status": "required-before-resident-start",
+        "human gate reason": "fswatch resident mode would start a long-running local watcher",
+        "state writes": "none",
+        "watch root": str(load_result.config.core_dir),
+        "allowlist": str(load_result.config.allowlist_file),
+        "scope status": scope.allowlist_status,
+        "scope baseline": baseline_label,
+        "scope entries": scope.allowlist_count,
+        "fswatch availability": "available" if fswatch_bin else "missing",
+        "fswatch binary": fswatch_bin or "-",
+        "resident command preview": list(resident_command),
+        "resident approval status": approval_status,
+        "preflight checks": checks,
+        "blocked operations": [
+            "starting fswatch resident process",
+            "writing pushd queue records from live fswatch events",
+            "launchd registration",
+            "real upload execution from resident events",
+        ],
+        "next human check trigger": "explicit resident start implementation or launchd integration",
+    }
+    issues.append(
+        ConfigIssue(
+            key="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE",
+            level="warning",
+            message="pushd fswatch resident mode remains gated; this command is read-only",
+        )
+    )
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command="pushd fswatch resident-gate",
+        status=_status_from_issues(issues),
+        summary="pushd fswatch resident gate is closed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
 def cmd_pushd_fswatch(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.fswatch_command == "preview":
         report = _pushd_fswatch_report(args, paths)
@@ -1853,6 +2054,10 @@ def cmd_pushd_fswatch(args: argparse.Namespace, paths: RuntimePaths) -> int | No
     if args.fswatch_command == "probe":
         report = _pushd_fswatch_probe_report(paths)
         _print_report(report, args)
+        return _exit_code_for_report(report)
+    if args.fswatch_command == "resident-gate":
+        report = _pushd_fswatch_resident_gate_report(args, paths)
+        _print_fswatch_resident_gate_report(report, args)
         return _exit_code_for_report(report)
     return None
 
@@ -2471,7 +2676,11 @@ def _consume_run_report(
     )
 
 
-def _shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], list[ConfigIssue]]:
+def _shadow_report_check(
+    report_path: Path | None,
+    *,
+    issue_key: str = "PCLOUD_TOOLS_REAL_TRANSFER_SHADOW_REPORT",
+) -> tuple[dict[str, object], list[ConfigIssue]]:
     if report_path is None:
         return (
             {
@@ -2481,7 +2690,7 @@ def _shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], l
             },
             [
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_REAL_TRANSFER_SHADOW_REPORT",
+                    key=issue_key,
                     level="warning",
                     message="saved shadow validation report was not provided",
                 )
@@ -2498,7 +2707,7 @@ def _shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], l
             },
             [
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_REAL_TRANSFER_SHADOW_REPORT",
+                    key=issue_key,
                     level="warning",
                     message=f"saved shadow validation report is missing: {path}",
                 )
@@ -2516,7 +2725,7 @@ def _shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], l
             },
             [
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_REAL_TRANSFER_SHADOW_REPORT",
+                    key=issue_key,
                     level="warning",
                     message=f"saved shadow validation report could not be read: {exc}",
                 )
@@ -2563,7 +2772,7 @@ def _shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], l
         },
         [
             ConfigIssue(
-                key="PCLOUD_TOOLS_REAL_TRANSFER_SHADOW_REPORT",
+                key=issue_key,
                 level="warning",
                 message=f"saved shadow validation report is not ok: {detail}",
             )
@@ -3575,6 +3784,19 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         )
         fswatch_probe_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         fswatch_probe_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        fswatch_resident_gate_parser = fswatch_subparsers.add_parser(
+            "resident-gate", help="Read-only checklist before starting a resident fswatch watcher."
+        )
+        fswatch_resident_gate_parser.add_argument("--report-path", type=Path)
+        fswatch_resident_gate_parser.add_argument("--operator-reviewed-probe", action="store_true")
+        fswatch_resident_gate_parser.add_argument("--reviewer-approved-queue-policy", action="store_true")
+        fswatch_resident_gate_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        fswatch_resident_gate_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        fswatch_resident_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
 
         transfer_parser = subparsers.add_parser(
             "transfer", help="Preview upload executor commands without running transfers."

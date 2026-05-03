@@ -36,6 +36,7 @@ Development entrypoint:
 ./pcloud-manager-dev pushd gate
 ./pcloud-manager-dev pushd fswatch preview --fixture tests/fixtures/pushd-fswatch-events.txt
 ./pcloud-manager-dev pushd fswatch probe
+./pcloud-manager-dev pushd fswatch resident-gate
 ./pcloud-manager-dev pushd transfer preview
 ./pcloud-manager-dev pushd transfer check
 ./pcloud-manager-dev pushd transfer check --confirm-path Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
@@ -104,6 +105,7 @@ Config notes:
 - `pushd gate` and `diffd gate` suggested next units now point to first-target final review, read-only real-gate approvals, and holding real-run implementation until the human gate is explicitly confirmed
 - `pushd fswatch preview --fixture <path>` parses fixture-backed fswatch event records and previews the upload plan without starting fswatch or writing pushd state
 - `pushd fswatch probe` previews the one-shot fswatch command and command availability without running fswatch or writing pushd state
+- `pushd fswatch resident-gate` is a read-only checklist before any long-running fswatch watcher can be implemented or started; it checks the saved shadow validation report, `command -v fswatch`, watch scope, operator probe review, queue policy approval, and process lifecycle approval while keeping `resident gate status: closed` and `state writes: none`
 - `diffd preview` and `diffd diff preview --fixture <path>` apply the document/media allowlist and default excludes before reporting planned downloads; skipped remote records stay visible in the preview
 - `diffd diff preview --fixture <path>` parses fixture-backed pCloud diff responses and previews the download plan without calling the pCloud API or writing diffd state
 - `diffd api-poll preview` reports the intended one-shot pCloud API poll request shape without calling the API, configuring credentials, or writing diffd state
@@ -119,9 +121,9 @@ Config notes:
 - `pushd transfer run --execute` and `diffd transfer run --execute` are limited to dev-mode fake-rclone execution and still report `real execution can run: no`: `PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE=dev-fake-rclone`, `PCLOUD_TOOLS_RCLONE_BIN=<workspace>/.dev-state/.../fake-rclone`, and state dir under `workspace/.dev-state/state` are all required; fake-rclone runs use `PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS`, clean up the fake process group on timeout, record `last-transfer.json`, and never consume queue/change files; real rclone and pCloud transfer remain blocked
 - `pushd transfer consume preview` and `diffd transfer consume preview` read the latest dev-state `last-transfer.json` and current queue/change file to show which successful fake-rclone records would be removed; they report `real execution can run: no`, are read-only, write no state, and do not consume queue/change files
 - `pushd transfer consume run --execute` and `diffd transfer consume run --execute` are dev-state guarded consume paths; they remove only queue/change records matching successful fake-rclone results, report `real execution can run: no`, and still do not open real rclone/pCloud transfer
-- `scripts/pcloud-shadow-validation.py` runs a temp-dev-state shadow validation pass over preview, dry-run, action, and safety-guard paths without touching live state or pCloud remotes
+- `scripts/pcloud-shadow-validation.py` runs a temp-dev-state shadow validation pass over preview, dry-run, action, and safety-guard paths without touching live state or pCloud remotes; it covers the fswatch resident gate using a temp fake `fswatch` discovered through `command -v`
 - shadow validation can write a JSON report with `--report-path`; use `--summary` for concise human output while preserving full AI/reviewer detail in `--json` and saved reports. A cutover candidate must have `status: ok`, every check `status: ok`, `temporary workspace guard` / `temporary state dir guard` passing, and no evidence of live `~/.pcloud` or pCloud remote IO
-- stable action ids include `pushd.status.refresh`, `pushd.preview`, `pushd.run.preview`, `pushd.gate`, `pushd.transfer.preview`, `pushd.transfer.check`, `pushd.transfer.real-gate`, `pushd.transfer.real-run.preview`, `pushd.transfer.consume.preview`, `pushd.queue.clear.preview`, `diffd.status.refresh`, `diffd.preview`, `diffd.run.preview`, `diffd.gate`, `diffd.transfer.preview`, `diffd.transfer.check`, `diffd.transfer.real-gate`, `diffd.transfer.real-run.preview`, `diffd.transfer.consume.preview`, and `diffd.remote-change.clear.preview`
+- stable action ids include `pushd.status.refresh`, `pushd.preview`, `pushd.run.preview`, `pushd.gate`, `pushd.fswatch.resident-gate`, `pushd.transfer.preview`, `pushd.transfer.check`, `pushd.transfer.real-gate`, `pushd.transfer.real-run.preview`, `pushd.transfer.consume.preview`, `pushd.queue.clear.preview`, `diffd.status.refresh`, `diffd.preview`, `diffd.run.preview`, `diffd.gate`, `diffd.transfer.preview`, `diffd.transfer.check`, `diffd.transfer.real-gate`, `diffd.transfer.real-run.preview`, `diffd.transfer.consume.preview`, and `diffd.remote-change.clear.preview`
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
 - `index` now uses the repo-local `scripts/pcloud-indexer.py`, and its default DB lives under `.dev-state/state/index/`
 
@@ -134,7 +136,7 @@ Limited migration validation:
 - The download invoked `/usr/local/bin/rclone copyto pcloud:core/Documents/DQ2-呪文.png /Users/takafumi/p-core/dev/pcloud-tools/Documents/DQ2-呪文.png`, returned `0`, did not time out, and recorded `.dev-state/state/diffd/last-transfer.json` with `mode: real-rclone-transfer`
 - The downloaded file and backup both had SHA-256 `c0412cf18081b35bee90f0fd30dfd6c0d0d0a0c8a10c0f362b326de2c090cccb`
 - The successful download was consumed with `diffd transfer consume run --execute` under the approved policy; `diffd transfer preview` then reported planned transfers `0`
-- Remaining gates are fswatch resident mode, pCloud API long-poll, launchd/autosync integration, normal sync/resync migration validation, and old monolith archive
+- Remaining gates are fswatch resident implementation/start, pCloud API long-poll, launchd/autosync integration, normal sync/resync migration validation, and old monolith archive; fswatch resident now has a read-only gate checklist but is still not runnable
 
 Live sync operations note:
 

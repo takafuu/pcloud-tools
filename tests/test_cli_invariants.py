@@ -672,6 +672,78 @@ def test_pushd_fswatch_probe_is_preview_only(tmp_path: Path) -> None:
     assert not (state_dir / "pushd").exists()
 
 
+def test_pushd_fswatch_resident_gate_is_read_only_checklist(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fswatch = bin_dir / "fswatch"
+    fswatch.write_text("#!/bin/sh\nexit 0\n")
+    fswatch.chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-fswatch" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-fswatch.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "fswatch",
+            "resident-gate",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-probe",
+            "--reviewer-approved-queue-policy",
+            "--reviewer-approved-process-policy",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["summary"] == "pushd fswatch resident gate is closed"
+    assert payload["details"]["implementation status"].startswith("read-only checklist")
+    assert payload["details"]["resident gate status"] == "closed"
+    assert payload["details"]["resident can start"] == "no"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["fswatch availability"] == "available"
+    assert "--one-event" not in payload["details"]["resident command preview"]
+    assert payload["details"]["resident command preview"][-1] == env["PCLOUD_TOOLS_WORKSPACE_ROOT"]
+    assert payload["details"]["resident approval status"] == "complete-read-only"
+    assert payload["details"]["human gate status"] == "required-before-resident-start"
+    assert checks["saved shadow validation report"]["status"] == "ok"
+    assert checks["fswatch binary"]["status"] == "ok"
+    assert checks["operator probe review"]["status"] == "ok"
+    assert checks["queue policy approval"]["status"] == "ok"
+    assert checks["process lifecycle approval"]["status"] == "ok"
+    assert "pushd.fswatch.resident-gate" in [action["id"] for action in payload["actions"]]
+    assert not (state_dir / "pushd").exists()
+
+
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -1875,6 +1947,14 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
     )
+    pushd_fswatch_gate = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.fswatch.resident-gate"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
     pushd_real_gate = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.transfer.real-gate"],
         check=False,
@@ -1923,6 +2003,8 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
     assert "diffd download transfer preview is ready" in diffd.stdout
     assert pushd_check.returncode == 0
     assert "pushd real transfer gate checklist is not open" in pushd_check.stdout
+    assert pushd_fswatch_gate.returncode == 0
+    assert "pushd fswatch resident gate is closed" in pushd_fswatch_gate.stdout
     assert diffd_check.returncode == 0
     assert "diffd real transfer gate checklist is not open" in diffd_check.stdout
     assert pushd_real_gate.returncode == 0

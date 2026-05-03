@@ -224,6 +224,39 @@ def run_validation() -> dict[str, Any]:
                     "missing closed gate status",
                 )
             )
+        fswatch_bin_dir = workspace / ".dev-state" / "fswatch-bin"
+        fswatch_bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_fswatch = fswatch_bin_dir / "fswatch"
+        fake_fswatch.write_text("#!/bin/sh\nexit 0\n")
+        fake_fswatch.chmod(0o755)
+        fswatch_gate_env = dict(env)
+        fswatch_gate_env["PATH"] = f"{fswatch_bin_dir}:{env.get('PATH', '')}"
+        fswatch_resident_gate = _check_json_command(
+            checks,
+            fswatch_gate_env,
+            "pushd fswatch resident gate",
+            (
+                "pushd",
+                "fswatch",
+                "resident-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-probe",
+                "--reviewer-approved-queue-policy",
+                "--reviewer-approved-process-policy",
+            ),
+        )
+        if (
+            fswatch_resident_gate.get("details", {}).get("resident gate status") == "closed"
+            and fswatch_resident_gate.get("details", {}).get("resident can start") == "no"
+            and fswatch_resident_gate.get("details", {}).get("state writes") == "none"
+            and fswatch_resident_gate.get("details", {}).get("fswatch availability") == "available"
+            and fswatch_resident_gate.get("details", {}).get("resident approval status") == "complete-read-only"
+            and "--one-event" not in fswatch_resident_gate.get("details", {}).get("resident command preview", [])
+        ):
+            checks.append(CheckResult("pushd fswatch resident gate closed", "ok", "resident start is gated"))
+        else:
+            checks.append(CheckResult("pushd fswatch resident gate closed", "error", "resident gate mismatch"))
 
         diff_fixture = workspace / "pcloud-diff.json"
         diff_fixture.write_text(
@@ -820,6 +853,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.run.preview", "diffd run preview is ready")
         _check_action(checks, env, "pushd.gate", "pushd real-operation gate is closed")
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
+        _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))
