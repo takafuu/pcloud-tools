@@ -93,6 +93,19 @@ def _install_fake_rclone(env: dict[str, str]) -> Path:
     return fake_log
 
 
+def _install_real_rclone_stub(env: dict[str, str]) -> Path:
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    bin_dir = workspace / ".dev-state" / "real-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    real_log = workspace / ".dev-state" / "real-rclone-stub.log"
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$REAL_RCLONE_STUB_LOG\"\n")
+    rclone.chmod(0o755)
+    env["PCLOUD_TOOLS_RCLONE_BIN"] = str(rclone)
+    env["REAL_RCLONE_STUB_LOG"] = str(real_log)
+    return real_log
+
+
 def _xbar_bash_values(output: str) -> list[str]:
     values: list[str] = []
     for line in output.splitlines():
@@ -1517,9 +1530,11 @@ def test_transfer_real_gate_is_read_only_scaffold(tmp_path: Path) -> None:
     assert payload["details"]["implementation status"].startswith("read-only real execution gate scaffold")
     assert payload["details"]["final review status"] == "ready"
     assert payload["details"]["real transfer gate opening status"] == "ready-for-separate-gate"
-    assert payload["details"]["real transfer execution gate status"] == "closed: no accepted value in this build"
+    assert payload["details"]["real transfer execution gate status"].startswith(
+        "closed: requires PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE="
+    )
     assert payload["details"]["future real gate env var"] == "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE"
-    assert payload["details"]["future real gate accepted value"] == "-"
+    assert payload["details"]["future real gate accepted value"] == "operator-approved-real-transfer-v1"
     assert payload["details"]["fake-rclone gate reuse"] == "forbidden"
     assert payload["details"]["separate real gate approval status"] == "complete-read-only"
     assert {
@@ -1528,10 +1543,10 @@ def test_transfer_real_gate_is_read_only_scaffold(tmp_path: Path) -> None:
     assert payload["details"]["operator verification required"] == "not-now"
     assert "actual pCloud/rclone transfer" in payload["details"]["next human check trigger"]
     assert standalone_payload["details"]["operator verification required"] == "no"
-    assert payload["details"]["human gate status"] == "required-before-implementation"
-    assert "execution path is intentionally absent" in payload["details"]["human gate reason"]
+    assert payload["details"]["human gate status"] == "required-before-actual-transfer"
+    assert "explicit operator run command" in payload["details"]["human gate reason"]
     assert standalone_payload["details"]["human gate status"] == "not-yet"
-    assert payload["details"]["real execution readiness"] == "blocked-implementation"
+    assert payload["details"]["real execution readiness"] == "blocked-execution-gate"
     assert payload["details"]["real execution can run"] == "no"
     assert standalone_payload["details"]["real execution readiness"] == "blocked-final-review"
     assert payload["details"]["future real-run policy status"] == "documented-read-only"
@@ -1543,7 +1558,7 @@ def test_transfer_real_gate_is_read_only_scaffold(tmp_path: Path) -> None:
     assert not (pushd_dir / "last-transfer.json").exists()
 
 
-def test_transfer_real_run_is_hard_refusal(tmp_path: Path) -> None:
+def test_transfer_real_run_is_guarded_until_final_review_and_gate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     pushd_dir = state_dir / "pushd"
@@ -1582,14 +1597,18 @@ def test_transfer_real_run_is_hard_refusal(tmp_path: Path) -> None:
     payload = _payload(result)
 
     assert result.returncode == 1
-    assert action_result.returncode == 1
+    assert action_result.returncode == 0
     assert payload["command"] == "pushd transfer real-run"
     assert payload["status"] == "error"
-    assert payload["summary"] == "pushd real transfer execution is unavailable"
-    assert payload["details"]["implementation status"] == "hard refusal; no real rclone/pCloud execution path exists"
+    assert payload["summary"] == "pushd real transfer execution refused"
+    assert payload["details"]["implementation status"] == (
+        "guarded real rclone transfer execution path; blocked by gate checks"
+    )
     assert payload["details"]["real transfer gate status"] == "closed"
-    assert payload["details"]["real transfer execution gate status"] == "closed: no accepted value in this build"
-    assert payload["details"]["real execution readiness"] == "blocked-implementation"
+    assert payload["details"]["real transfer execution gate status"].startswith(
+        "closed: requires PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE="
+    )
+    assert payload["details"]["real execution readiness"] == "blocked-gate"
     assert payload["details"]["real execution can run"] == "no"
     assert payload["details"]["execute requested"] == "yes"
     assert payload["details"]["real gate env provided"] == "yes"
@@ -1600,12 +1619,89 @@ def test_transfer_real_run_is_hard_refusal(tmp_path: Path) -> None:
     assert payload["details"]["state writes"] == "none"
     assert payload["details"]["safe alternative command"][1:4] == ["pushd", "transfer", "real-gate"]
     assert "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE" in [issue["key"] for issue in payload["issues"]]
-    assert "pushd real transfer execution is unavailable" in action_result.stdout
+    assert "pushd real transfer execution is gated" in action_result.stdout
     assert "safe alternative:" in action_result.stdout
     assert "real execution can run: no" in action_result.stdout
     assert "real gate env provided: no" in action_result.stdout
     assert "fake-rclone gate env honored: no" in action_result.stdout
     assert not (pushd_dir / "last-transfer.json").exists()
+
+
+def test_transfer_real_run_executes_only_after_explicit_real_gate_with_stub_rclone(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    real_log = _install_real_rclone_stub(env)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text(
+        json.dumps([{"path": "Documents/real-run.txt", "action": "upload", "reason": "test"}])
+    )
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-real-run" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-real-run.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "real-run",
+            "--report-path",
+            str(shadow_report),
+            "--confirm-path",
+            "Documents/real-run.txt",
+            "--confirm-direction",
+            "upload",
+            "--consume-policy",
+            "remove-on-success-retain-on-failure",
+            "--timeout-policy",
+            "reuse-fake-rclone-cleanup",
+            "--operator-reviewed-dry-run",
+            "--reviewer-approved-real-command",
+            "--reviewer-approved-consume-policy",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env | {"PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "operator-approved-real-transfer-v1"},
+    )
+
+    payload = _payload(result)
+    transfer_state = json.loads((pushd_dir / "last-transfer.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["summary"] == "pushd real transfer executed"
+    assert payload["details"]["real transfer execution gate status"] == (
+        "open: operator-approved-real-transfer-v1"
+    )
+    assert payload["details"]["real execution readiness"] == "executed"
+    assert payload["details"]["real execution can run"] == "yes"
+    assert payload["details"]["real gate env honored"] == "yes"
+    assert payload["details"]["fake-rclone gate env honored"] == "no"
+    assert payload["details"]["state writes"].endswith("/pushd/last-transfer.json")
+    assert real_log.read_text().strip().startswith("copyto ")
+    assert "Documents/real-run.txt pcloud:core/Documents/real-run.txt" in real_log.read_text()
+    assert transfer_state["mode"] == "real-rclone-transfer"
+    assert transfer_state["results"][0]["returncode"] == 0
+    assert json.loads((pushd_dir / "queue.json").read_text())[0]["path"] == "Documents/real-run.txt"
 
 
 def test_transfer_check_warns_on_mismatched_operator_confirmation(tmp_path: Path) -> None:

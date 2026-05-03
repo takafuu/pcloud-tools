@@ -436,8 +436,9 @@ def run_validation() -> dict[str, Any]:
             ),
         )
         if (
-            pushd_real_gate.get("details", {}).get("real transfer execution gate status")
-            == "closed: no accepted value in this build"
+            str(pushd_real_gate.get("details", {}).get("real transfer execution gate status", "")).startswith(
+                "closed: requires PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE="
+            )
             and pushd_real_gate.get("details", {}).get("fake-rclone gate reuse") == "forbidden"
             and pushd_real_gate.get("details", {}).get("separate real gate approval status")
             == "complete-read-only"
@@ -446,16 +447,17 @@ def run_validation() -> dict[str, Any]:
             and pushd_real_gate.get("details", {}).get("future real-run policy state writes") == "none"
             and pushd_real_gate.get("details", {}).get("operator verification required") == "not-now"
             and pushd_real_gate.get("details", {}).get("human gate status")
-            == "required-before-implementation"
-            and pushd_real_gate.get("details", {}).get("real execution readiness") == "blocked-implementation"
+            == "required-before-actual-transfer"
+            and pushd_real_gate.get("details", {}).get("real execution readiness") == "blocked-execution-gate"
             and pushd_real_gate.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("pushd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
             checks.append(CheckResult("pushd transfer real-gate closed", "error", "real gate unexpectedly open"))
         if (
-            diffd_real_gate.get("details", {}).get("real transfer execution gate status")
-            == "closed: no accepted value in this build"
+            str(diffd_real_gate.get("details", {}).get("real transfer execution gate status", "")).startswith(
+                "closed: requires PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE="
+            )
             and diffd_real_gate.get("details", {}).get("fake-rclone gate reuse") == "forbidden"
             and diffd_real_gate.get("details", {}).get("separate real gate approval status")
             == "complete-read-only"
@@ -464,8 +466,8 @@ def run_validation() -> dict[str, Any]:
             and diffd_real_gate.get("details", {}).get("future real-run policy state writes") == "none"
             and diffd_real_gate.get("details", {}).get("operator verification required") == "not-now"
             and diffd_real_gate.get("details", {}).get("human gate status")
-            == "required-before-implementation"
-            and diffd_real_gate.get("details", {}).get("real execution readiness") == "blocked-implementation"
+            == "required-before-actual-transfer"
+            and diffd_real_gate.get("details", {}).get("real execution readiness") == "blocked-execution-gate"
             and diffd_real_gate.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
@@ -490,8 +492,9 @@ def run_validation() -> dict[str, Any]:
             allowed_status={"error"},
         )
         if (
-            pushd_real_run.get("details", {}).get("real transfer execution gate status")
-            == "closed: no accepted value in this build"
+            str(pushd_real_run.get("details", {}).get("real transfer execution gate status", "")).startswith(
+                "closed: requires PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE="
+            )
             and pushd_real_run.get("details", {}).get("state writes") == "none"
             and pushd_real_run.get("details", {}).get("real gate env provided") == "yes"
             and pushd_real_run.get("details", {}).get("real gate env honored") == "no"
@@ -502,8 +505,9 @@ def run_validation() -> dict[str, Any]:
         else:
             checks.append(CheckResult("pushd transfer real-run blocked", "error", "real-run not refused"))
         if (
-            diffd_real_run.get("details", {}).get("real transfer execution gate status")
-            == "closed: no accepted value in this build"
+            str(diffd_real_run.get("details", {}).get("real transfer execution gate status", "")).startswith(
+                "closed: requires PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE="
+            )
             and diffd_real_run.get("details", {}).get("state writes") == "none"
             and diffd_real_run.get("details", {}).get("real gate env provided") == "yes"
             and diffd_real_run.get("details", {}).get("real gate env honored") == "no"
@@ -513,6 +517,90 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer real-run blocked", "ok", "real execution refused"))
         else:
             checks.append(CheckResult("diffd transfer real-run blocked", "error", "real-run not refused"))
+
+        real_bin_dir = workspace / ".dev-state" / "real-bin"
+        real_bin_dir.mkdir(parents=True, exist_ok=True)
+        real_log = workspace / ".dev-state" / "real-rclone-stub.log"
+        real_rclone = real_bin_dir / "rclone"
+        real_rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$REAL_RCLONE_STUB_LOG\"\n")
+        real_rclone.chmod(0o755)
+        real_env = dict(env)
+        real_env.update(
+            {
+                "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "operator-approved-real-transfer-v1",
+                "PCLOUD_TOOLS_RCLONE_BIN": str(real_rclone),
+                "REAL_RCLONE_STUB_LOG": str(real_log),
+            }
+        )
+        pushd_real_run_stub = _check_json_command(
+            checks,
+            real_env,
+            "pushd transfer real-run stub",
+            (
+                "pushd",
+                "transfer",
+                "real-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-upload.pdf",
+                "--confirm-direction",
+                "upload",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
+                "--execute",
+            ),
+        )
+        diffd_real_run_stub = _check_json_command(
+            checks,
+            real_env,
+            "diffd transfer real-run stub",
+            (
+                "diffd",
+                "transfer",
+                "real-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-download.pdf",
+                "--confirm-direction",
+                "download",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
+                "--execute",
+            ),
+        )
+        real_log_lines = real_log.read_text().splitlines() if real_log.exists() else []
+        if (
+            pushd_real_run_stub.get("details", {}).get("real transfer execution gate status")
+            == "open: operator-approved-real-transfer-v1"
+            and pushd_real_run_stub.get("details", {}).get("real execution readiness") == "executed"
+            and pushd_real_run_stub.get("details", {}).get("real gate env honored") == "yes"
+            and len(real_log_lines) >= 1
+        ):
+            checks.append(CheckResult("pushd transfer real-run guarded stub", "ok", "stub rclone executed"))
+        else:
+            checks.append(CheckResult("pushd transfer real-run guarded stub", "error", "real-run stub mismatch"))
+        if (
+            diffd_real_run_stub.get("details", {}).get("real transfer execution gate status")
+            == "open: operator-approved-real-transfer-v1"
+            and diffd_real_run_stub.get("details", {}).get("real execution readiness") == "executed"
+            and diffd_real_run_stub.get("details", {}).get("real gate env honored") == "yes"
+            and len(real_log_lines) >= 2
+        ):
+            checks.append(CheckResult("diffd transfer real-run guarded stub", "ok", "stub rclone executed"))
+        else:
+            checks.append(CheckResult("diffd transfer real-run guarded stub", "error", "real-run stub mismatch"))
 
         fake_bin_dir = workspace / ".dev-state" / "bin"
         fake_bin_dir.mkdir(parents=True, exist_ok=True)
