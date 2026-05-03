@@ -1002,6 +1002,77 @@ def test_sync_migration_gate_is_read_only_checklist(tmp_path: Path) -> None:
     assert not any(state_dir.iterdir())
 
 
+def test_archive_old_monolith_gate_is_read_only_checklist(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
+    backup_dir.mkdir(parents=True)
+    legacy_backup = backup_dir / "pcloud-manager.current"
+    legacy_backup.write_text("#!/bin/zsh\nPCLOUD_MANAGER_CONFIG=\"${HOME}/.config/pcloud-manager/config.zsh\"\n")
+    (backup_dir / "shadow-validation.json").write_text(json.dumps({"status": "ok", "checks": []}))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "archive",
+            "old-monolith-gate",
+            "--backup-dir",
+            str(backup_dir),
+            "--operator-reviewed-current-wrapper",
+            "--reviewer-approved-backup-source",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-archive-target",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["summary"] == "old monolith archive gate is closed"
+    assert payload["details"]["archive gate status"] == "closed"
+    assert payload["details"]["archive can run"] == "no"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["legacy backup status"] == "monolith-backup"
+    assert payload["details"]["archive approval status"] == "complete-read-only"
+    assert payload["details"]["human gate status"] == "required-before-old-monolith-archive"
+    assert checks["legacy monolith backup"]["status"] == "ok"
+    assert checks["backup source approval"]["status"] == "ok"
+    assert "archive.old-monolith.gate" in [action["id"] for action in payload["actions"]]
+    assert not (workspace / ".dev-state" / "old-monolith-archive").exists()
+
+
+def test_archive_old_monolith_gate_missing_backup_stays_pending(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "archive", "old-monolith-gate", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["details"]["archive gate status"] == "closed"
+    assert payload["details"]["archive can run"] == "no"
+    assert payload["details"]["legacy backup status"] == "missing-or-unrecognized"
+    assert payload["details"]["archive approval status"] == "pending"
+    assert "PCLOUD_TOOLS_ARCHIVE_LEGACY_BACKUP" in [issue["key"] for issue in payload["issues"]]
+
+
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

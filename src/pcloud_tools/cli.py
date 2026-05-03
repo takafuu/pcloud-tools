@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 
 from .cli_action import add_action_parser, cmd_action
+from .cli_archive import add_archive_parser, cmd_archive
 from .cli_daemon import add_daemon_parser, cmd_daemon
 from .cli_index import add_index_parser, cmd_index
 from .cli_mount import add_mount_parsers, cmd_mount, cmd_umount
@@ -30,6 +31,8 @@ def build_parser() -> argparse.ArgumentParser:
     add_daemon_parser(subparsers)
 
     add_service_daemon_parsers(subparsers)
+
+    add_archive_parser(subparsers)
 
     add_action_parser(subparsers)
 
@@ -65,6 +68,12 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command in {"pushd", "diffd"}:
         result = cmd_service_daemon(args, paths)
+        if result is not None:
+            return result
+        parser.print_help()
+        return 1
+    if args.command == "archive":
+        result = cmd_archive(args, paths)
         if result is not None:
             return result
         parser.print_help()

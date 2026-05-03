@@ -429,6 +429,36 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("sync autosync launchd gate closed", "ok", "launchd changes are gated"))
         else:
             checks.append(CheckResult("sync autosync launchd gate closed", "error", "autosync gate mismatch"))
+        backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
+        backup_dir.mkdir(parents=True, exist_ok=True)
+        (backup_dir / "pcloud-manager.current").write_text(
+            '#!/bin/zsh\nPCLOUD_MANAGER_CONFIG="${HOME}/.config/pcloud-manager/config.zsh"\n'
+        )
+        (backup_dir / "shadow-validation.json").write_text(json.dumps({"status": "ok", "checks": []}))
+        archive_gate = _check_json_command(
+            checks,
+            env,
+            "old monolith archive gate",
+            (
+                "archive",
+                "old-monolith-gate",
+                "--backup-dir",
+                str(backup_dir),
+                "--operator-reviewed-current-wrapper",
+                "--reviewer-approved-backup-source",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-archive-target",
+            ),
+        )
+        if (
+            archive_gate.get("details", {}).get("archive gate status") == "closed"
+            and archive_gate.get("details", {}).get("archive can run") == "no"
+            and archive_gate.get("details", {}).get("state writes") == "none"
+            and archive_gate.get("details", {}).get("archive approval status") == "complete-read-only"
+        ):
+            checks.append(CheckResult("old monolith archive gate closed", "ok", "old monolith archive is gated"))
+        else:
+            checks.append(CheckResult("old monolith archive gate closed", "error", "archive gate mismatch"))
         migration_bin_dir = workspace / ".dev-state" / "migration-bin"
         migration_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_migration_rclone = migration_bin_dir / "rclone"
@@ -1017,6 +1047,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
+        _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))
