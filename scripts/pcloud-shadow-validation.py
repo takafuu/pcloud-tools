@@ -490,6 +490,7 @@ def run_validation() -> dict[str, Any]:
             and pushd_real_run.get("details", {}).get("real gate env provided") == "yes"
             and pushd_real_run.get("details", {}).get("real gate env honored") == "no"
             and pushd_real_run.get("details", {}).get("fake-rclone gate env honored") == "no"
+            and pushd_real_run.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("pushd transfer real-run blocked", "ok", "real execution refused"))
         else:
@@ -501,6 +502,7 @@ def run_validation() -> dict[str, Any]:
             and diffd_real_run.get("details", {}).get("real gate env provided") == "yes"
             and diffd_real_run.get("details", {}).get("real gate env honored") == "no"
             and diffd_real_run.get("details", {}).get("fake-rclone gate env honored") == "no"
+            and diffd_real_run.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("diffd transfer real-run blocked", "ok", "real execution refused"))
         else:

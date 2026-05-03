@@ -1578,6 +1578,8 @@ def test_transfer_real_run_is_hard_refusal(tmp_path: Path) -> None:
     assert payload["details"]["implementation status"] == "hard refusal; no real rclone/pCloud execution path exists"
     assert payload["details"]["real transfer gate status"] == "closed"
     assert payload["details"]["real transfer execution gate status"] == "closed: no accepted value in this build"
+    assert payload["details"]["real execution readiness"] == "blocked-implementation"
+    assert payload["details"]["real execution can run"] == "no"
     assert payload["details"]["execute requested"] == "yes"
     assert payload["details"]["real gate env provided"] == "yes"
     assert payload["details"]["real gate env honored"] == "no"
@@ -1589,6 +1591,7 @@ def test_transfer_real_run_is_hard_refusal(tmp_path: Path) -> None:
     assert "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE" in [issue["key"] for issue in payload["issues"]]
     assert "pushd real transfer execution is unavailable" in action_result.stdout
     assert "safe alternative:" in action_result.stdout
+    assert "real execution can run: no" in action_result.stdout
     assert "real gate env provided: no" in action_result.stdout
     assert "fake-rclone gate env honored: no" in action_result.stdout
     assert not (pushd_dir / "last-transfer.json").exists()
