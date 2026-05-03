@@ -534,11 +534,17 @@ def run_validation() -> dict[str, Any]:
             "diffd transfer fake-rclone run",
             ("diffd", "transfer", "run", "--execute"),
         )
-        if pushd_transfer_run.get("details", {}).get("execution gate") == "open: dev-fake-rclone":
+        if (
+            pushd_transfer_run.get("details", {}).get("execution gate") == "open: dev-fake-rclone"
+            and pushd_transfer_run.get("details", {}).get("real execution can run") == "no"
+        ):
             checks.append(CheckResult("pushd transfer fake gate", "ok", "fake-rclone gate opened"))
         else:
             checks.append(CheckResult("pushd transfer fake gate", "error", "fake-rclone gate did not open"))
-        if diffd_transfer_run.get("details", {}).get("execution gate") == "open: dev-fake-rclone":
+        if (
+            diffd_transfer_run.get("details", {}).get("execution gate") == "open: dev-fake-rclone"
+            and diffd_transfer_run.get("details", {}).get("real execution can run") == "no"
+        ):
             checks.append(CheckResult("diffd transfer fake gate", "ok", "fake-rclone gate opened"))
         else:
             checks.append(CheckResult("diffd transfer fake gate", "error", "fake-rclone gate did not open"))

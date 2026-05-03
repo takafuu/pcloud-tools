@@ -947,6 +947,10 @@ def test_transfer_preview_routes_conflicts_and_delete_rename_actions_to_manual_r
     assert diffd_payload["status"] == "warning"
     assert pushd_payload["details"]["planned uploads"] == 1
     assert diffd_payload["details"]["planned downloads"] == 1
+    assert pushd_payload["details"]["real execution can run"] == "no"
+    assert diffd_payload["details"]["real execution can run"] == "no"
+    assert pushd_payload["details"]["real execution readiness"] == "blocked-preview"
+    assert diffd_payload["details"]["real execution readiness"] == "blocked-preview"
     assert pushd_payload["details"]["manual review transfer records"] == 2
     assert diffd_payload["details"]["manual review transfer records"] == 2
     assert [item["path"] for item in pushd_payload["details"]["planned transfer commands"]] == [
@@ -1811,6 +1815,7 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
 
     assert pushd.returncode == 0
     assert "pushd upload transfer preview is ready" in pushd.stdout
+    assert "real execution can run: no" in pushd.stdout
     assert diffd.returncode == 0
     assert "diffd download transfer preview is ready" in diffd.stdout
     assert pushd_check.returncode == 0
@@ -1850,6 +1855,8 @@ def test_transfer_run_without_execute_is_preview_only(tmp_path: Path) -> None:
     assert result.returncode == 0
     assert payload["summary"] == "pushd upload transfer run preview is ready"
     assert payload["details"]["implementation status"] == "transfer run preview only; rclone is not executed"
+    assert payload["details"]["real execution can run"] == "no"
+    assert payload["details"]["real execution readiness"] == "blocked-preview"
     assert payload["details"]["state writes"] == "none"
     assert not fake_log.exists()
     assert not (pushd_dir / "last-transfer.json").exists()

@@ -748,6 +748,7 @@ def _render_transfer_preview_human(report: CommandReport) -> str:
         f"{report.command}: {report.status}",
         report.summary,
         f"gate: {details.get('real transfer gate status', '-')}",
+        f"real execution can run: {details.get('real execution can run', '-')}",
         f"state writes: {details.get('state writes', '-')}",
         f"planned transfers: {command_count}",
     ]
@@ -2949,6 +2950,11 @@ def _service_transfer_report(
         "planned action": planned_action,
         "implementation status": implementation_status,
         "real transfer gate status": "closed",
+        "real execution readiness": "blocked-preview" if not execute else "blocked-fake-rclone-only",
+        "real execution blocked reason": (
+            "transfer preview/run paths do not permit real rclone or pCloud transfer"
+        ),
+        "real execution can run": "no",
         "execution gate": (
             "open: dev-fake-rclone"
             if execute and not execution_issue
