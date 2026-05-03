@@ -1073,6 +1073,91 @@ def test_archive_old_monolith_gate_missing_backup_stays_pending(tmp_path: Path) 
     assert "PCLOUD_TOOLS_ARCHIVE_LEGACY_BACKUP" in [issue["key"] for issue in payload["issues"]]
 
 
+def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
+    backup_dir.mkdir(parents=True)
+    (backup_dir / "pcloud-manager.current").write_text(
+        '#!/bin/zsh\nPCLOUD_MANAGER_CONFIG="${HOME}/.config/pcloud-manager/config.zsh"\n'
+    )
+    (backup_dir / "shadow-validation.json").write_text(json.dumps({"status": "ok", "checks": []}))
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-gates" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-gates.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "gates",
+            "status",
+            "--report-path",
+            str(shadow_report),
+            "--backup-dir",
+            str(backup_dir),
+            "--assume-read-only-approvals",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    gates = {item["name"]: item for item in payload["details"]["gates"]}
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["details"]["implementation status"].startswith("read-only aggregate")
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["assume read-only approvals"] == "yes"
+    assert payload["details"]["gate count"] == 5
+    assert gates["pushd fswatch resident"]["gate status"] == "closed"
+    assert gates["diffd pCloud API long-poll"]["can run"] == "no"
+    assert gates["old monolith archive"]["approval status"] == "complete-read-only"
+    assert "sync autosync launchd" in gates
+    assert "sync migration validation" in gates
+    assert not any(state_dir.iterdir())
+    assert not (workspace / ".dev-state" / "old-monolith-archive").exists()
+
+
+def test_gates_status_human_output_is_concise(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "gates", "status"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "gates status: warning" in result.stdout
+    assert "state writes: none" in result.stdout
+    assert "pushd fswatch resident" in result.stdout
+    assert "diffd pCloud API long-poll" in result.stdout
+    assert "old monolith archive" in result.stdout
+
+
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

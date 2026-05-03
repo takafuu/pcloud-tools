@@ -1048,6 +1048,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
         _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")
+        _check_action(checks, env, "gates.status", "all execution gates closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))
