@@ -879,6 +879,8 @@ def test_sync_autosync_gate_is_read_only_checklist(tmp_path: Path) -> None:
     assert payload["details"]["state writes"] == "none"
     assert payload["details"]["autosync state"] == "not_loaded"
     assert payload["details"]["launchctl availability"] == "available"
+    assert payload["details"]["autosync plist status"] == "present"
+    assert payload["details"]["autosync plist review command"] == ["plutil", "-p", str(plist)]
     assert payload["details"]["autosync approval status"] == "complete-read-only"
     assert payload["details"]["human gate status"] == "required-before-autosync-launchd-change"
     assert checks["saved shadow validation report"]["status"] == "ok"
@@ -890,6 +892,35 @@ def test_sync_autosync_gate_is_read_only_checklist(tmp_path: Path) -> None:
     assert checks["rollback policy approval"]["status"] == "ok"
     assert "sync.autosync.gate" in [action["id"] for action in payload["actions"]]
     assert not any(state_dir.iterdir())
+
+
+def test_sync_autosync_gate_missing_plist_reports_review_command(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "autosync-gate",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    plist = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["details"]["autosync plist status"] == "missing"
+    assert payload["details"]["autosync plist review command"] == ["plutil", "-p", str(plist)]
+    assert "autosync-gate does not write it" in payload["details"]["autosync plist note"]
+    assert "PCLOUD_TOOLS_AUTOSYNC_PLIST" in [issue["key"] for issue in payload["issues"]]
 
 
 def test_sync_migration_gate_is_read_only_checklist(tmp_path: Path) -> None:

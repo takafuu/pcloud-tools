@@ -1277,6 +1277,8 @@ def _render_autosync_gate_human(report: CommandReport) -> str:
         f"autosync state: {details.get('autosync state', '-')}",
         f"autosync label: {details.get('autosync label', '-')}",
         f"autosync plist: {details.get('autosync plist', '-')}",
+        f"autosync plist status: {details.get('autosync plist status', '-')}",
+        f"autosync plist note: {details.get('autosync plist note', '-')}",
         f"launchctl: {details.get('launchctl availability', '-')} ({details.get('launchctl binary', '-')})",
         f"approval status: {details.get('autosync approval status', '-')}",
         f"human gate: {details.get('human gate status', '-')}",
@@ -1285,6 +1287,7 @@ def _render_autosync_gate_human(report: CommandReport) -> str:
     commands = [
         ("enable preview", details.get("enable preview command")),
         ("disable preview", details.get("disable preview command")),
+        ("plist review", details.get("autosync plist review command")),
     ]
     for label, command in commands:
         if command:
@@ -1362,6 +1365,7 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
     entrypoint = _entrypoint_command(paths)
     enable_preview = [entrypoint, "sync", "enable-autosync", "--json"]
     disable_preview = [entrypoint, "sync", "disable-autosync", "--yes", "--json"]
+    plist_review = ["plutil", "-p", str(config.autosync_plist)]
     target = f"gui/<uid>/{config.autosync_label}"
     enable_launchctl = [
         [launchctl_bin or "launchctl", "enable", target],
@@ -1428,6 +1432,9 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
         "autosync runs": autosync.runs,
         "autosync label": autosync.label,
         "autosync plist": autosync.plist,
+        "autosync plist status": "present" if config.autosync_plist.exists() else "missing",
+        "autosync plist note": "review or create the plist in a separate gate; autosync-gate does not write it",
+        "autosync plist review command": plist_review,
         "launchctl availability": "available" if launchctl_bin else "missing",
         "launchctl binary": launchctl_bin or "-",
         "enable preview command": enable_preview,
