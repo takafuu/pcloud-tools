@@ -157,6 +157,7 @@ def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Pa
         transfer_execution_gate="",
         pushd_fswatch_resident_gate="",
         diffd_api_long_poll_gate="",
+        autosync_launchd_gate="",
         transfer_exec_timeout_seconds=5,
         pushd_debounce_seconds=2,
         pushd_queue_limit=100,
@@ -1062,6 +1063,158 @@ def test_sync_autosync_gate_missing_plist_reports_review_command(tmp_path: Path)
     assert payload["details"]["autosync plist review command"] == ["plutil", "-p", str(plist)]
     assert "autosync-gate does not write it" in payload["details"]["autosync plist note"]
     assert "PCLOUD_TOOLS_AUTOSYNC_PLIST" in [issue["key"] for issue in payload["issues"]]
+
+
+def test_sync_autosync_run_refuses_without_execution_gate(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "launchctl.log"
+    launchctl = bin_dir / "launchctl"
+    launchctl.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$LAUNCHCTL_LOG\"\n"
+        "if [ \"$1\" = \"print\" ]; then exit 1; fi\n"
+        "exit 0\n"
+    )
+    launchctl.chmod(0o755)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["LAUNCHCTL_LOG"] = str(log)
+    plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text("<plist><dict/></plist>\n")
+    shadow_report = tmp_path / "shadow-validation-autosync-run.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-autosync-run" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "autosync-run",
+            "enable",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-plist",
+            "--reviewer-approved-launchctl-policy",
+            "--reviewer-approved-rollback-policy",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["summary"] == "autosync launchd execution is gated"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["autosync changes can run"] == "no"
+    assert "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_EXECUTION_GATE" in [issue["key"] for issue in payload["issues"]]
+    assert "enable " not in log.read_text()
+    assert not (state_dir / "sync" / "autosync-launchd-last-run.json").exists()
+
+
+def test_sync_autosync_run_executes_fake_launchctl_in_dev_state(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE": "operator-approved-autosync-launchd-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "launchctl.log"
+    launchctl = bin_dir / "launchctl"
+    launchctl.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$LAUNCHCTL_LOG\"\n"
+        "if [ \"$1\" = \"print\" ]; then exit 1; fi\n"
+        "exit 0\n"
+    )
+    launchctl.chmod(0o755)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    env["LAUNCHCTL_LOG"] = str(log)
+    plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text("<plist><dict/></plist>\n")
+    shadow_report = tmp_path / "shadow-validation-autosync-run-ok.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-autosync-run-ok" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "autosync-run",
+            "enable",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-plist",
+            "--reviewer-approved-launchctl-policy",
+            "--reviewer-approved-rollback-policy",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    launchctl_log = log.read_text()
+    run_state = json.loads((state_dir / "sync" / "autosync-launchd-last-run.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["summary"] == "autosync launchd run completed"
+    assert payload["details"]["autosync changes can run"] == "yes"
+    assert payload["details"]["state writes"] == "autosync launchd run state"
+    assert "enable gui/" in launchctl_log
+    assert "bootstrap gui/" in launchctl_log
+    assert run_state["mode"] == "enable"
+    assert len(run_state["commands"]) == 2
 
 
 def test_sync_autosync_plist_preview_and_dev_execute_are_guarded(tmp_path: Path) -> None:

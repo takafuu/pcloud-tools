@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import plistlib
 import shlex
 import subprocess
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .autosync_runtime import disable_autosync, enable_autosync, read_autosync_state
@@ -38,6 +40,8 @@ from .sync_scope import (
     sync_filter_file,
     write_sync_filter_file,
 )
+
+_AUTOSYNC_LAUNCHD_GATE_VALUE = "operator-approved-autosync-launchd-v1"
 
 
 def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -120,6 +124,18 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_autosync_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
     sync_autosync_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_autosync_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+    sync_autosync_run_parser = sync_subparsers.add_parser(
+        "autosync-run", help="Run guarded autosync launchd changes after the dedicated gate opens."
+    )
+    sync_autosync_run_parser.add_argument("mode", choices=("enable", "disable"))
+    sync_autosync_run_parser.add_argument("--report-path", type=Path)
+    sync_autosync_run_parser.add_argument("--operator-reviewed-preview", action="store_true")
+    sync_autosync_run_parser.add_argument("--reviewer-approved-plist", action="store_true")
+    sync_autosync_run_parser.add_argument("--reviewer-approved-launchctl-policy", action="store_true")
+    sync_autosync_run_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    sync_autosync_run_parser.add_argument("--execute", action="store_true")
+    sync_autosync_run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_autosync_run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     sync_migration_gate_parser = sync_subparsers.add_parser(
         "migration-gate", help="Read-only checklist before running normal sync/resync migration validation."
     )
@@ -184,6 +200,8 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return cmd_sync_autosync_plist(args, paths)
     if args.sync_command == "autosync-gate":
         return cmd_sync_autosync_gate(args, paths)
+    if args.sync_command == "autosync-run":
+        return cmd_sync_autosync_run(args, paths)
     if args.sync_command == "migration-gate":
         return cmd_sync_migration_gate(args, paths)
     if args.sync_command == "_run":
@@ -310,6 +328,13 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
             id="sync.autosync.gate",
             label="Check autosync launchd gate",
             command=_action_command(paths, "sync.autosync.gate"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id="sync.autosync-run.preview",
+            label="Preview autosync launchd run",
+            command=_action_command(paths, "sync.autosync-run.preview"),
             terminal=True,
             refresh=False,
         ),
@@ -1416,6 +1441,72 @@ def _render_autosync_gate_human(report: CommandReport) -> str:
     return "\n".join(lines)
 
 
+def _autosync_launchd_run_state_file(config: AppConfig) -> Path:
+    return config.state_dir / "sync" / "autosync-launchd-last-run.json"
+
+
+def _autosync_launchd_gate_open(config: AppConfig) -> bool:
+    return config.autosync_launchd_gate == _AUTOSYNC_LAUNCHD_GATE_VALUE
+
+
+def _actual_launchctl_commands(config: AppConfig, launchctl_bin: str, mode: str) -> list[list[str]]:
+    uid = str(os.getuid())
+    target = f"gui/{uid}/{config.autosync_label}"
+    if mode == "enable":
+        return [
+            [launchctl_bin, "enable", target],
+            [launchctl_bin, "bootstrap", f"gui/{uid}", str(config.autosync_plist)],
+        ]
+    return [
+        [launchctl_bin, "bootout", target],
+        [launchctl_bin, "disable", target],
+    ]
+
+
+def _render_autosync_run_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"launchd run gate: {details.get('launchd run gate status', '-')}",
+        f"autosync changes can run: {details.get('autosync changes can run', '-')}",
+        f"mode: {details.get('mode', '-')}",
+        f"execute requested: {details.get('execute requested', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"autosync state: {details.get('autosync state', '-')}",
+        f"autosync label: {details.get('autosync label', '-')}",
+        f"autosync plist: {details.get('autosync plist', '-')}",
+        f"autosync plist status: {details.get('autosync plist status', '-')}",
+        f"launchctl: {details.get('launchctl availability', '-')} ({details.get('launchctl binary', '-')})",
+        f"approval status: {details.get('autosync approval status', '-')}",
+    ]
+    commands = details.get("planned launchctl commands")
+    if isinstance(commands, list) and commands:
+        lines.append("planned launchctl commands:")
+        for command in commands:
+            lines.append(f"- {_shell_command(command)}")
+    state_file = details.get("launchd run state file")
+    if state_file:
+        lines.append(f"launchd run state: {state_file}")
+    checks = details.get("preflight checks")
+    blocked_checks: list[str] = []
+    if isinstance(checks, list):
+        for check in checks:
+            if isinstance(check, dict) and check.get("status") != "ok":
+                blocked_checks.append(
+                    f"{check.get('name', '-')}: {check.get('status', '-')} - {check.get('detail', '-')}"
+                )
+    if blocked_checks:
+        lines.append("blocked checks:")
+        for check in blocked_checks:
+            lines.append(f"- {check}")
+    if report.issues:
+        lines.append("warnings:" if report.status != "error" else "issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
 def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
@@ -1560,6 +1651,168 @@ def cmd_sync_autosync_gate(args: argparse.Namespace, paths: RuntimePaths) -> int
     output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
     if output_format == "human":
         print(_render_autosync_gate_human(report))
+    else:
+        print(render_report(report, output_format=output_format))
+    return _exit_code_for_report(report)
+
+
+def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    gate_report = _sync_autosync_gate_report(args, paths)
+    load_result = load_config(paths)
+    config = load_result.config
+    autosync = read_autosync_state(config)
+    mode = str(getattr(args, "mode", "enable"))
+    execute = bool(getattr(args, "execute", False))
+    launchctl_bin = _command_path("launchctl")
+    details = dict(gate_report.details)
+    issues = [
+        ConfigIssue(key=issue.key, level=issue.level, message=issue.message)
+        for issue in gate_report.issues
+        if issue.key != "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"
+    ]
+    approval_status = str(details.get("autosync approval status", "pending"))
+    gate_open = _autosync_launchd_gate_open(config)
+    state_file = _autosync_launchd_run_state_file(config)
+    planned_commands = _actual_launchctl_commands(config, launchctl_bin or "launchctl", mode)
+
+    details.update(
+        {
+            "planned action": "run autosync launchd changes" if execute else "preview autosync launchd run",
+            "implementation status": (
+                "guarded launchctl execution path"
+                if execute
+                else "autosync launchd run preview only; launchctl is not executed"
+            ),
+            "mode": mode,
+            "launchd run gate status": (
+                f"open: {_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+            ),
+            "launchd gate status": (
+                f"open: {_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+            ),
+            "autosync changes can run": "yes" if gate_open and approval_status == "complete-read-only" else "no",
+            "execute requested": "yes" if execute else "no",
+            "state writes": "autosync launchd run state" if execute else "none",
+            "planned launchctl commands": planned_commands,
+            "launchd run state file": str(state_file),
+            "future gate env": f"PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE}",
+        }
+    )
+
+    if approval_status != "complete-read-only":
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_APPROVAL",
+                level="error" if execute else "warning",
+                message="autosync launchd execution requires complete read-only approvals",
+            )
+        )
+    if not gate_open:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_EXECUTION_GATE",
+                level="error" if execute else "warning",
+                message=(
+                    "autosync launchd execution requires "
+                    f"PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE!r}"
+                ),
+            )
+        )
+    if not launchctl_bin:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHCTL",
+                level="error" if execute else "warning",
+                message="launchctl command not found",
+            )
+        )
+    if mode == "enable" and not config.autosync_plist.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_PLIST",
+                level="error" if execute else "warning",
+                message=f"autosync plist not found: {config.autosync_plist}",
+            )
+        )
+
+    if not execute or _has_errors(issues):
+        if _has_errors(issues):
+            details["state writes"] = "none"
+        issues = _sort_issues(issues)
+        return CommandReport(
+            command="sync autosync-run",
+            status=_status_from_issues(issues),
+            summary=(
+                "autosync launchd execution is gated"
+                if _has_errors(issues) or not gate_open
+                else "autosync launchd run is ready"
+            ),
+            details=details,
+            issues=_report_issues(issues),
+            actions=_sync_status_actions(paths, "missing"),
+        )
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    run_state: dict[str, object] = {
+        "mode": mode,
+        "started_at": started_at,
+        "commands": planned_commands,
+        "previous_autosync_state": autosync.state,
+    }
+    try:
+        if mode == "enable":
+            enable_autosync(config)
+        else:
+            disable_autosync(config)
+    except RuntimeError as exc:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_EXEC",
+                level="error",
+                message=str(exc),
+            )
+        )
+    finished_at = datetime.now(timezone.utc).isoformat()
+    refreshed = read_autosync_state(config)
+    run_state.update(
+        {
+            "finished_at": finished_at,
+            "autosync_state_after": refreshed.state,
+            "autosync_runs_after": refreshed.runs,
+        }
+    )
+    if not _has_errors(issues):
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+    details.update(
+        {
+            "autosync state after": refreshed.state,
+            "autosync runs after": refreshed.runs,
+            "process result": run_state,
+            "state writes": "autosync launchd run state" if not _has_errors(issues) else "none",
+        }
+    )
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command="sync autosync-run",
+        status=_status_from_issues(issues),
+        summary="autosync launchd run completed" if not _has_errors(issues) else "autosync launchd run failed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_sync_status_actions(paths, "missing"),
+    )
+
+
+def cmd_sync_autosync_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_autosync_run_report(args, paths)
+    output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
+    if output_format == "human":
+        print(_render_autosync_run_human(report))
     else:
         print(render_report(report, output_format=output_format))
     return _exit_code_for_report(report)

@@ -598,10 +598,19 @@ def run_validation() -> dict[str, Any]:
         launchctl_bin_dir = workspace / ".dev-state" / "launchctl-bin"
         launchctl_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_launchctl = launchctl_bin_dir / "launchctl"
-        fake_launchctl.write_text("#!/bin/sh\nif [ \"$1\" = \"print\" ]; then exit 1; fi\nexit 0\n")
+        autosync_launchctl_log = workspace / ".dev-state" / "fake-launchctl.log"
+        fake_launchctl.write_text(
+            "#!/bin/sh\n"
+            "if [ -n \"$PCLOUD_TOOLS_FAKE_LAUNCHCTL_LOG\" ]; then "
+            "printf '%s\\n' \"$*\" >> \"$PCLOUD_TOOLS_FAKE_LAUNCHCTL_LOG\"; "
+            "fi\n"
+            "if [ \"$1\" = \"print\" ]; then exit 1; fi\n"
+            "exit 0\n"
+        )
         fake_launchctl.chmod(0o755)
         autosync_gate_env = dict(env)
         autosync_gate_env["PATH"] = f"{launchctl_bin_dir}:{env.get('PATH', '')}"
+        autosync_gate_env["PCLOUD_TOOLS_FAKE_LAUNCHCTL_LOG"] = str(autosync_launchctl_log)
         autosync_gate = _check_json_command(
             checks,
             autosync_gate_env,
@@ -627,6 +636,66 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("sync autosync launchd gate closed", "ok", "launchd changes are gated"))
         else:
             checks.append(CheckResult("sync autosync launchd gate closed", "error", "autosync gate mismatch"))
+        autosync_run_closed = _check_json_command(
+            checks,
+            autosync_gate_env,
+            "sync autosync-run gate closed",
+            (
+                "sync",
+                "autosync-run",
+                "enable",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-plist",
+                "--reviewer-approved-launchctl-policy",
+                "--reviewer-approved-rollback-policy",
+                "--execute",
+            ),
+            allowed_status={"error"},
+        )
+        autosync_run_state = workspace / ".dev-state" / "state" / "sync" / "autosync-launchd-last-run.json"
+        closed_launchctl_log = autosync_launchctl_log.read_text() if autosync_launchctl_log.exists() else ""
+        if (
+            autosync_run_closed.get("details", {}).get("state writes") == "none"
+            and autosync_run_closed.get("details", {}).get("autosync changes can run") == "no"
+            and "enable gui/" not in closed_launchctl_log
+            and not autosync_run_state.exists()
+        ):
+            checks.append(CheckResult("sync autosync-run closed no writes", "ok", "launchd gate refused"))
+        else:
+            checks.append(CheckResult("sync autosync-run closed no writes", "error", "closed launchd gate ran"))
+        autosync_launchctl_log.write_text("")
+        autosync_run_env = dict(autosync_gate_env)
+        autosync_run_env["PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"] = "operator-approved-autosync-launchd-v1"
+        autosync_run = _check_json_command(
+            checks,
+            autosync_run_env,
+            "sync autosync-run fake launchctl",
+            (
+                "sync",
+                "autosync-run",
+                "enable",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-plist",
+                "--reviewer-approved-launchctl-policy",
+                "--reviewer-approved-rollback-policy",
+                "--execute",
+            ),
+        )
+        open_launchctl_log = autosync_launchctl_log.read_text()
+        if (
+            autosync_run.get("details", {}).get("autosync changes can run") == "yes"
+            and autosync_run.get("details", {}).get("state writes") == "autosync launchd run state"
+            and "enable gui/" in open_launchctl_log
+            and "bootstrap gui/" in open_launchctl_log
+            and autosync_run_state.exists()
+        ):
+            checks.append(CheckResult("sync autosync-run fake launchctl state", "ok", "fake launchctl recorded"))
+        else:
+            checks.append(CheckResult("sync autosync-run fake launchctl state", "error", "autosync-run mismatch"))
         backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
         backup_dir.mkdir(parents=True, exist_ok=True)
         (backup_dir / "pcloud-manager.current").write_text(
@@ -1298,6 +1367,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.api-poll.long-poll-run.preview", "diffd pCloud API long-poll execution is gated")
         _check_action(checks, env, "sync.autosync-plist.preview", "autosync plist preview is ready")
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
+        _check_action(checks, autosync_gate_env, "sync.autosync-run.preview", "autosync launchd execution is gated")
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
         _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")
         _check_action(checks, env, "gates.status", "all execution gates closed")
