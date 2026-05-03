@@ -443,6 +443,8 @@ def run_validation() -> dict[str, Any]:
             == "documented-read-only"
             and pushd_real_gate.get("details", {}).get("future real-run policy state writes") == "none"
             and pushd_real_gate.get("details", {}).get("operator verification required") == "not-now"
+            and pushd_real_gate.get("details", {}).get("real execution readiness") == "blocked-implementation"
+            and pushd_real_gate.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("pushd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
@@ -457,6 +459,8 @@ def run_validation() -> dict[str, Any]:
             == "documented-read-only"
             and diffd_real_gate.get("details", {}).get("future real-run policy state writes") == "none"
             and diffd_real_gate.get("details", {}).get("operator verification required") == "not-now"
+            and diffd_real_gate.get("details", {}).get("real execution readiness") == "blocked-implementation"
+            and diffd_real_gate.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
         else:

@@ -616,6 +616,10 @@ def _render_transfer_check_human(report: CommandReport) -> str:
             lines.append(f"operator verification required: {details.get('operator verification required', '-')}")
         if "next human check trigger" in details:
             lines.append(f"next human check trigger: {details.get('next human check trigger', '-')}")
+        if "real execution readiness" in details:
+            lines.append(f"real execution readiness: {details.get('real execution readiness', '-')}")
+        if "real execution blocked reason" in details:
+            lines.append(f"real execution blocked reason: {details.get('real execution blocked reason', '-')}")
         approval_checks = details.get("separate real gate approval checks")
         if isinstance(approval_checks, list) and approval_checks:
             lines.append("approval checks:")
@@ -1361,6 +1365,23 @@ def _operator_verification_details(final_review_status: object, approval_status:
         "next human check trigger": (
             "first real target review, real execution gate implementation, or actual pCloud/rclone transfer"
         ),
+    }
+
+
+def _real_execution_readiness_details(final_review_status: object, approval_status: object) -> dict[str, object]:
+    if final_review_status != "ready":
+        readiness = "blocked-final-review"
+        reason = "final-review checks are not ready"
+    elif approval_status != "complete-read-only":
+        readiness = "blocked-approval"
+        reason = "read-only operator/reviewer approvals are incomplete"
+    else:
+        readiness = "blocked-implementation"
+        reason = "real execution implementation is intentionally absent in this build"
+    return {
+        "real execution readiness": readiness,
+        "real execution blocked reason": reason,
+        "real execution can run": "no",
     }
 
 
@@ -2720,10 +2741,12 @@ def _real_transfer_gate_report(
     report = _real_transfer_check_report(_real_gate_args(args), paths, service)
     details = dict(report.details)
     approval_details = _real_gate_approval_details(args, details.get("final review status"))
+    approval_status = approval_details.get("separate real gate approval status")
     verification_details = _operator_verification_details(
         details.get("final review status"),
-        approval_details.get("separate real gate approval status"),
+        approval_status,
     )
+    readiness_details = _real_execution_readiness_details(details.get("final review status"), approval_status)
     policy_details = _future_real_run_policy_details(service)
     details.update(
         {
@@ -2739,6 +2762,7 @@ def _real_transfer_gate_report(
             "state writes": "none",
             **approval_details,
             **verification_details,
+            **readiness_details,
             **policy_details,
         }
     )
