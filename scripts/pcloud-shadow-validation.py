@@ -361,6 +361,70 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("pushd fswatch resident gate closed", "ok", "resident start is gated"))
         else:
             checks.append(CheckResult("pushd fswatch resident gate closed", "error", "resident gate mismatch"))
+        resident_run_closed = _check_json_command(
+            checks,
+            fswatch_gate_env,
+            "pushd fswatch resident-run gate closed",
+            (
+                "pushd",
+                "fswatch",
+                "resident-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-probe",
+                "--reviewer-approved-queue-policy",
+                "--reviewer-approved-process-policy",
+                "--execute",
+            ),
+            allowed_status={"error"},
+        )
+        if (
+            resident_run_closed.get("details", {}).get("state writes") == "none"
+            and resident_run_closed.get("details", {}).get("resident can start") == "no"
+        ):
+            checks.append(CheckResult("pushd fswatch resident-run closed no writes", "ok", "resident gate refused"))
+        else:
+            checks.append(
+                CheckResult("pushd fswatch resident-run closed no writes", "error", "closed gate wrote state")
+            )
+        fake_fswatch.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/resident-shadow.txt\"\n"
+        )
+        resident_run_env = dict(fswatch_gate_env)
+        resident_run_env["PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"] = "operator-approved-fswatch-resident-v1"
+        resident_run = _check_json_command(
+            checks,
+            resident_run_env,
+            "pushd fswatch resident-run fake",
+            (
+                "pushd",
+                "fswatch",
+                "resident-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-probe",
+                "--reviewer-approved-queue-policy",
+                "--reviewer-approved-process-policy",
+                "--max-events",
+                "1",
+                "--execute",
+            ),
+        )
+        if (
+            resident_run.get("details", {}).get("resident can start") == "yes"
+            and resident_run.get("details", {}).get("queue records appended") == 1
+            and resident_run.get("details", {}).get("state writes") == "pushd queue and resident run state"
+        ):
+            checks.append(CheckResult("pushd fswatch resident-run fake queue", "ok", "queue append recorded"))
+        else:
+            checks.append(CheckResult("pushd fswatch resident-run fake queue", "error", "resident run mismatch"))
+        _check_json_command(
+            checks,
+            env,
+            "pushd fswatch resident-run cleanup",
+            ("pushd", "queue", "remove", "Documents/resident-shadow.txt", "--execute"),
+        )
 
         diff_fixture = workspace / "pcloud-diff.json"
         diff_fixture.write_text(
@@ -1132,6 +1196,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "pushd.gate", "pushd real-operation gate is closed")
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
+        _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-run.preview", "pushd fswatch resident execution is gated")
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
         _check_action(checks, env, "sync.autosync-plist.preview", "autosync plist preview is ready")
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")

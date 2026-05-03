@@ -155,6 +155,7 @@ def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Pa
         notify_bin=tmp_path / "pcloud-notify",
         rclone_bin="rclone",
         transfer_execution_gate="",
+        pushd_fswatch_resident_gate="",
         transfer_exec_timeout_seconds=5,
         pushd_debounce_seconds=2,
         pushd_queue_limit=100,
@@ -814,6 +815,144 @@ def test_pushd_fswatch_resident_gate_is_read_only_checklist(tmp_path: Path) -> N
     assert checks["process lifecycle approval"]["status"] == "ok"
     assert "pushd.fswatch.resident-gate" in [action["id"] for action in payload["actions"]]
     assert not (state_dir / "pushd").exists()
+
+
+def test_pushd_fswatch_resident_run_refuses_without_execution_gate(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fswatch = bin_dir / "fswatch"
+    fswatch.write_text("#!/bin/sh\nprintf 'Documents/from-fswatch.txt\\n'\n")
+    fswatch.chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    shadow_report = tmp_path / "shadow-validation-fswatch-run.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-fswatch-run" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "fswatch",
+            "resident-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-probe",
+            "--reviewer-approved-queue-policy",
+            "--reviewer-approved-process-policy",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["summary"] == "pushd fswatch resident execution is gated"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["resident can start"] == "no"
+    assert "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_EXECUTION_GATE" in [
+        issue["key"] for issue in payload["issues"]
+    ]
+    assert not (state_dir / "pushd" / "queue.json").exists()
+
+
+def test_pushd_fswatch_resident_run_executes_fake_fswatch_in_dev_state(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "operator-approved-fswatch-resident-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / "Documents").mkdir()
+    (workspace / "Documents" / "from-fswatch.txt").write_text("sample\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fswatch = bin_dir / "fswatch"
+    fswatch.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/from-fswatch.txt\"\n"
+    )
+    fswatch.chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    shadow_report = tmp_path / "shadow-validation-fswatch-run-ok.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-fswatch-run-ok" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "fswatch",
+            "resident-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-probe",
+            "--reviewer-approved-queue-policy",
+            "--reviewer-approved-process-policy",
+            "--max-events",
+            "1",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    queue_payload = json.loads((state_dir / "pushd" / "queue.json").read_text())
+    resident_state = json.loads((state_dir / "pushd" / "fswatch-resident-last-run.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["summary"] == "pushd fswatch resident run completed"
+    assert payload["details"]["resident can start"] == "yes"
+    assert payload["details"]["state writes"] == "pushd queue and resident run state"
+    assert payload["details"]["queue records appended"] == 1
+    assert queue_payload == [
+        {"path": "Documents/from-fswatch.txt", "action": "upload", "reason": "fswatch"}
+    ]
+    assert resident_state["appended_records"] == queue_payload
 
 
 def test_sync_autosync_gate_is_read_only_checklist(tmp_path: Path) -> None:

@@ -27,6 +27,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "pushd.run.preview": ("pushd", "run"),
     "pushd.gate": ("pushd", "gate"),
     "pushd.fswatch.resident-gate": ("pushd", "fswatch", "resident-gate"),
+    "pushd.fswatch.resident-run.preview": ("pushd", "fswatch", "resident-run"),
     "pushd.transfer.preview": ("pushd", "transfer", "preview"),
     "pushd.transfer.check": ("pushd", "transfer", "check"),
     "pushd.transfer.real-gate": ("pushd", "transfer", "real-gate"),

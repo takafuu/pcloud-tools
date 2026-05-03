@@ -16,7 +16,7 @@ from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import DaemonState, read_daemon_state
 from .diffd_events import diff_changes_to_records, parse_diff_response_fixture
 from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .pushd_events import fswatch_events_to_records, parse_fswatch_fixture
+from .pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
 from .runtime import RuntimePaths, action_entrypoint_command, detect_runtime_paths
 from .service_daemon_plan import (
     DiffdPlan,
@@ -82,6 +82,7 @@ _TIMEOUT_POLICIES = (
     "reuse-fake-rclone-cleanup",
     "manual-review",
 )
+_PUSHD_FSWATCH_RESIDENT_GATE_VALUE = "operator-approved-fswatch-resident-v1"
 
 
 def add_service_daemon_parsers(subparsers: argparse._SubParsersAction) -> None:
@@ -146,6 +147,21 @@ def _add_service_parser(
             "--json", action="store_true", help="Emit structured JSON output."
         )
         fswatch_resident_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
+        fswatch_resident_run_parser = fswatch_subparsers.add_parser(
+            "resident-run", help="Run the foreground fswatch resident loop after the dedicated gate opens."
+        )
+        fswatch_resident_run_parser.add_argument("--report-path", type=Path)
+        fswatch_resident_run_parser.add_argument("--operator-reviewed-probe", action="store_true")
+        fswatch_resident_run_parser.add_argument("--reviewer-approved-queue-policy", action="store_true")
+        fswatch_resident_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        fswatch_resident_run_parser.add_argument("--max-events", type=int)
+        fswatch_resident_run_parser.add_argument("--execute", action="store_true")
+        fswatch_resident_run_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        fswatch_resident_run_parser.add_argument(
             "--xbar", action="store_true", help="Emit xbar menu output."
         )
         transfer_parser = service_subparsers.add_parser(
@@ -809,6 +825,58 @@ def _print_fswatch_resident_gate_report(report: CommandReport, args: argparse.Na
     _print_report(report, args)
 
 
+def _render_fswatch_resident_run_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"resident run gate: {details.get('resident run gate status', '-')}",
+        f"resident can start: {details.get('resident can start', '-')}",
+        f"execute requested: {details.get('execute requested', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"watch root: {details.get('watch root', '-')}",
+        (
+            "fswatch: "
+            f"{details.get('fswatch availability', '-')} "
+            f"({details.get('fswatch binary', '-')})"
+        ),
+        f"approval status: {details.get('resident approval status', '-')}",
+        f"events processed: {details.get('events processed', '-')}",
+        f"queue records appended: {details.get('queue records appended', '-')}",
+        f"excluded events: {details.get('excluded events', '-')}",
+        f"invalid events: {details.get('invalid events', '-')}",
+    ]
+    command = details.get("resident command preview")
+    if command:
+        lines.append(f"resident command: {_shell_command(command)}")
+    if details.get("resident state file"):
+        lines.append(f"resident state: {details.get('resident state file')}")
+    checks = details.get("preflight checks")
+    blocked_checks: list[str] = []
+    if isinstance(checks, list):
+        for check in checks:
+            if isinstance(check, dict) and check.get("status") != "ok":
+                blocked_checks.append(
+                    f"{check.get('name', '-')}: {check.get('status', '-')} - {check.get('detail', '-')}"
+                )
+    if blocked_checks:
+        lines.append("blocked checks:")
+        for check in blocked_checks:
+            lines.append(f"- {check}")
+    if report.issues:
+        lines.append("warnings:" if report.status != "error" else "issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _print_fswatch_resident_run_report(report: CommandReport, args: argparse.Namespace) -> None:
+    if _output_format(args) == "human":
+        print(_render_fswatch_resident_run_human(report))
+        return
+    _print_report(report, args)
+
+
 def _render_api_long_poll_gate_human(report: CommandReport) -> str:
     details = report.details
     lines = [
@@ -1081,6 +1149,15 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
                 id="pushd.fswatch.resident-gate",
                 label="Check pushd fswatch resident gate",
                 command=_action_command(paths, "pushd.fswatch.resident-gate"),
+                terminal=True,
+                refresh=False,
+            )
+        )
+        actions.append(
+            ReportAction(
+                id="pushd.fswatch.resident-run.preview",
+                label="Preview pushd fswatch resident run",
+                command=_action_command(paths, "pushd.fswatch.resident-run.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -2132,6 +2209,248 @@ def _pushd_fswatch_resident_gate_report(args: argparse.Namespace, paths: Runtime
     )
 
 
+def _resident_run_state_file(config: AppConfig) -> Path:
+    return config.state_dir / "pushd" / "fswatch-resident-last-run.json"
+
+
+def _normalize_resident_fswatch_line(line: str, root: Path) -> str:
+    stripped = line.strip()
+    if not stripped or stripped.startswith("#"):
+        return line
+    if "\t" in stripped:
+        path_part, flags_part = stripped.split("\t", 1)
+    else:
+        path_part, flags_part = stripped, ""
+    candidate = Path(path_part).expanduser()
+    if candidate.is_absolute():
+        try:
+            relative = candidate.resolve().relative_to(root.resolve())
+        except OSError:
+            return line
+        except ValueError:
+            return line
+        normalized = relative.as_posix()
+    else:
+        normalized = normalize_plan_path(path_part)
+    if not normalized:
+        return line
+    return f"{normalized}\t{flags_part}" if flags_part else normalized
+
+
+def _resident_gate_open(config: AppConfig) -> bool:
+    return config.pushd_fswatch_resident_gate == _PUSHD_FSWATCH_RESIDENT_GATE_VALUE
+
+
+def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    gate_report = _pushd_fswatch_resident_gate_report(args, paths)
+    load_result = load_config(paths)
+    config = load_result.config
+    execute = bool(getattr(args, "execute", False))
+    max_events = getattr(args, "max_events", None)
+    details = dict(gate_report.details)
+    issues = [
+        ConfigIssue(key=issue.key, level=issue.level, message=issue.message)
+        for issue in gate_report.issues
+        if issue.key != "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"
+    ]
+    resident_command = [str(part) for part in details.get("resident command preview", [])]
+    approval_status = str(details.get("resident approval status", "pending"))
+    gate_open = _resident_gate_open(config)
+    state_file = _resident_run_state_file(config)
+
+    details.update(
+        {
+            "planned action": "run pushd fswatch resident loop" if execute else "preview pushd fswatch resident run",
+            "implementation status": (
+                "foreground resident loop; fswatch events append pushd queue records"
+                if execute
+                else "resident run preview only; fswatch process is not started"
+            ),
+            "resident run gate status": (
+                f"open: {_PUSHD_FSWATCH_RESIDENT_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE={_PUSHD_FSWATCH_RESIDENT_GATE_VALUE}"
+            ),
+            "resident can start": "yes" if gate_open and approval_status == "complete-read-only" else "no",
+            "execute requested": "yes" if execute else "no",
+            "state writes": "pushd queue and resident run state" if execute else "none",
+            "resident state file": str(state_file),
+            "future gate env": f"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE={_PUSHD_FSWATCH_RESIDENT_GATE_VALUE}",
+            "max events": max_events if max_events is not None else "-",
+            "events processed": 0,
+            "queue records appended": 0,
+            "excluded events": 0,
+            "invalid events": 0,
+        }
+    )
+    if max_events is not None and max_events < 1:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_MAX_EVENTS",
+                level="error",
+                message="--max-events must be >= 1",
+            )
+        )
+    if approval_status != "complete-read-only":
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_APPROVAL",
+                level="error" if execute else "warning",
+                message="resident execution requires complete read-only fswatch approvals",
+            )
+        )
+    if not gate_open:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_EXECUTION_GATE",
+                level="error" if execute else "warning",
+                message=(
+                    "resident execution requires "
+                    f"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE={_PUSHD_FSWATCH_RESIDENT_GATE_VALUE!r}"
+                ),
+            )
+        )
+    if execute and not resident_command:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_COMMAND",
+                level="error",
+                message="resident command is unavailable",
+            )
+        )
+
+    if not execute or _has_errors(issues):
+        if _has_errors(issues):
+            details["state writes"] = "none"
+        issues = _sort_issues(issues)
+        return CommandReport(
+            command="pushd fswatch resident-run",
+            status=_status_from_issues(issues),
+            summary=(
+                "pushd fswatch resident execution is gated"
+                if _has_errors(issues) or not gate_open
+                else "pushd fswatch resident run is ready"
+            ),
+            details=details,
+            issues=_report_issues(issues),
+            actions=_service_actions(paths, _SERVICES["pushd"]),
+        )
+
+    started_at = datetime.now(timezone.utc).isoformat()
+    cleanup: dict[str, object] = {"process group cleanup": "not-needed"}
+    results: dict[str, object] = {
+        "command": resident_command,
+        "started_at": started_at,
+        "max_events": max_events,
+    }
+    appended_records: list[dict[str, str]] = []
+    excluded_records: list[dict[str, str]] = []
+    invalid_records: list[dict[str, str]] = []
+    process: subprocess.Popen[str] | None = None
+    try:
+        process = subprocess.Popen(
+            resident_command,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True,
+            start_new_session=True,
+        )
+        results["pid"] = process.pid
+        events_processed = 0
+        assert process.stdout is not None
+        for raw_line in process.stdout:
+            events_processed += 1
+            normalized_line = _normalize_resident_fswatch_line(raw_line, config.core_dir)
+            parsed = parse_fswatch_event_line(normalized_line)
+            if isinstance(parsed, InvalidPushdEvent):
+                invalid_records.append({"raw": parsed.raw, "reason": parsed.reason})
+            else:
+                record = fswatch_events_to_records((parsed,))[0]
+                plan = build_pushd_plan_from_records(
+                    config,
+                    read_service_daemon_state(config, "pushd").queue_file,
+                    (record,),
+                    total=1,
+                )
+                if plan.upload_records:
+                    update = append_plan_record(plan.queue_file, "PCLOUD_TOOLS_PUSHD_QUEUE", record)
+                    if update.issue:
+                        issues.append(update.issue)
+                    else:
+                        appended_records.append({"path": record.path, "action": record.action, "reason": record.reason})
+                elif plan.excluded_records:
+                    excluded = plan.excluded_records[0]
+                    excluded_records.append({"path": excluded.path, "action": excluded.action, "reason": excluded.reason})
+                elif plan.invalid_records:
+                    invalid = plan.invalid_records[0]
+                    invalid_records.append({"raw": raw_line.strip(), "reason": invalid.reason})
+                issues.extend(plan.issues)
+            if max_events is not None and events_processed >= max_events:
+                break
+        if max_events is not None and process.poll() is None:
+            cleanup = _cleanup_transfer_process_group(process)
+        returncode = process.wait(timeout=_TRANSFER_CLEANUP_WAIT_SECONDS) if process.poll() is None else process.returncode
+        stderr = process.stderr.read().strip() if process.stderr is not None else ""
+        results["returncode"] = returncode
+        results["stderr"] = stderr
+    except subprocess.TimeoutExpired:
+        if process is not None:
+            cleanup = _cleanup_transfer_process_group(process)
+            results["returncode"] = process.returncode
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_TIMEOUT",
+                level="error",
+                message="resident process did not stop after requested max-events cleanup",
+            )
+        )
+    except OSError as exc:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_EXEC",
+                level="error",
+                message=f"resident process could not start: {exc}",
+            )
+        )
+    finished_at = datetime.now(timezone.utc).isoformat()
+    results.update(
+        {
+            "finished_at": finished_at,
+            "cleanup": cleanup,
+            "appended_records": appended_records,
+            "excluded_records": excluded_records,
+            "invalid_records": invalid_records,
+        }
+    )
+    if not _has_errors(issues):
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(results, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+    details.update(
+        {
+            "events processed": len(appended_records) + len(excluded_records) + len(invalid_records),
+            "queue records appended": len(appended_records),
+            "excluded events": len(excluded_records),
+            "invalid events": len(invalid_records),
+            "appended record details": appended_records,
+            "excluded event details": excluded_records,
+            "invalid event details": invalid_records,
+            "process result": results,
+            "process group cleanup": cleanup.get("process group cleanup", "-"),
+            "state writes": "pushd queue and resident run state" if not _has_errors(issues) else "none",
+        }
+    )
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command="pushd fswatch resident-run",
+        status=_status_from_issues(issues),
+        summary="pushd fswatch resident run completed" if not _has_errors(issues) else "pushd fswatch resident run failed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
 def cmd_pushd_fswatch(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.fswatch_command == "preview":
         report = _pushd_fswatch_report(args, paths)
@@ -2144,6 +2463,10 @@ def cmd_pushd_fswatch(args: argparse.Namespace, paths: RuntimePaths) -> int | No
     if args.fswatch_command == "resident-gate":
         report = _pushd_fswatch_resident_gate_report(args, paths)
         _print_fswatch_resident_gate_report(report, args)
+        return _exit_code_for_report(report)
+    if args.fswatch_command == "resident-run":
+        report = _pushd_fswatch_resident_run_report(args, paths)
+        _print_fswatch_resident_run_report(report, args)
         return _exit_code_for_report(report)
     return None
 
@@ -3999,6 +4322,21 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
             "--json", action="store_true", help="Emit structured JSON output."
         )
         fswatch_resident_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
+        fswatch_resident_run_parser = fswatch_subparsers.add_parser(
+            "resident-run", help="Run the foreground fswatch resident loop after the dedicated gate opens."
+        )
+        fswatch_resident_run_parser.add_argument("--report-path", type=Path)
+        fswatch_resident_run_parser.add_argument("--operator-reviewed-probe", action="store_true")
+        fswatch_resident_run_parser.add_argument("--reviewer-approved-queue-policy", action="store_true")
+        fswatch_resident_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        fswatch_resident_run_parser.add_argument("--max-events", type=int)
+        fswatch_resident_run_parser.add_argument("--execute", action="store_true")
+        fswatch_resident_run_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        fswatch_resident_run_parser.add_argument(
             "--xbar", action="store_true", help="Emit xbar menu output."
         )
 

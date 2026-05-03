@@ -72,6 +72,10 @@ def _event_from_line(line: str) -> PushdFswatchEvent | InvalidPushdEvent:
     return PushdFswatchEvent(path=path, flags=flags, raw=line)
 
 
+def parse_fswatch_event_line(line: str) -> PushdFswatchEvent | InvalidPushdEvent:
+    return _event_from_line(line)
+
+
 def _events_from_payload(payload: Any, raw_text: str) -> list[PushdFswatchEvent | InvalidPushdEvent]:
     if not isinstance(payload, list):
         return [InvalidPushdEvent(raw=raw_text, reason="JSON fixture must be a list")]
