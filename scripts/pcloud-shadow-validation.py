@@ -570,6 +570,7 @@ def run_validation() -> dict[str, Any]:
         if (
             pushd_consume.get("details", {}).get("state writes") == "none"
             and pushd_consume.get("details", {}).get("planned record removals") == 1
+            and pushd_consume.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("pushd transfer consume read-only", "ok", "planned removals = 1"))
         else:
@@ -577,6 +578,7 @@ def run_validation() -> dict[str, Any]:
         if (
             diffd_consume.get("details", {}).get("state writes") == "none"
             and diffd_consume.get("details", {}).get("planned record removals") == 1
+            and diffd_consume.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("diffd transfer consume read-only", "ok", "planned removals = 1"))
         else:
@@ -596,6 +598,7 @@ def run_validation() -> dict[str, Any]:
         if (
             pushd_consume_run.get("details", {}).get("records to remove") == 1
             and pushd_consume_run.get("details", {}).get("records after") == 0
+            and pushd_consume_run.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("pushd transfer consume guarded run", "ok", "removed one queue item"))
         else:
@@ -603,6 +606,7 @@ def run_validation() -> dict[str, Any]:
         if (
             diffd_consume_run.get("details", {}).get("records to remove") == 1
             and diffd_consume_run.get("details", {}).get("records after") == 0
+            and diffd_consume_run.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("diffd transfer consume guarded run", "ok", "removed one remote change"))
         else:

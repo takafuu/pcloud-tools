@@ -2034,12 +2034,15 @@ def test_transfer_consume_preview_reports_successful_records_without_writes(tmp_
     assert preview.returncode == 0
     assert "pushd transfer consume preview:" in preview.stdout
     assert "consume gate: preview-only" in preview.stdout
+    assert "real execution can run: no" in preview.stdout
     assert "state writes: none" in preview.stdout
     assert "successful transfers: 1" in preview.stdout
     assert "planned record removals: 1" in preview.stdout
     assert "first removal: Documents/upload.pdf (upload)" in preview.stdout
     assert structured.returncode == 0
     assert payload["details"]["implementation status"].startswith("read-only consume preview")
+    assert payload["details"]["real execution can run"] == "no"
+    assert payload["details"]["real execution readiness"] == "not-transfer-execution"
     assert payload["details"]["state writes"] == "none"
     assert payload["details"]["successful transfer results"] == 1
     assert payload["details"]["planned record removals"] == 1
@@ -2114,6 +2117,8 @@ def test_transfer_consume_run_execute_removes_only_successful_matched_records(tm
     assert consume_execute.returncode == 0
     assert payload["summary"] == "pushd transfer consumed records"
     assert payload["details"]["consume gate status"] == "open: dev-state"
+    assert payload["details"]["real execution can run"] == "no"
+    assert payload["details"]["real execution readiness"] == "not-transfer-execution"
     assert payload["details"]["records to remove"] == 1
     assert payload["details"]["records before"] == 2
     assert payload["details"]["records after"] == 1
