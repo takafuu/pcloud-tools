@@ -727,6 +727,7 @@ def run_validation() -> dict[str, Any]:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Run pcloud-tools shadow validation against temp dev state.")
     parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    parser.add_argument("--summary", action="store_true", help="Emit a concise human summary without per-check lines.")
     parser.add_argument("--report-path", type=Path, help="Write the structured JSON report to this path.")
     args = parser.parse_args()
     report = run_validation()
@@ -739,8 +740,14 @@ def main() -> int:
         print(f"shadow validation: {report['status']}")
         if args.report_path:
             print(f"report: {args.report_path}")
-        for check in report["checks"]:
-            print(f"- {check['status']}: {check['name']}: {check['detail']}")
+        if args.summary:
+            checks = list(report["checks"])
+            ok_count = sum(1 for check in checks if check["status"] == "ok")
+            error_count = sum(1 for check in checks if check["status"] != "ok")
+            print(f"checks: {ok_count} ok; {error_count} failed; {len(checks)} total")
+        else:
+            for check in report["checks"]:
+                print(f"- {check['status']}: {check['name']}: {check['detail']}")
     return 1 if report["status"] == "error" else 0
 
 

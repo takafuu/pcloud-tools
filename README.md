@@ -61,6 +61,7 @@ Development entrypoint:
 ./pcloud-manager-dev diffd remote-change remove Documents/example.pdf
 ./pcloud-manager-dev diffd remote-change clear
 python3 scripts/pcloud-shadow-validation.py
+python3 scripts/pcloud-shadow-validation.py --summary
 python3 scripts/pcloud-shadow-validation.py --report-path .dev-state/reports/shadow-validation.json
 ./pcloud-manager-dev mount vault
 ./pcloud-manager-dev umount all
@@ -116,7 +117,7 @@ Config notes:
 - `pushd transfer consume preview` and `diffd transfer consume preview` read the latest dev-state `last-transfer.json` and current queue/change file to show which successful fake-rclone records would be removed; they are read-only, write no state, and do not consume queue/change files
 - `pushd transfer consume run --execute` and `diffd transfer consume run --execute` are dev-state guarded consume paths; they remove only queue/change records matching successful fake-rclone results, and still do not open real rclone/pCloud transfer
 - `scripts/pcloud-shadow-validation.py` runs a temp-dev-state shadow validation pass over preview, dry-run, action, and safety-guard paths without touching live state or pCloud remotes
-- shadow validation can write a JSON report with `--report-path`; a cutover candidate must have `status: ok`, every check `status: ok`, `temporary workspace guard` / `temporary state dir guard` passing, and no evidence of live `~/.pcloud` or pCloud remote IO
+- shadow validation can write a JSON report with `--report-path`; use `--summary` for concise human output while preserving full AI/reviewer detail in `--json` and saved reports. A cutover candidate must have `status: ok`, every check `status: ok`, `temporary workspace guard` / `temporary state dir guard` passing, and no evidence of live `~/.pcloud` or pCloud remote IO
 - stable action ids include `pushd.status.refresh`, `pushd.preview`, `pushd.run.preview`, `pushd.gate`, `pushd.transfer.preview`, `pushd.transfer.check`, `pushd.transfer.real-gate`, `pushd.transfer.real-run.preview`, `pushd.transfer.consume.preview`, `pushd.queue.clear.preview`, `diffd.status.refresh`, `diffd.preview`, `diffd.run.preview`, `diffd.gate`, `diffd.transfer.preview`, `diffd.transfer.check`, `diffd.transfer.real-gate`, `diffd.transfer.real-run.preview`, `diffd.transfer.consume.preview`, and `diffd.remote-change.clear.preview`
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links
 - `index` now uses the repo-local `scripts/pcloud-indexer.py`, and its default DB lives under `.dev-state/state/index/`
@@ -134,6 +135,7 @@ Shadow validation gate:
 ```sh
 mkdir -p .dev-state/reports
 python3 scripts/pcloud-shadow-validation.py --report-path .dev-state/reports/shadow-validation.json
+python3 scripts/pcloud-shadow-validation.py --summary
 python3 scripts/pcloud-shadow-validation.py --json
 ```
 

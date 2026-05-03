@@ -2827,3 +2827,25 @@ def test_shadow_validation_script_can_write_report_file(tmp_path: Path) -> None:
     state_dir = Path(str(payload["state_dir"])).resolve()
     assert workspace.parent.name.startswith("pcloud-shadow-validation-")
     assert state_dir == workspace / ".dev-state" / "state"
+
+
+def test_shadow_validation_script_summary_output_is_concise(tmp_path: Path) -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_TOOLS_")
+    }
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    result = subprocess.run(
+        [sys.executable, str(REPO_ROOT / "scripts" / "pcloud-shadow-validation.py"), "--summary"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "shadow validation: ok" in result.stdout
+    assert "checks:" in result.stdout
+    assert "- ok:" not in result.stdout
