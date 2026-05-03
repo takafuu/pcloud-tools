@@ -363,6 +363,14 @@ def test_action_dispatch_uses_stable_ids_with_isolated_runtime(tmp_path: Path) -
         cwd=tmp_path,
         env=env,
     )
+    autosync_gate = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "sync.autosync.gate"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
     pushd = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.preview"],
         check=False,
@@ -385,6 +393,8 @@ def test_action_dispatch_uses_stable_ids_with_isolated_runtime(tmp_path: Path) -
     assert "Refresh daemon state" in daemon.stdout
     assert sync.returncode == 0
     assert "sync command preview is ready" in sync.stdout
+    assert autosync_gate.returncode == 0
+    assert "autosync launchd gate is closed" in autosync_gate.stdout
     assert pushd.returncode == 0
     assert "pushd scaffold preview is ready" in pushd.stdout
     assert diffd.returncode == 0
@@ -742,6 +752,83 @@ def test_pushd_fswatch_resident_gate_is_read_only_checklist(tmp_path: Path) -> N
     assert checks["process lifecycle approval"]["status"] == "ok"
     assert "pushd.fswatch.resident-gate" in [action["id"] for action in payload["actions"]]
     assert not (state_dir / "pushd").exists()
+
+
+def test_sync_autosync_gate_is_read_only_checklist(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    launchctl = bin_dir / "launchctl"
+    launchctl.write_text("#!/bin/sh\nif [ \"$1\" = \"print\" ]; then exit 1; fi\nexit 0\n")
+    launchctl.chmod(0o755)
+    env["PATH"] = f"{bin_dir}{os.pathsep}{env.get('PATH', '')}"
+    plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
+    plist.parent.mkdir(parents=True, exist_ok=True)
+    plist.write_text("<plist><dict/></plist>\n")
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-autosync" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-autosync.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "autosync-gate",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-plist",
+            "--reviewer-approved-launchctl-policy",
+            "--reviewer-approved-rollback-policy",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["summary"] == "autosync launchd gate is closed"
+    assert payload["details"]["implementation status"].startswith("read-only checklist")
+    assert payload["details"]["launchd gate status"] == "closed"
+    assert payload["details"]["autosync changes can run"] == "no"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["autosync state"] == "not_loaded"
+    assert payload["details"]["launchctl availability"] == "available"
+    assert payload["details"]["autosync approval status"] == "complete-read-only"
+    assert payload["details"]["human gate status"] == "required-before-autosync-launchd-change"
+    assert checks["saved shadow validation report"]["status"] == "ok"
+    assert checks["launchctl binary"]["status"] == "ok"
+    assert checks["autosync plist"]["status"] == "ok"
+    assert checks["operator preview review"]["status"] == "ok"
+    assert checks["plist approval"]["status"] == "ok"
+    assert checks["launchctl policy approval"]["status"] == "ok"
+    assert checks["rollback policy approval"]["status"] == "ok"
+    assert "sync.autosync.gate" in [action["id"] for action in payload["actions"]]
+    assert not any(state_dir.iterdir())
 
 
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import json
 import shlex
 import subprocess
 import sys
@@ -99,6 +100,16 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Apply the launchctl changes instead of only previewing them.",
     )
     sync_disable_autosync_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_autosync_gate_parser = sync_subparsers.add_parser(
+        "autosync-gate", help="Read-only checklist before changing autosync launchd registration."
+    )
+    sync_autosync_gate_parser.add_argument("--report-path", type=Path)
+    sync_autosync_gate_parser.add_argument("--operator-reviewed-preview", action="store_true")
+    sync_autosync_gate_parser.add_argument("--reviewer-approved-plist", action="store_true")
+    sync_autosync_gate_parser.add_argument("--reviewer-approved-launchctl-policy", action="store_true")
+    sync_autosync_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    sync_autosync_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_autosync_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     sync_clear_stale_lock_parser = sync_subparsers.add_parser("clear-stale-lock")
     sync_clear_stale_lock_parser.add_argument(
         "--execute",
@@ -148,6 +159,8 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return cmd_sync_autosync(args, paths, "enable-autosync")
     if args.sync_command == "disable-autosync":
         return cmd_sync_autosync(args, paths, "disable-autosync")
+    if args.sync_command == "autosync-gate":
+        return cmd_sync_autosync_gate(args, paths)
     if args.sync_command == "_run":
         return cmd_sync_internal_run(args, paths)
     if args.sync_command in {"resync", "full-resync", "track-renames"}:
@@ -265,6 +278,13 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
             id="sync.background.preview",
             label="Preview background sync",
             command=_action_command(paths, "sync.background.preview"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id="sync.autosync.gate",
+            label="Check autosync launchd gate",
+            command=_action_command(paths, "sync.autosync.gate"),
             terminal=True,
             refresh=False,
         ),
@@ -1108,6 +1128,322 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
         details=details,
         issues=_report_issues(issues),
     )
+
+
+_REQUIRED_SHADOW_CHECKS = {
+    "temporary workspace guard",
+    "temporary state dir guard",
+    "unsafe state dir guard",
+}
+
+
+def _saved_shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], list[ConfigIssue]]:
+    if report_path is None:
+        return (
+            {
+                "name": "saved shadow validation report",
+                "status": "pending",
+                "detail": "pass --report-path after saving scripts/pcloud-shadow-validation.py --report-path",
+            },
+            [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                    level="warning",
+                    message="saved shadow validation report was not provided",
+                )
+            ],
+        )
+
+    path = report_path.expanduser()
+    if not path.exists() or not path.is_file():
+        return (
+            {
+                "name": "saved shadow validation report",
+                "status": "missing",
+                "detail": str(path),
+            },
+            [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                    level="warning",
+                    message=f"saved shadow validation report is missing: {path}",
+                )
+            ],
+        )
+
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError) as exc:
+        return (
+            {
+                "name": "saved shadow validation report",
+                "status": "invalid",
+                "detail": str(exc),
+            },
+            [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                    level="warning",
+                    message=f"saved shadow validation report could not be read: {exc}",
+                )
+            ],
+        )
+
+    checks = payload.get("checks")
+    check_names = {
+        str(check.get("name", ""))
+        for check in checks
+        if isinstance(check, dict)
+    } if isinstance(checks, list) else set()
+    failed = [
+        str(check.get("name", "unknown"))
+        for check in checks
+        if isinstance(check, dict) and check.get("status") != "ok"
+    ] if isinstance(checks, list) else ["checks missing"]
+    missing_required = sorted(_REQUIRED_SHADOW_CHECKS - check_names)
+    workspace = str(payload.get("workspace", ""))
+    state_dir = str(payload.get("state_dir", ""))
+    temp_workspace_ok = "/pcloud-shadow-validation-" in workspace and workspace.endswith("/workspace")
+    temp_state_ok = state_dir == f"{workspace}/.dev-state/state" if workspace else False
+    report_status = payload.get("status")
+    if report_status == "ok" and not failed and not missing_required and temp_workspace_ok and temp_state_ok:
+        return (
+            {
+                "name": "saved shadow validation report",
+                "status": "ok",
+                "detail": f"{path}; required checks present; temp state guard verified",
+            },
+            [],
+        )
+
+    detail = (
+        f"top-level status={report_status!r}; failed checks={failed}; "
+        f"missing required checks={missing_required}; temp workspace ok={temp_workspace_ok}; "
+        f"temp state dir ok={temp_state_ok}"
+    )
+    return (
+        {
+            "name": "saved shadow validation report",
+            "status": "not-ok",
+            "detail": detail,
+        },
+        [
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                level="warning",
+                message=f"saved shadow validation report is not ok: {detail}",
+            )
+        ],
+    )
+
+
+def _shell_command(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return shlex.join(str(part) for part in value)
+    return str(value)
+
+
+def _render_autosync_gate_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"launchd gate: {details.get('launchd gate status', '-')}",
+        f"autosync changes can run: {details.get('autosync changes can run', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"autosync state: {details.get('autosync state', '-')}",
+        f"autosync label: {details.get('autosync label', '-')}",
+        f"autosync plist: {details.get('autosync plist', '-')}",
+        f"launchctl: {details.get('launchctl availability', '-')} ({details.get('launchctl binary', '-')})",
+        f"approval status: {details.get('autosync approval status', '-')}",
+        f"human gate: {details.get('human gate status', '-')}",
+        f"next human check trigger: {details.get('next human check trigger', '-')}",
+    ]
+    commands = [
+        ("enable preview", details.get("enable preview command")),
+        ("disable preview", details.get("disable preview command")),
+    ]
+    for label, command in commands:
+        if command:
+            lines.append(f"{label}: {_shell_command(command)}")
+    launchctl_commands = [
+        ("enable launchctl commands", details.get("enable launchctl commands")),
+        ("disable launchctl commands", details.get("disable launchctl commands")),
+    ]
+    for label, command_group in launchctl_commands:
+        if not isinstance(command_group, list) or not command_group:
+            continue
+        lines.append(f"{label}:")
+        for command in command_group:
+            lines.append(f"- {_shell_command(command)}")
+    checks = details.get("preflight checks")
+    if isinstance(checks, list) and checks:
+        lines.append("preflight checks:")
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            lines.append(
+                "- "
+                f"{check.get('name', '-')}: "
+                f"{check.get('status', '-')} - "
+                f"{check.get('detail', '-')}"
+            )
+    blocked = details.get("blocked operations")
+    if isinstance(blocked, list) and blocked:
+        lines.append("blocked operations:")
+        for item in blocked:
+            lines.append(f"- {item}")
+    if report.issues:
+        lines.append("warnings:")
+        for issue in report.issues:
+            if issue.level == "warning":
+                lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    autosync = read_autosync_state(config)
+    issues = list(load_result.issues)
+    shadow_check, shadow_issues = _saved_shadow_report_check(getattr(args, "report_path", None))
+    issues.extend(shadow_issues)
+    launchctl_bin = _command_path("launchctl")
+    launchctl_check = {
+        "name": "launchctl binary",
+        "status": "ok" if launchctl_bin else "pending",
+        "detail": launchctl_bin or "launchctl not found by command -v; verify before launchd changes",
+    }
+    if not launchctl_bin:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHCTL",
+                level="warning",
+                message="launchctl was not found by command -v; autosync gate remains closed",
+            )
+        )
+    plist_check = {
+        "name": "autosync plist",
+        "status": "ok" if config.autosync_plist.exists() else "pending",
+        "detail": str(config.autosync_plist),
+    }
+    if not config.autosync_plist.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_AUTOSYNC_PLIST",
+                level="warning",
+                message=f"autosync plist not found: {config.autosync_plist}",
+            )
+        )
+
+    entrypoint = _entrypoint_command(paths)
+    enable_preview = [entrypoint, "sync", "enable-autosync", "--json"]
+    disable_preview = [entrypoint, "sync", "disable-autosync", "--yes", "--json"]
+    target = f"gui/<uid>/{config.autosync_label}"
+    enable_launchctl = [
+        [launchctl_bin or "launchctl", "enable", target],
+        [launchctl_bin or "launchctl", "bootstrap", "gui/<uid>", str(config.autosync_plist)],
+    ]
+    disable_launchctl = [
+        [launchctl_bin or "launchctl", "bootout", target],
+        [launchctl_bin or "launchctl", "disable", target],
+    ]
+    checks = [
+        shadow_check,
+        launchctl_check,
+        plist_check,
+        {
+            "name": "autosync preview commands",
+            "status": "ok",
+            "detail": f"{' '.join(enable_preview)}; {' '.join(disable_preview)}",
+        },
+        {
+            "name": "operator preview review",
+            "status": "ok" if getattr(args, "operator_reviewed_preview", False) else "pending",
+            "detail": "operator reviewed enable/disable autosync preview output and launchd label",
+        },
+        {
+            "name": "plist approval",
+            "status": "ok" if getattr(args, "reviewer_approved_plist", False) else "pending",
+            "detail": "reviewer approved plist path, label, and public entrypoint target",
+        },
+        {
+            "name": "launchctl policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_launchctl_policy", False) else "pending",
+            "detail": "reviewer approved bootstrap/bootout/enable/disable behavior before launchd changes",
+        },
+        {
+            "name": "rollback policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "detail": "reviewer approved rollback commands and stop conditions before launchd changes",
+        },
+        {
+            "name": "parallel dangerous gates",
+            "status": "ok",
+            "detail": "fswatch resident start, pCloud API long-poll start, normal sync/resync, and archive work stay out of scope",
+        },
+    ]
+    approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
+    issues.append(
+        ConfigIssue(
+            key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE",
+            level="warning",
+            message="autosync launchd changes remain gated; this command is read-only",
+        )
+    )
+    issues = _sort_issues(issues)
+    details: dict[str, object] = {
+        "planned action": "check autosync launchd change prerequisites",
+        "implementation status": "read-only checklist; launchctl is not executed",
+        "launchd gate status": "closed",
+        "autosync changes can run": "no",
+        "operator verification required": "yes-before-autosync-launchd-gate",
+        "human gate status": "required-before-autosync-launchd-change",
+        "human gate reason": "autosync launchd changes would alter scheduled live sync behavior",
+        "state writes": "none",
+        "autosync state": autosync.state,
+        "autosync runs": autosync.runs,
+        "autosync label": autosync.label,
+        "autosync plist": autosync.plist,
+        "launchctl availability": "available" if launchctl_bin else "missing",
+        "launchctl binary": launchctl_bin or "-",
+        "enable preview command": enable_preview,
+        "disable preview command": disable_preview,
+        "enable launchctl commands": enable_launchctl,
+        "disable launchctl commands": disable_launchctl,
+        "autosync approval status": approval_status,
+        "preflight checks": checks,
+        "success policy": "apply launchctl changes only after explicit operator command and verify autosync status afterward",
+        "failure policy": "stop on launchctl failure and keep prior autosync state for operator review",
+        "rollback policy": "use the displayed inverse launchctl command and saved plist/label information",
+        "blocked operations": [
+            "launchctl enable",
+            "launchctl bootstrap",
+            "launchctl bootout",
+            "launchctl disable",
+            "starting or stopping scheduled sync jobs",
+            "normal sync/resync execution",
+        ],
+        "next human check trigger": "explicit autosync launchd change implementation or scheduled sync behavior change",
+    }
+    return CommandReport(
+        command="sync autosync-gate",
+        status=_status_from_issues(issues),
+        summary="autosync launchd gate is closed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_sync_status_actions(paths, "missing"),
+    )
+
+
+def cmd_sync_autosync_gate(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_autosync_gate_report(args, paths)
+    output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
+    if output_format == "human":
+        print(_render_autosync_gate_human(report))
+    else:
+        print(render_report(report, output_format=output_format))
+    return _exit_code_for_report(report)
 
 
 def cmd_sync_autosync(args: argparse.Namespace, paths: RuntimePaths, action: str) -> int:

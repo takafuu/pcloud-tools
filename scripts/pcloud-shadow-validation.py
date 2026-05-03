@@ -165,6 +165,8 @@ def run_validation() -> dict[str, Any]:
                 sort_keys=True,
             )
         )
+        autosync_plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
+        autosync_plist.write_text("<plist><dict/></plist>\n")
 
         _check_json_command(
             checks,
@@ -330,6 +332,38 @@ def run_validation() -> dict[str, Any]:
             checks.append(
                 CheckResult("diffd api-poll long-poll gate closed", "error", "long-poll gate mismatch")
             )
+        launchctl_bin_dir = workspace / ".dev-state" / "launchctl-bin"
+        launchctl_bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_launchctl = launchctl_bin_dir / "launchctl"
+        fake_launchctl.write_text("#!/bin/sh\nif [ \"$1\" = \"print\" ]; then exit 1; fi\nexit 0\n")
+        fake_launchctl.chmod(0o755)
+        autosync_gate_env = dict(env)
+        autosync_gate_env["PATH"] = f"{launchctl_bin_dir}:{env.get('PATH', '')}"
+        autosync_gate = _check_json_command(
+            checks,
+            autosync_gate_env,
+            "sync autosync launchd gate",
+            (
+                "sync",
+                "autosync-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-plist",
+                "--reviewer-approved-launchctl-policy",
+                "--reviewer-approved-rollback-policy",
+            ),
+        )
+        if (
+            autosync_gate.get("details", {}).get("launchd gate status") == "closed"
+            and autosync_gate.get("details", {}).get("autosync changes can run") == "no"
+            and autosync_gate.get("details", {}).get("state writes") == "none"
+            and autosync_gate.get("details", {}).get("autosync approval status") == "complete-read-only"
+            and autosync_gate.get("details", {}).get("launchctl availability") == "available"
+        ):
+            checks.append(CheckResult("sync autosync launchd gate closed", "ok", "launchd changes are gated"))
+        else:
+            checks.append(CheckResult("sync autosync launchd gate closed", "error", "autosync gate mismatch"))
         pushd_transfer = _check_json_command(
             checks,
             env,
@@ -883,6 +917,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
+        _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))
