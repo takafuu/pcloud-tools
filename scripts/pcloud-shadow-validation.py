@@ -442,6 +442,7 @@ def run_validation() -> dict[str, Any]:
             and pushd_real_gate.get("details", {}).get("future real-run policy status")
             == "documented-read-only"
             and pushd_real_gate.get("details", {}).get("future real-run policy state writes") == "none"
+            and pushd_real_gate.get("details", {}).get("operator verification required") == "not-now"
         ):
             checks.append(CheckResult("pushd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
@@ -455,6 +456,7 @@ def run_validation() -> dict[str, Any]:
             and diffd_real_gate.get("details", {}).get("future real-run policy status")
             == "documented-read-only"
             and diffd_real_gate.get("details", {}).get("future real-run policy state writes") == "none"
+            and diffd_real_gate.get("details", {}).get("operator verification required") == "not-now"
         ):
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
         else:

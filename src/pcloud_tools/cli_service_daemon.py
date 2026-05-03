@@ -612,6 +612,10 @@ def _render_transfer_check_human(report: CommandReport) -> str:
             lines.append(f"gate note: {details.get('real transfer gate opening note', '-')}")
         if "separate real gate approval status" in details:
             lines.append(f"approval status: {details.get('separate real gate approval status', '-')}")
+        if "operator verification required" in details:
+            lines.append(f"operator verification required: {details.get('operator verification required', '-')}")
+        if "next human check trigger" in details:
+            lines.append(f"next human check trigger: {details.get('next human check trigger', '-')}")
         approval_checks = details.get("separate real gate approval checks")
         if isinstance(approval_checks, list) and approval_checks:
             lines.append("approval checks:")
@@ -1330,6 +1334,25 @@ def _real_gate_approval_details(args: argparse.Namespace, final_review_status: o
         "separate real gate approval checks": checks,
         "separate real gate approval note": (
             "approval checks are recorded only; real transfer execution remains unavailable"
+        ),
+    }
+
+
+def _operator_verification_details(final_review_status: object, approval_status: object) -> dict[str, object]:
+    if final_review_status != "ready":
+        required = "no"
+        scope = "blocked/read-only diagnostics; automated validation is enough"
+    elif approval_status == "complete-read-only":
+        required = "not-now"
+        scope = "read-only approvals are complete; real execution is still unavailable"
+    else:
+        required = "yes-before-real-gate"
+        scope = "operator/reviewer approval remains pending before any future real execution gate"
+    return {
+        "operator verification required": required,
+        "operator verification scope": scope,
+        "next human check trigger": (
+            "first real target review, real execution gate implementation, or actual pCloud/rclone transfer"
         ),
     }
 
@@ -2685,6 +2708,10 @@ def _real_transfer_gate_report(
     report = _real_transfer_check_report(_real_gate_args(args), paths, service)
     details = dict(report.details)
     approval_details = _real_gate_approval_details(args, details.get("final review status"))
+    verification_details = _operator_verification_details(
+        details.get("final review status"),
+        approval_details.get("separate real gate approval status"),
+    )
     policy_details = _future_real_run_policy_details(service)
     details.update(
         {
@@ -2699,6 +2726,7 @@ def _real_transfer_gate_report(
             "fake-rclone gate reuse": "forbidden",
             "state writes": "none",
             **approval_details,
+            **verification_details,
             **policy_details,
         }
     )
