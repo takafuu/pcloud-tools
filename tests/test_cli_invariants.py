@@ -2849,3 +2849,36 @@ def test_shadow_validation_script_summary_output_is_concise(tmp_path: Path) -> N
     assert "shadow validation: ok" in result.stdout
     assert "checks:" in result.stdout
     assert "- ok:" not in result.stdout
+
+
+def test_shadow_validation_script_summary_can_save_full_report(tmp_path: Path) -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_TOOLS_")
+    }
+    env["PYTHONPATH"] = str(REPO_ROOT / "src")
+    report_path = tmp_path / "reports" / "shadow-validation-summary.json"
+    result = subprocess.run(
+        [
+            sys.executable,
+            str(REPO_ROOT / "scripts" / "pcloud-shadow-validation.py"),
+            "--summary",
+            "--report-path",
+            str(report_path),
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = json.loads(report_path.read_text())
+    assert result.returncode == 0
+    assert "shadow validation: ok" in result.stdout
+    assert "report:" in result.stdout
+    assert "checks:" in result.stdout
+    assert "- ok:" not in result.stdout
+    assert payload["status"] == "ok"
+    assert payload["checks"]

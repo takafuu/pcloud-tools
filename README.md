@@ -134,7 +134,7 @@ Shadow validation gate:
 
 ```sh
 mkdir -p .dev-state/reports
-python3 scripts/pcloud-shadow-validation.py --report-path .dev-state/reports/shadow-validation.json
+python3 scripts/pcloud-shadow-validation.py --summary --report-path .dev-state/reports/shadow-validation.json
 python3 scripts/pcloud-shadow-validation.py --summary
 python3 scripts/pcloud-shadow-validation.py --json
 ```
