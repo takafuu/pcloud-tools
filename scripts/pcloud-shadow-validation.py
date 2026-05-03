@@ -498,6 +498,103 @@ def run_validation() -> dict[str, Any]:
             checks.append(
                 CheckResult("diffd api-poll long-poll gate closed", "error", "long-poll gate mismatch")
             )
+        api_long_poll_fixture = workspace / "pcloud-api-long-poll.json"
+        api_long_poll_fixture.write_text(
+            json.dumps(
+                {
+                    "diffid": "123",
+                    "entries": [
+                        {"path": "Documents/api-shadow.txt", "event": "modified"},
+                        {"path": "private/api-shadow.txt", "event": "modified"},
+                    ],
+                }
+            )
+        )
+        api_long_poll_run_closed = _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll-run gate closed",
+            (
+                "diffd",
+                "api-poll",
+                "long-poll-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-response-policy",
+                "--reviewer-approved-credential-policy",
+                "--reviewer-approved-process-policy",
+                "--fixture",
+                str(api_long_poll_fixture),
+                "--execute",
+            ),
+            allowed_status={"error"},
+        )
+        api_long_poll_remote_changes = workspace / ".dev-state" / "state" / "diffd" / "remote-changes.json"
+        api_long_poll_diffid = workspace / ".dev-state" / "state" / "daemon" / "diffid"
+        closed_remote_changes = []
+        if api_long_poll_remote_changes.exists():
+            closed_remote_changes = json.loads(api_long_poll_remote_changes.read_text())
+        closed_has_api_shadow = any(
+            isinstance(item, dict) and item.get("path") == "Documents/api-shadow.txt"
+            for item in closed_remote_changes
+        )
+        closed_diffid = api_long_poll_diffid.read_text().strip() if api_long_poll_diffid.exists() else "-"
+        if (
+            api_long_poll_run_closed.get("details", {}).get("state writes") == "none"
+            and api_long_poll_run_closed.get("details", {}).get("long-poll can start") == "no"
+            and not closed_has_api_shadow
+            and closed_diffid != "123"
+        ):
+            checks.append(CheckResult("diffd api-poll long-poll-run closed no writes", "ok", "long-poll gate refused"))
+        else:
+            checks.append(
+                CheckResult(
+                    "diffd api-poll long-poll-run closed no writes",
+                    "error",
+                    "closed API long-poll gate wrote state",
+                )
+            )
+        api_long_poll_run_env = dict(env)
+        api_long_poll_run_env["PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"] = "operator-approved-api-long-poll-v1"
+        api_long_poll_run = _check_json_command(
+            checks,
+            api_long_poll_run_env,
+            "diffd api-poll long-poll-run fixture",
+            (
+                "diffd",
+                "api-poll",
+                "long-poll-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-response-policy",
+                "--reviewer-approved-credential-policy",
+                "--reviewer-approved-process-policy",
+                "--fixture",
+                str(api_long_poll_fixture),
+                "--max-iterations",
+                "1",
+                "--execute",
+            ),
+        )
+        if (
+            api_long_poll_run.get("details", {}).get("long-poll can start") == "yes"
+            and api_long_poll_run.get("details", {}).get("download records appended") == 1
+            and api_long_poll_run.get("details", {}).get("skipped download records") == 1
+            and api_long_poll_run.get("details", {}).get("written diffid") == "123"
+            and api_long_poll_remote_changes.exists()
+            and api_long_poll_diffid.read_text().strip() == "123"
+        ):
+            checks.append(CheckResult("diffd api-poll long-poll-run state", "ok", "remote change and diffid recorded"))
+        else:
+            checks.append(CheckResult("diffd api-poll long-poll-run state", "error", "long-poll run mismatch"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll-run cleanup",
+            ("diffd", "remote-change", "remove", "Documents/api-shadow.txt", "--execute"),
+        )
         launchctl_bin_dir = workspace / ".dev-state" / "launchctl-bin"
         launchctl_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_launchctl = launchctl_bin_dir / "launchctl"
@@ -1198,6 +1295,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-run.preview", "pushd fswatch resident execution is gated")
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
+        _check_action(checks, env, "diffd.api-poll.long-poll-run.preview", "diffd pCloud API long-poll execution is gated")
         _check_action(checks, env, "sync.autosync-plist.preview", "autosync plist preview is ready")
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")

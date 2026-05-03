@@ -58,6 +58,7 @@ class AppConfig:
     rclone_bin: str
     transfer_execution_gate: str
     pushd_fswatch_resident_gate: str
+    diffd_api_long_poll_gate: str
     transfer_exec_timeout_seconds: int
     pushd_debounce_seconds: int
     pushd_queue_limit: int
@@ -162,6 +163,7 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         "PCLOUD_TOOLS_RCLONE_BIN": "rclone",
         "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE": "",
         "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "",
+        "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "",
         "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS": "5",
         "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS": "3",
         "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT": "1000",
@@ -273,6 +275,11 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
                 values,
                 defaults["PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"],
             ),
+            diffd_api_long_poll_gate=_string_value(
+                "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",
+                values,
+                defaults["PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"],
+            ),
             transfer_exec_timeout_seconds=_int_from_value(
                 "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
                 values["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"],
@@ -334,6 +341,7 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
         rclone_bin=defaults["PCLOUD_TOOLS_RCLONE_BIN"],
         transfer_execution_gate=defaults["PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"],
         pushd_fswatch_resident_gate=defaults["PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"],
+        diffd_api_long_poll_gate=defaults["PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"],
         transfer_exec_timeout_seconds=int(defaults["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"]),
         pushd_debounce_seconds=int(defaults["PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS"]),
         pushd_queue_limit=int(defaults["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"]),

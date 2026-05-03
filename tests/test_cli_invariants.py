@@ -156,6 +156,7 @@ def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Pa
         rclone_bin="rclone",
         transfer_execution_gate="",
         pushd_fswatch_resident_gate="",
+        diffd_api_long_poll_gate="",
         transfer_exec_timeout_seconds=5,
         pushd_debounce_seconds=2,
         pushd_queue_limit=100,
@@ -1718,6 +1719,159 @@ def test_diffd_api_long_poll_gate_is_read_only_checklist(tmp_path: Path) -> None
     assert checks["process lifecycle approval"]["status"] == "ok"
     assert "diffd.api-poll.long-poll-gate" in [action["id"] for action in payload["actions"]]
     assert not (state_dir / "diffd").exists()
+
+
+def test_diffd_api_long_poll_run_refuses_without_execution_gate(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    fixture = tmp_path / "api-long-poll.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "diffid": "123",
+                "entries": [
+                    {"path": "Documents/from-api.pdf", "event": "modified"},
+                ],
+            }
+        )
+    )
+    shadow_report = tmp_path / "shadow-validation-api-long-poll-run.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-long-poll-run" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "api-poll",
+            "long-poll-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+            "--fixture",
+            str(fixture),
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["summary"] == "diffd pCloud API long-poll execution is gated"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["long-poll can start"] == "no"
+    assert "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_EXECUTION_GATE" in [
+        issue["key"] for issue in payload["issues"]
+    ]
+    assert not (state_dir / "diffd" / "remote-changes.json").exists()
+    assert not (state_dir / "daemon" / "diffid").exists()
+
+
+def test_diffd_api_long_poll_run_executes_fixture_in_dev_state(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    fixture = tmp_path / "api-long-poll-ok.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "diffid": "123",
+                "entries": [
+                    {"path": "Documents/from-api.pdf", "event": "modified"},
+                    {"path": "private/outside.pdf", "event": "modified"},
+                ],
+            }
+        )
+    )
+    shadow_report = tmp_path / "shadow-validation-api-long-poll-run-ok.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-long-poll-run-ok" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "api-poll",
+            "long-poll-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+            "--fixture",
+            str(fixture),
+            "--max-iterations",
+            "1",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    remote_changes = json.loads((state_dir / "diffd" / "remote-changes.json").read_text())
+    diffid = (state_dir / "daemon" / "diffid").read_text().strip()
+    run_state = json.loads((state_dir / "diffd" / "api-long-poll-last-run.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["summary"] == "diffd pCloud API long-poll run completed"
+    assert payload["details"]["long-poll can start"] == "yes"
+    assert payload["details"]["state writes"] == "diffd remote-change records, diff cursor, and long-poll run state"
+    assert payload["details"]["download records appended"] == 1
+    assert payload["details"]["skipped download records"] == 1
+    assert payload["details"]["written diffid"] == "123"
+    assert remote_changes == [{"path": "Documents/from-api.pdf", "action": "download", "reason": "diff:modified"}]
+    assert diffid == "123"
+    assert run_state["appended_records"] == remote_changes
+    assert run_state["written_diffid"] == "123"
 
 
 def test_transfer_previews_emit_commands_without_state_writes(tmp_path: Path) -> None:

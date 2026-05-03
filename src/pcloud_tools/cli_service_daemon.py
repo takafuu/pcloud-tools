@@ -13,7 +13,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import AppConfig, ConfigIssue, load_config
-from .daemon_state import DaemonState, read_daemon_state
+from .daemon_state import DaemonState, read_daemon_state, write_diffid
 from .diffd_events import diff_changes_to_records, parse_diff_response_fixture
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
@@ -83,6 +83,7 @@ _TIMEOUT_POLICIES = (
     "manual-review",
 )
 _PUSHD_FSWATCH_RESIDENT_GATE_VALUE = "operator-approved-fswatch-resident-v1"
+_DIFFD_API_LONG_POLL_GATE_VALUE = "operator-approved-api-long-poll-v1"
 
 
 def add_service_daemon_parsers(subparsers: argparse._SubParsersAction) -> None:
@@ -371,6 +372,24 @@ def _add_service_parser(
             "--json", action="store_true", help="Emit structured JSON output."
         )
         api_poll_long_poll_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
+        api_poll_long_poll_run_parser = api_poll_subparsers.add_parser(
+            "long-poll-run",
+            help="Run guarded fixture-backed API long-poll processing after the dedicated gate opens.",
+        )
+        api_poll_long_poll_run_parser.add_argument("--report-path", type=Path)
+        api_poll_long_poll_run_parser.add_argument("--operator-reviewed-preview", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-response-policy", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--fixture", type=Path)
+        api_poll_long_poll_run_parser.add_argument("--max-iterations", type=int)
+        api_poll_long_poll_run_parser.add_argument("--execute", action="store_true")
+        api_poll_long_poll_run_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        api_poll_long_poll_run_parser.add_argument(
             "--xbar", action="store_true", help="Emit xbar menu output."
         )
 
@@ -940,6 +959,53 @@ def _print_api_long_poll_gate_report(report: CommandReport, args: argparse.Names
     _print_report(report, args)
 
 
+def _render_api_long_poll_run_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"long-poll run gate: {details.get('long-poll run gate status', '-')}",
+        f"long-poll can start: {details.get('long-poll can start', '-')}",
+        f"execute requested: {details.get('execute requested', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"fixture: {details.get('fixture file', '-')}",
+        f"current diffid: {details.get('current diffid', '-')}",
+        f"new diffid: {details.get('new diffid', '-')}",
+        f"approval status: {details.get('long-poll approval status', '-')}",
+        f"parsed changes: {details.get('parsed diff changes', '-')}",
+        f"download records appended: {details.get('download records appended', '-')}",
+        f"skipped records: {details.get('skipped download records', '-')}",
+        f"invalid changes: {details.get('invalid diff changes', '-')}",
+    ]
+    state_file = details.get("long-poll state file")
+    if state_file:
+        lines.append(f"long-poll state: {state_file}")
+    checks = details.get("preflight checks")
+    blocked_checks: list[str] = []
+    if isinstance(checks, list):
+        for check in checks:
+            if isinstance(check, dict) and check.get("status") != "ok":
+                blocked_checks.append(
+                    f"{check.get('name', '-')}: {check.get('status', '-')} - {check.get('detail', '-')}"
+                )
+    if blocked_checks:
+        lines.append("blocked checks:")
+        for check in blocked_checks:
+            lines.append(f"- {check}")
+    if report.issues:
+        lines.append("warnings:" if report.status != "error" else "issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _print_api_long_poll_run_report(report: CommandReport, args: argparse.Namespace) -> None:
+    if _output_format(args) == "human":
+        print(_render_api_long_poll_run_human(report))
+        return
+    _print_report(report, args)
+
+
 def _render_real_transfer_run_human(report: CommandReport) -> str:
     details = report.details
     lines = [
@@ -1177,6 +1243,15 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
                 id="diffd.api-poll.long-poll-gate",
                 label="Check diffd API long-poll gate",
                 command=_action_command(paths, "diffd.api-poll.long-poll-gate"),
+                terminal=True,
+                refresh=False,
+            )
+        )
+        actions.append(
+            ReportAction(
+                id="diffd.api-poll.long-poll-run.preview",
+                label="Preview diffd API long-poll run",
+                command=_action_command(paths, "diffd.api-poll.long-poll-run.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -2699,6 +2774,238 @@ def _diffd_api_long_poll_gate_report(args: argparse.Namespace, paths: RuntimePat
     )
 
 
+def _diffd_api_long_poll_run_state_file(config: AppConfig) -> Path:
+    return config.state_dir / "diffd" / "api-long-poll-last-run.json"
+
+
+def _api_long_poll_gate_open(config: AppConfig) -> bool:
+    return config.diffd_api_long_poll_gate == _DIFFD_API_LONG_POLL_GATE_VALUE
+
+
+def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    gate_report = _diffd_api_long_poll_gate_report(args, paths)
+    load_result = load_config(paths)
+    config = load_result.config
+    daemon_state = read_daemon_state(config)
+    state = read_service_daemon_state(config, "diffd")
+    execute = bool(getattr(args, "execute", False))
+    fixture = getattr(args, "fixture", None)
+    max_iterations = getattr(args, "max_iterations", None)
+    details = dict(gate_report.details)
+    issues = [
+        ConfigIssue(key=issue.key, level=issue.level, message=issue.message)
+        for issue in gate_report.issues
+        if issue.key != "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"
+    ]
+    approval_status = str(details.get("long-poll approval status", "pending"))
+    gate_open = _api_long_poll_gate_open(config)
+    state_file = _diffd_api_long_poll_run_state_file(config)
+    fixture_path = Path(fixture) if fixture is not None else None
+    requested_iterations = 1 if max_iterations is None else max_iterations
+    parsed = None
+    plan: DiffdPlan | None = None
+
+    details.update(
+        {
+            "planned action": "run diffd pCloud API long-poll fixture" if execute else "preview diffd API long-poll run",
+            "implementation status": (
+                "fixture-backed long-poll loop; live pCloud API is not called"
+                if execute
+                else "long-poll run preview only; live pCloud API is not called"
+            ),
+            "long-poll run gate status": (
+                f"open: {_DIFFD_API_LONG_POLL_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}"
+            ),
+            "long-poll gate status": (
+                f"open: {_DIFFD_API_LONG_POLL_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}"
+            ),
+            "long-poll can start": "yes" if gate_open and approval_status == "complete-read-only" else "no",
+            "execute requested": "yes" if execute else "no",
+            "state writes": "diffd remote-change records, diff cursor, and long-poll run state" if execute else "none",
+            "fixture file": str(fixture_path) if fixture_path else "-",
+            "long-poll state file": str(state_file),
+            "future gate env": f"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}",
+            "max iterations": requested_iterations,
+            "new diffid": "-",
+            "iterations processed": 0,
+            "parsed diff changes": 0,
+            "invalid diff changes": 0,
+            "download records appended": 0,
+            "skipped download records": 0,
+            "invalid diff records": [],
+            "appended record details": [],
+            "skipped record details": [],
+        }
+    )
+
+    if requested_iterations < 1:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_MAX_ITERATIONS",
+                level="error",
+                message="--max-iterations must be >= 1",
+            )
+        )
+    if approval_status != "complete-read-only":
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_APPROVAL",
+                level="error" if execute else "warning",
+                message="long-poll execution requires complete read-only API approvals",
+            )
+        )
+    if not gate_open:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_EXECUTION_GATE",
+                level="error" if execute else "warning",
+                message=(
+                    "long-poll execution requires "
+                    f"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE!r}"
+                ),
+            )
+        )
+    if execute and fixture_path is None:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_FIXTURE",
+                level="error",
+                message="--fixture is required for guarded long-poll execution in this build",
+            )
+        )
+
+    if fixture_path is not None:
+        try:
+            parsed = parse_diff_response_fixture(fixture_path)
+        except OSError as exc:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_FIXTURE",
+                    level="error",
+                    message=f"cannot read pCloud diff fixture {fixture_path}: {exc}",
+                )
+            )
+        if parsed is not None:
+            remote_records = diff_changes_to_records(parsed.changes)
+            plan = build_diffd_plan_from_records(
+                config=config,
+                remote_changes_file=state.state_dir / "remote-changes.json",
+                pending_downloads_file=daemon_state.pending_downloads_file,
+                remote_records=remote_records,
+            )
+            issues.extend(plan.issues)
+            details.update(
+                {
+                    "fixture diffid": parsed.diffid,
+                    "new diffid": parsed.diffid,
+                    "parsed diff changes": len(parsed.changes),
+                    "invalid diff changes": len(parsed.invalid),
+                    "invalid diff records": _invalid_diff_details(parsed.invalid),
+                    **_diffd_plan_details(plan),
+                }
+            )
+            if execute and not parsed.diffid.isdigit():
+                issues.append(
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_DIFFID",
+                        level="error",
+                        message=f"fixture diffid must be a non-negative integer before cursor mutation: {parsed.diffid!r}",
+                    )
+                )
+
+    if not execute or _has_errors(issues):
+        if _has_errors(issues):
+            details["state writes"] = "none"
+        issues = _sort_issues(issues)
+        return CommandReport(
+            command="diffd api-poll long-poll-run",
+            status=_status_from_issues(issues),
+            summary=(
+                "diffd pCloud API long-poll execution is gated"
+                if _has_errors(issues) or not gate_open
+                else "diffd pCloud API long-poll run is ready"
+            ),
+            details=details,
+            issues=_report_issues(issues),
+            actions=_service_actions(paths, _SERVICES["diffd"]),
+        )
+
+    assert parsed is not None
+    assert plan is not None
+    started_at = datetime.now(timezone.utc).isoformat()
+    appended_records: list[dict[str, str]] = []
+    skipped_records = record_payloads(plan.skipped_records)
+    for record in plan.download_records:
+        update = append_plan_record(plan.remote_changes_file, "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES", record)
+        if update.issue:
+            issues.append(update.issue)
+        else:
+            appended_records.append({"path": record.path, "action": record.action, "reason": record.reason})
+    written_diffid = "-"
+    if not _has_errors(issues):
+        try:
+            written_diffid = write_diffid(config, parsed.diffid)
+        except ValueError as exc:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_DIFFID",
+                    level="error",
+                    message=str(exc),
+                )
+            )
+    finished_at = datetime.now(timezone.utc).isoformat()
+    run_state = {
+        "fixture": str(fixture_path),
+        "started_at": started_at,
+        "finished_at": finished_at,
+        "iterations_processed": requested_iterations,
+        "previous_diffid": daemon_state.diffid,
+        "written_diffid": written_diffid,
+        "parsed_diff_changes": len(parsed.changes),
+        "invalid_diff_changes": len(parsed.invalid),
+        "appended_records": appended_records,
+        "skipped_records": skipped_records,
+        "invalid_records": _invalid_diff_details(parsed.invalid),
+    }
+    if not _has_errors(issues):
+        state_file.parent.mkdir(parents=True, exist_ok=True)
+        state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+    details.update(
+        {
+            "iterations processed": requested_iterations,
+            "download records appended": len(appended_records),
+            "skipped download records": len(skipped_records),
+            "appended record details": appended_records,
+            "skipped record details": skipped_records,
+            "written diffid": written_diffid,
+            "process result": run_state,
+            "state writes": (
+                "diffd remote-change records, diff cursor, and long-poll run state"
+                if not _has_errors(issues)
+                else "none"
+            ),
+        }
+    )
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command="diffd api-poll long-poll-run",
+        status=_status_from_issues(issues),
+        summary=(
+            "diffd pCloud API long-poll run completed"
+            if not _has_errors(issues)
+            else "diffd pCloud API long-poll run failed"
+        ),
+        details=details,
+        issues=_report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["diffd"]),
+    )
+
+
 def cmd_diffd_api_poll(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.api_poll_command == "preview":
         report = _diffd_api_poll_report(paths)
@@ -2707,6 +3014,10 @@ def cmd_diffd_api_poll(args: argparse.Namespace, paths: RuntimePaths) -> int | N
     if args.api_poll_command == "long-poll-gate":
         report = _diffd_api_long_poll_gate_report(args, paths)
         _print_api_long_poll_gate_report(report, args)
+        return _exit_code_for_report(report)
+    if args.api_poll_command == "long-poll-run":
+        report = _diffd_api_long_poll_run_report(args, paths)
+        _print_api_long_poll_run_report(report, args)
         return _exit_code_for_report(report)
     return None
 
@@ -4457,6 +4768,24 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
             "--json", action="store_true", help="Emit structured JSON output."
         )
         api_poll_long_poll_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
+        api_poll_long_poll_run_parser = api_poll_subparsers.add_parser(
+            "long-poll-run",
+            help="Run guarded fixture-backed API long-poll processing after the dedicated gate opens.",
+        )
+        api_poll_long_poll_run_parser.add_argument("--report-path", type=Path)
+        api_poll_long_poll_run_parser.add_argument("--operator-reviewed-preview", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-response-policy", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        api_poll_long_poll_run_parser.add_argument("--fixture", type=Path)
+        api_poll_long_poll_run_parser.add_argument("--max-iterations", type=int)
+        api_poll_long_poll_run_parser.add_argument("--execute", action="store_true")
+        api_poll_long_poll_run_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        api_poll_long_poll_run_parser.add_argument(
             "--xbar", action="store_true", help="Emit xbar menu output."
         )
 

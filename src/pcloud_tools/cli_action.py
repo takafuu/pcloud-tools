@@ -39,6 +39,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "diffd.run.preview": ("diffd", "run"),
     "diffd.gate": ("diffd", "gate"),
     "diffd.api-poll.long-poll-gate": ("diffd", "api-poll", "long-poll-gate"),
+    "diffd.api-poll.long-poll-run.preview": ("diffd", "api-poll", "long-poll-run"),
     "diffd.transfer.preview": ("diffd", "transfer", "preview"),
     "diffd.transfer.check": ("diffd", "transfer", "check"),
     "diffd.transfer.real-gate": ("diffd", "transfer", "real-gate"),
