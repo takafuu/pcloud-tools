@@ -124,6 +124,7 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         "migration-gate", help="Read-only checklist before running normal sync/resync migration validation."
     )
     sync_migration_gate_parser.add_argument("--report-path", type=Path)
+    sync_migration_gate_parser.add_argument("--sync-status-report-path", type=Path)
     sync_migration_gate_parser.add_argument("--operator-reviewed-status", action="store_true")
     sync_migration_gate_parser.add_argument("--reviewer-approved-scope", action="store_true")
     sync_migration_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
@@ -1620,6 +1621,73 @@ def _render_migration_gate_human(report: CommandReport) -> str:
     return "\n".join(lines)
 
 
+def _saved_sync_status_report(
+    path: Path | None,
+) -> tuple[dict[str, object] | None, dict[str, str] | None, list[ConfigIssue]]:
+    if path is None:
+        return None, None, []
+    if not path.exists():
+        return (
+            None,
+            {
+                "name": "saved sync status report",
+                "status": "pending",
+                "detail": f"sync status report not found: {path}",
+            },
+            [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_STATUS_REPORT",
+                    level="warning",
+                    message=f"sync status report not found: {path}",
+                )
+            ],
+        )
+    try:
+        payload = json.loads(path.read_text())
+    except json.JSONDecodeError as exc:
+        return (
+            None,
+            {
+                "name": "saved sync status report",
+                "status": "pending",
+                "detail": f"invalid JSON: {exc}",
+            },
+            [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_STATUS_REPORT",
+                    level="warning",
+                    message=f"invalid sync status report JSON: {path}: {exc}",
+                )
+            ],
+        )
+    details = payload.get("details")
+    if payload.get("command") != "sync status" or not isinstance(details, dict):
+        return (
+            None,
+            {
+                "name": "saved sync status report",
+                "status": "pending",
+                "detail": f"not a sync status report: {path}",
+            },
+            [
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_SYNC_STATUS_REPORT",
+                    level="warning",
+                    message=f"saved report is not a sync status report: {path}",
+                )
+            ],
+        )
+    return (
+        dict(details),
+        {
+            "name": "saved sync status report",
+            "status": "ok",
+            "detail": str(path),
+        },
+        [],
+    )
+
+
 def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
@@ -1635,6 +1703,10 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         issue_key="PCLOUD_TOOLS_SYNC_MIGRATION_SHADOW_REPORT",
     )
     issues.extend(shadow_issues)
+    saved_status, saved_status_check, saved_status_issues = _saved_sync_status_report(
+        getattr(args, "sync_status_report_path", None)
+    )
+    issues.extend(saved_status_issues)
     rclone_bin = _command_path("rclone")
     rclone_check = {
         "name": "rclone binary",
@@ -1649,21 +1721,53 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
                 message="rclone was not found by command -v; migration gate remains closed",
             )
         )
-    sync_ok = sync_state.state == "synced" and "SUCCESS" in sync_state.last_sync
+    status_source = "saved sync status report" if saved_status is not None else "runtime"
+    sync_state_value = str(saved_status.get("sync state", sync_state.state)) if saved_status else sync_state.state
+    last_result = str(saved_status.get("last result", sync_state.last_sync)) if saved_status else sync_state.last_sync
+    last_error = str(saved_status.get("last error", sync_state.last_error)) if saved_status else sync_state.last_error
+    last_error_status = (
+        str(saved_status.get("last error status", sync_last_error_status(sync_state)))
+        if saved_status
+        else sync_last_error_status(sync_state)
+    )
+    sync_lock_status = (
+        str(saved_status.get("sync lock status", lock_state.status)) if saved_status else lock_state.status
+    )
+    sync_lock_active = (
+        str(saved_status.get("sync lock active", "yes" if lock_state.active else "no"))
+        if saved_status
+        else "yes" if lock_state.active else "no"
+    )
+    sync_lock_pid = str(saved_status.get("sync lock pid", lock_state.pid)) if saved_status else lock_state.pid
+    sync_lock_mode = str(saved_status.get("sync lock mode", lock_state.mode)) if saved_status else lock_state.mode
+    sync_lock_started = (
+        str(saved_status.get("sync lock started", lock_state.started_at)) if saved_status else lock_state.started_at
+    )
+    scope_status = str(saved_status.get("scope status", scope.allowlist_status)) if saved_status else scope.allowlist_status
+    scope_entries = saved_status.get("scope entries", scope.allowlist_count) if saved_status else scope.allowlist_count
+    scope_baseline = (
+        str(saved_status.get("last resync scope", baseline_label)) if saved_status else baseline_label
+    )
+    allowlist_path = str(saved_status.get("allowlist", scope.allowlist_file)) if saved_status else str(scope.allowlist_file)
+    autosync_state = str(saved_status.get("autosync state", autosync.state)) if saved_status else autosync.state
+    autosync_runs = str(saved_status.get("autosync runs", autosync.runs)) if saved_status else autosync.runs
+    sync_ok = sync_state_value == "synced" and "SUCCESS" in last_result
     sync_state_check = {
         "name": "latest sync status",
         "status": "ok" if sync_ok else "pending",
-        "detail": f"{sync_state.state}; last={sync_state.last_sync}; last_error_status={sync_last_error_status(sync_state)}",
+        "detail": f"{sync_state_value}; last={last_result}; last_error_status={last_error_status}; source={status_source}",
     }
+    lock_ok = sync_lock_status == "missing" and sync_lock_active != "yes"
     lock_check = {
         "name": "sync lock",
-        "status": "ok" if lock_state.status == "missing" else "pending",
-        "detail": f"{lock_state.status}; active={'yes' if lock_state.active else 'no'}; pid={lock_state.pid}",
+        "status": "ok" if lock_ok else "pending",
+        "detail": f"{sync_lock_status}; active={sync_lock_active}; pid={sync_lock_pid}; source={status_source}",
     }
+    scope_ok = scope_status == "loaded" and (saved_status is not None or scope.baseline.status != "invalid")
     scope_check = {
         "name": "document/media scope",
-        "status": "ok" if scope.allowlist_status == "loaded" and scope.baseline.status != "invalid" else "pending",
-        "detail": f"{baseline_label}; entries={scope.allowlist_count}; allowlist={scope.allowlist_file}",
+        "status": "ok" if scope_ok else "pending",
+        "detail": f"{scope_baseline}; entries={scope_entries}; allowlist={allowlist_path}; source={status_source}",
     }
     entrypoint = _entrypoint_command(paths)
     status_command = [entrypoint, "sync", "status", "--json"]
@@ -1672,6 +1776,10 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
     checks = [
         shadow_check,
         rclone_check,
+    ]
+    if saved_status_check is not None:
+        checks.append(saved_status_check)
+    checks.extend([
         sync_state_check,
         lock_check,
         scope_check,
@@ -1705,7 +1813,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
             "status": "ok",
             "detail": "fswatch resident start, pCloud API long-poll start, autosync launchd changes, and archive work stay out of scope",
         },
-    ]
+    ])
     approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
     issues.append(
         ConfigIssue(
@@ -1725,18 +1833,23 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         "human gate reason": "normal sync/resync validation would run live rclone bisync against the configured remote",
         "state writes": "none",
         "core remote": config.core_remote,
-        "sync state": sync_state.state,
-        "last result": sync_state.last_sync,
-        "last error": sync_state.last_error,
-        "last error status": sync_last_error_status(sync_state),
-        "sync lock status": lock_state.status,
-        "sync lock active": "yes" if lock_state.active else "no",
-        "autosync state": autosync.state,
-        "autosync runs": autosync.runs,
-        "scope status": scope.allowlist_status,
-        "scope baseline": baseline_label,
-        "scope entries": scope.allowlist_count,
-        "allowlist": str(scope.allowlist_file),
+        "sync status source": status_source,
+        "sync status report": str(getattr(args, "sync_status_report_path", None) or "-"),
+        "sync state": sync_state_value,
+        "last result": last_result,
+        "last error": last_error,
+        "last error status": last_error_status,
+        "sync lock status": sync_lock_status,
+        "sync lock active": sync_lock_active,
+        "sync lock pid": sync_lock_pid,
+        "sync lock mode": sync_lock_mode,
+        "sync lock started": sync_lock_started,
+        "autosync state": autosync_state,
+        "autosync runs": autosync_runs,
+        "scope status": scope_status,
+        "scope baseline": scope_baseline,
+        "scope entries": scope_entries,
+        "allowlist": allowlist_path,
         "rclone availability": "available" if rclone_bin else "missing",
         "rclone binary": rclone_bin or "-",
         "listing recovery available": "yes" if listing_recovery.can_recover else "no",

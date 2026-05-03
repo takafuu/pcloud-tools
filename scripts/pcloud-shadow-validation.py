@@ -529,6 +529,57 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("sync migration validation gate closed", "ok", "sync/resync validation is gated"))
         else:
             checks.append(CheckResult("sync migration validation gate closed", "error", "migration gate mismatch"))
+        (workspace / "bisync_status.log").write_text("2026-04-24 15:43:23 ERROR mode=resync\n")
+        saved_sync_status_report = workspace / "saved-sync-status.json"
+        saved_sync_status_report.write_text(
+            json.dumps(
+                {
+                    "command": "sync status",
+                    "status": "ok",
+                    "details": {
+                        "sync state": "synced",
+                        "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                        "last error": "2026-04-30 10:54:28 historical failure",
+                        "last error status": "historical",
+                        "sync lock status": "missing",
+                        "sync lock active": "no",
+                        "sync lock pid": "-",
+                        "scope status": "loaded",
+                        "scope entries": 4,
+                        "last resync scope": "allowlist",
+                        "allowlist": str(workspace / ".pcloud-sync-allowlist"),
+                        "autosync state": "active",
+                        "autosync runs": "7",
+                    },
+                }
+            )
+        )
+        saved_status_migration_gate = _check_json_command(
+            checks,
+            migration_gate_env,
+            "sync migration saved status gate",
+            (
+                "sync",
+                "migration-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--sync-status-report-path",
+                str(saved_sync_status_report),
+                "--operator-reviewed-status",
+                "--reviewer-approved-scope",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-stop-conditions",
+            ),
+        )
+        if (
+            saved_status_migration_gate.get("details", {}).get("sync status source") == "saved sync status report"
+            and saved_status_migration_gate.get("details", {}).get("migration approval status")
+            == "complete-read-only"
+            and saved_status_migration_gate.get("details", {}).get("sync state") == "synced"
+        ):
+            checks.append(CheckResult("sync migration saved status accepted", "ok", str(saved_sync_status_report)))
+        else:
+            checks.append(CheckResult("sync migration saved status accepted", "error", "saved status mismatch"))
         pushd_transfer = _check_json_command(
             checks,
             env,

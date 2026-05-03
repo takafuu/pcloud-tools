@@ -16,6 +16,7 @@ def add_gates_parser(subparsers: argparse._SubParsersAction) -> None:
     gates_subparsers = gates_parser.add_subparsers(dest="gates_command")
     status_parser = gates_subparsers.add_parser("status", help="Show a concise read-only gate summary.")
     status_parser.add_argument("--report-path", type=Path)
+    status_parser.add_argument("--sync-status-report-path", type=Path)
     status_parser.add_argument("--backup-dir", type=Path)
     status_parser.add_argument(
         "--assume-read-only-approvals",
@@ -36,6 +37,7 @@ def _approval_namespace(args: argparse.Namespace) -> argparse.Namespace:
     approved = bool(getattr(args, "assume_read_only_approvals", False))
     return argparse.Namespace(
         report_path=getattr(args, "report_path", None),
+        sync_status_report_path=getattr(args, "sync_status_report_path", None),
         backup_dir=getattr(args, "backup_dir", None),
         operator_reviewed_probe=approved,
         reviewer_approved_queue_policy=approved,
@@ -144,6 +146,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
         "state writes": "none",
         "assume read-only approvals": "yes" if getattr(args, "assume_read_only_approvals", False) else "no",
         "report path": str(getattr(args, "report_path", None) or "-"),
+        "sync status report": str(getattr(args, "sync_status_report_path", None) or "-"),
         "backup dir": str(getattr(args, "backup_dir", None) or "-"),
         "gate count": len(reports),
         "complete read-only approvals": ready_read_only,

@@ -1075,6 +1075,96 @@ def test_sync_migration_gate_is_read_only_checklist(tmp_path: Path) -> None:
     assert not any(state_dir.iterdir())
 
 
+def test_sync_migration_gate_can_use_saved_sync_status_report(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nexit 0\n")
+    rclone.chmod(0o755)
+    env = _base_env(tmp_path, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / "bisync_status.log").write_text("2026-04-24 15:43:23 ERROR mode=resync\n")
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-migration-status" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-migration-status.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    status_report = tmp_path / "sync-status.json"
+    status_report.write_text(
+        json.dumps(
+            {
+                "command": "sync status",
+                "status": "ok",
+                "details": {
+                    "sync state": "synced",
+                    "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                    "last error": "2026-04-30 10:54:28 historical failure",
+                    "last error status": "historical",
+                    "sync lock status": "missing",
+                    "sync lock active": "no",
+                    "sync lock pid": "-",
+                    "sync lock mode": "-",
+                    "sync lock started": "-",
+                    "scope status": "loaded",
+                    "scope entries": 4,
+                    "last resync scope": "allowlist",
+                    "allowlist": "/Users/takafumi/p-core/.pcloud-sync-allowlist",
+                    "autosync state": "active",
+                    "autosync runs": "7",
+                },
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "migration-gate",
+            "--report-path",
+            str(shadow_report),
+            "--sync-status-report-path",
+            str(status_report),
+            "--operator-reviewed-status",
+            "--reviewer-approved-scope",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-stop-conditions",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["details"]["sync status source"] == "saved sync status report"
+    assert payload["details"]["sync state"] == "synced"
+    assert payload["details"]["sync lock status"] == "missing"
+    assert payload["details"]["scope entries"] == 4
+    assert payload["details"]["migration approval status"] == "complete-read-only"
+    assert checks["saved sync status report"]["status"] == "ok"
+    assert checks["latest sync status"]["status"] == "ok"
+    assert checks["sync lock"]["status"] == "ok"
+
+
 def test_archive_old_monolith_gate_is_read_only_checklist(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
@@ -1156,6 +1246,7 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
         '#!/bin/zsh\nPCLOUD_MANAGER_CONFIG="${HOME}/.config/pcloud-manager/config.zsh"\n'
     )
     (backup_dir / "shadow-validation.json").write_text(json.dumps({"status": "ok", "checks": []}))
+    (workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist").write_text("<plist><dict/></plist>\n")
     shadow_workspace = tmp_path / "pcloud-shadow-validation-gates" / "workspace"
     shadow_report = tmp_path / "shadow-validation-gates.json"
     shadow_report.write_text(
@@ -1172,6 +1263,29 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
             }
         )
     )
+    status_report = tmp_path / "sync-status-gates.json"
+    status_report.write_text(
+        json.dumps(
+            {
+                "command": "sync status",
+                "status": "ok",
+                "details": {
+                    "sync state": "synced",
+                    "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                    "last error": "(none)",
+                    "last error status": "none",
+                    "sync lock status": "missing",
+                    "sync lock active": "no",
+                    "scope status": "loaded",
+                    "scope entries": 4,
+                    "last resync scope": "allowlist",
+                    "allowlist": "/Users/takafumi/p-core/.pcloud-sync-allowlist",
+                    "autosync state": "active",
+                    "autosync runs": "7",
+                },
+            }
+        )
+    )
 
     result = subprocess.run(
         [
@@ -1182,6 +1296,8 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
             "status",
             "--report-path",
             str(shadow_report),
+            "--sync-status-report-path",
+            str(status_report),
             "--backup-dir",
             str(backup_dir),
             "--assume-read-only-approvals",
@@ -1202,12 +1318,14 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
     assert payload["details"]["implementation status"].startswith("read-only aggregate")
     assert payload["details"]["state writes"] == "none"
     assert payload["details"]["assume read-only approvals"] == "yes"
+    assert payload["details"]["sync status report"] == str(status_report)
     assert payload["details"]["gate count"] == 5
+    assert payload["details"]["complete read-only approvals"] == 5
     assert gates["pushd fswatch resident"]["gate status"] == "closed"
     assert gates["diffd pCloud API long-poll"]["can run"] == "no"
     assert gates["old monolith archive"]["approval status"] == "complete-read-only"
     assert "sync autosync launchd" in gates
-    assert "sync migration validation" in gates
+    assert gates["sync migration validation"]["approval status"] == "complete-read-only"
     assert not any(state_dir.iterdir())
     assert not (workspace / ".dev-state" / "old-monolith-archive").exists()
 
