@@ -15,6 +15,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "sync.scope": ("sync", "scope"),
     "sync.background.preview": ("sync", "background"),
     "sync.autosync.gate": ("sync", "autosync-gate"),
+    "sync.migration.gate": ("sync", "migration-gate"),
     "sync.clear-stale-lock.preview": ("sync", "clear-stale-lock"),
     "daemon.status.refresh": ("daemon", "status", "--xbar"),
     "daemon.auto-download.on.preview": ("daemon", "auto-download", "on"),

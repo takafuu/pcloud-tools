@@ -364,6 +364,39 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("sync autosync launchd gate closed", "ok", "launchd changes are gated"))
         else:
             checks.append(CheckResult("sync autosync launchd gate closed", "error", "autosync gate mismatch"))
+        migration_bin_dir = workspace / ".dev-state" / "migration-bin"
+        migration_bin_dir.mkdir(parents=True, exist_ok=True)
+        fake_migration_rclone = migration_bin_dir / "rclone"
+        fake_migration_rclone.write_text("#!/bin/sh\nexit 0\n")
+        fake_migration_rclone.chmod(0o755)
+        migration_gate_env = dict(env)
+        migration_gate_env["PATH"] = f"{migration_bin_dir}:{env.get('PATH', '')}"
+        (workspace / "bisync_status.log").write_text("2026-05-04 12:00:00 SUCCESS mode=autosync\n")
+        migration_gate = _check_json_command(
+            checks,
+            migration_gate_env,
+            "sync migration validation gate",
+            (
+                "sync",
+                "migration-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-status",
+                "--reviewer-approved-scope",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-stop-conditions",
+            ),
+        )
+        if (
+            migration_gate.get("details", {}).get("migration gate status") == "closed"
+            and migration_gate.get("details", {}).get("sync/resync can run") == "no"
+            and migration_gate.get("details", {}).get("state writes") == "none"
+            and migration_gate.get("details", {}).get("migration approval status") == "complete-read-only"
+            and migration_gate.get("details", {}).get("sync state") == "synced"
+        ):
+            checks.append(CheckResult("sync migration validation gate closed", "ok", "sync/resync validation is gated"))
+        else:
+            checks.append(CheckResult("sync migration validation gate closed", "error", "migration gate mismatch"))
         pushd_transfer = _check_json_command(
             checks,
             env,
@@ -918,6 +951,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
         _check_action(checks, autosync_gate_env, "sync.autosync.gate", "autosync launchd gate is closed")
+        _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))

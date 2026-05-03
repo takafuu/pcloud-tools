@@ -110,6 +110,16 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_autosync_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
     sync_autosync_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_autosync_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+    sync_migration_gate_parser = sync_subparsers.add_parser(
+        "migration-gate", help="Read-only checklist before running normal sync/resync migration validation."
+    )
+    sync_migration_gate_parser.add_argument("--report-path", type=Path)
+    sync_migration_gate_parser.add_argument("--operator-reviewed-status", action="store_true")
+    sync_migration_gate_parser.add_argument("--reviewer-approved-scope", action="store_true")
+    sync_migration_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    sync_migration_gate_parser.add_argument("--reviewer-approved-stop-conditions", action="store_true")
+    sync_migration_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_migration_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     sync_clear_stale_lock_parser = sync_subparsers.add_parser("clear-stale-lock")
     sync_clear_stale_lock_parser.add_argument(
         "--execute",
@@ -161,6 +171,8 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return cmd_sync_autosync(args, paths, "disable-autosync")
     if args.sync_command == "autosync-gate":
         return cmd_sync_autosync_gate(args, paths)
+    if args.sync_command == "migration-gate":
+        return cmd_sync_migration_gate(args, paths)
     if args.sync_command == "_run":
         return cmd_sync_internal_run(args, paths)
     if args.sync_command in {"resync", "full-resync", "track-renames"}:
@@ -285,6 +297,13 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
             id="sync.autosync.gate",
             label="Check autosync launchd gate",
             command=_action_command(paths, "sync.autosync.gate"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id="sync.migration.gate",
+            label="Check sync migration gate",
+            command=_action_command(paths, "sync.migration.gate"),
             terminal=True,
             refresh=False,
         ),
@@ -1137,7 +1156,11 @@ _REQUIRED_SHADOW_CHECKS = {
 }
 
 
-def _saved_shadow_report_check(report_path: Path | None) -> tuple[dict[str, object], list[ConfigIssue]]:
+def _saved_shadow_report_check(
+    report_path: Path | None,
+    *,
+    issue_key: str = "PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+) -> tuple[dict[str, object], list[ConfigIssue]]:
     if report_path is None:
         return (
             {
@@ -1147,7 +1170,7 @@ def _saved_shadow_report_check(report_path: Path | None) -> tuple[dict[str, obje
             },
             [
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                    key=issue_key,
                     level="warning",
                     message="saved shadow validation report was not provided",
                 )
@@ -1164,7 +1187,7 @@ def _saved_shadow_report_check(report_path: Path | None) -> tuple[dict[str, obje
             },
             [
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                    key=issue_key,
                     level="warning",
                     message=f"saved shadow validation report is missing: {path}",
                 )
@@ -1182,7 +1205,7 @@ def _saved_shadow_report_check(report_path: Path | None) -> tuple[dict[str, obje
             },
             [
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                    key=issue_key,
                     level="warning",
                     message=f"saved shadow validation report could not be read: {exc}",
                 )
@@ -1229,7 +1252,7 @@ def _saved_shadow_report_check(report_path: Path | None) -> tuple[dict[str, obje
         },
         [
             ConfigIssue(
-                key="PCLOUD_TOOLS_AUTOSYNC_SHADOW_REPORT",
+                key=issue_key,
                 level="warning",
                 message=f"saved shadow validation report is not ok: {detail}",
             )
@@ -1441,6 +1464,224 @@ def cmd_sync_autosync_gate(args: argparse.Namespace, paths: RuntimePaths) -> int
     output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
     if output_format == "human":
         print(_render_autosync_gate_human(report))
+    else:
+        print(render_report(report, output_format=output_format))
+    return _exit_code_for_report(report)
+
+
+def _render_migration_gate_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"migration gate: {details.get('migration gate status', '-')}",
+        f"sync/resync can run: {details.get('sync/resync can run', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"sync state: {details.get('sync state', '-')}",
+        f"last result: {details.get('last result', '-')}",
+        f"last error status: {details.get('last error status', '-')}",
+        f"sync lock: {details.get('sync lock status', '-')}",
+        (
+            "scope: "
+            f"{details.get('scope status', '-')}; "
+            f"{details.get('scope baseline', '-')}; "
+            f"entries={details.get('scope entries', '-')}"
+        ),
+        f"rclone: {details.get('rclone availability', '-')} ({details.get('rclone binary', '-')})",
+        f"approval status: {details.get('migration approval status', '-')}",
+        f"human gate: {details.get('human gate status', '-')}",
+        f"next human check trigger: {details.get('next human check trigger', '-')}",
+    ]
+    commands = [
+        ("status command", details.get("status command")),
+        ("normal sync preview", details.get("normal sync preview command")),
+        ("resync preview", details.get("resync preview command")),
+    ]
+    for label, command in commands:
+        if command:
+            lines.append(f"{label}: {_shell_command(command)}")
+    checks = details.get("preflight checks")
+    if isinstance(checks, list) and checks:
+        lines.append("preflight checks:")
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            lines.append(
+                "- "
+                f"{check.get('name', '-')}: "
+                f"{check.get('status', '-')} - "
+                f"{check.get('detail', '-')}"
+            )
+    blocked = details.get("blocked operations")
+    if isinstance(blocked, list) and blocked:
+        lines.append("blocked operations:")
+        for item in blocked:
+            lines.append(f"- {item}")
+    if report.issues:
+        lines.append("warnings:")
+        for issue in report.issues:
+            if issue.level == "warning":
+                lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    sync_state = read_sync_state(config)
+    lock_state = read_sync_lock_state(config)
+    scope = sync_allowlist_info(config)
+    autosync = read_autosync_state(config)
+    listing_recovery = bisync_listing_recovery_state(config)
+    baseline_label = _readable_baseline(scope.baseline.file, scope.baseline.mode, scope.baseline.status)
+    issues = list(load_result.issues) + scope_issues(scope)
+    shadow_check, shadow_issues = _saved_shadow_report_check(
+        getattr(args, "report_path", None),
+        issue_key="PCLOUD_TOOLS_SYNC_MIGRATION_SHADOW_REPORT",
+    )
+    issues.extend(shadow_issues)
+    rclone_bin = _command_path("rclone")
+    rclone_check = {
+        "name": "rclone binary",
+        "status": "ok" if rclone_bin else "pending",
+        "detail": rclone_bin or "rclone not found by command -v; verify before sync/resync validation",
+    }
+    if not rclone_bin:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_RCLONE",
+                level="warning",
+                message="rclone was not found by command -v; migration gate remains closed",
+            )
+        )
+    sync_ok = sync_state.state == "synced" and "SUCCESS" in sync_state.last_sync
+    sync_state_check = {
+        "name": "latest sync status",
+        "status": "ok" if sync_ok else "pending",
+        "detail": f"{sync_state.state}; last={sync_state.last_sync}; last_error_status={sync_last_error_status(sync_state)}",
+    }
+    lock_check = {
+        "name": "sync lock",
+        "status": "ok" if lock_state.status == "missing" else "pending",
+        "detail": f"{lock_state.status}; active={'yes' if lock_state.active else 'no'}; pid={lock_state.pid}",
+    }
+    scope_check = {
+        "name": "document/media scope",
+        "status": "ok" if scope.allowlist_status == "loaded" and scope.baseline.status != "invalid" else "pending",
+        "detail": f"{baseline_label}; entries={scope.allowlist_count}; allowlist={scope.allowlist_file}",
+    }
+    entrypoint = _entrypoint_command(paths)
+    status_command = [entrypoint, "sync", "status", "--json"]
+    normal_preview = [entrypoint, "sync", "--json"]
+    resync_preview = [entrypoint, "sync", "resync", "--resync-mode", DEFAULT_RESYNC_MODE, "--json"]
+    checks = [
+        shadow_check,
+        rclone_check,
+        sync_state_check,
+        lock_check,
+        scope_check,
+        {
+            "name": "sync preview commands",
+            "status": "ok",
+            "detail": f"{' '.join(normal_preview)}; {' '.join(resync_preview)}",
+        },
+        {
+            "name": "operator status review",
+            "status": "ok" if getattr(args, "operator_reviewed_status", False) else "pending",
+            "detail": "operator reviewed sync status, latest result, lock state, and preview commands",
+        },
+        {
+            "name": "scope approval",
+            "status": "ok" if getattr(args, "reviewer_approved_scope", False) else "pending",
+            "detail": "reviewer approved document/media allowlist scope before migration validation",
+        },
+        {
+            "name": "rollback policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "detail": "reviewer approved listing/filter rollback backups and restore commands before validation",
+        },
+        {
+            "name": "stop conditions approval",
+            "status": "ok" if getattr(args, "reviewer_approved_stop_conditions", False) else "pending",
+            "detail": "reviewer approved stop conditions for sync errors, locks, broad scope, or unexpected transfer plan",
+        },
+        {
+            "name": "parallel dangerous gates",
+            "status": "ok",
+            "detail": "fswatch resident start, pCloud API long-poll start, autosync launchd changes, and archive work stay out of scope",
+        },
+    ]
+    approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
+    issues.append(
+        ConfigIssue(
+            key="PCLOUD_TOOLS_SYNC_MIGRATION_GATE",
+            level="warning",
+            message="normal sync/resync migration validation remains gated; this command is read-only",
+        )
+    )
+    issues = _sort_issues(issues)
+    details: dict[str, object] = {
+        "planned action": "check normal sync/resync migration validation prerequisites",
+        "implementation status": "read-only checklist; sync/resync is not executed",
+        "migration gate status": "closed",
+        "sync/resync can run": "no",
+        "operator verification required": "yes-before-sync-migration-validation",
+        "human gate status": "required-before-sync-migration-validation",
+        "human gate reason": "normal sync/resync validation would run live rclone bisync against the configured remote",
+        "state writes": "none",
+        "core remote": config.core_remote,
+        "sync state": sync_state.state,
+        "last result": sync_state.last_sync,
+        "last error": sync_state.last_error,
+        "last error status": sync_last_error_status(sync_state),
+        "sync lock status": lock_state.status,
+        "sync lock active": "yes" if lock_state.active else "no",
+        "autosync state": autosync.state,
+        "autosync runs": autosync.runs,
+        "scope status": scope.allowlist_status,
+        "scope baseline": baseline_label,
+        "scope entries": scope.allowlist_count,
+        "allowlist": str(scope.allowlist_file),
+        "rclone availability": "available" if rclone_bin else "missing",
+        "rclone binary": rclone_bin or "-",
+        "listing recovery available": "yes" if listing_recovery.can_recover else "no",
+        "path1 list": str(listing_recovery.path1_lst),
+        "path2 list": str(listing_recovery.path2_lst),
+        "path1 err": str(listing_recovery.path1_err),
+        "path2 err": str(listing_recovery.path2_err),
+        "status command": status_command,
+        "normal sync preview command": normal_preview,
+        "resync preview command": resync_preview,
+        "migration approval status": approval_status,
+        "preflight checks": checks,
+        "success policy": "run only the explicitly approved validation command and re-check sync status/logs afterward",
+        "failure policy": "stop on sync error, active/stale lock, broad-scope warning, or unexpected transfer plan",
+        "rollback policy": "use saved listing/filter rollback backups; do not delete listing cache automatically",
+        "blocked operations": [
+            "normal sync execution",
+            "resync execution",
+            "full-resync execution",
+            "track-renames execution",
+            "listing cache deletion or movement",
+            "autosync launchd changes",
+        ],
+        "next human check trigger": "explicit normal sync/resync validation command or listing rollback decision",
+    }
+    return CommandReport(
+        command="sync migration-gate",
+        status=_status_from_issues(issues),
+        summary="sync migration validation gate is closed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_sync_status_actions(paths, lock_state.status),
+    )
+
+
+def cmd_sync_migration_gate(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _sync_migration_gate_report(args, paths)
+    output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
+    if output_format == "human":
+        print(_render_migration_gate_human(report))
     else:
         print(render_report(report, output_format=output_format))
     return _exit_code_for_report(report)

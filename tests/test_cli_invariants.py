@@ -371,6 +371,14 @@ def test_action_dispatch_uses_stable_ids_with_isolated_runtime(tmp_path: Path) -
         cwd=tmp_path,
         env=env,
     )
+    migration_gate = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "sync.migration.gate"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
     pushd = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.preview"],
         check=False,
@@ -395,6 +403,8 @@ def test_action_dispatch_uses_stable_ids_with_isolated_runtime(tmp_path: Path) -
     assert "sync command preview is ready" in sync.stdout
     assert autosync_gate.returncode == 0
     assert "autosync launchd gate is closed" in autosync_gate.stdout
+    assert migration_gate.returncode == 0
+    assert "sync migration validation gate is closed" in migration_gate.stdout
     assert pushd.returncode == 0
     assert "pushd scaffold preview is ready" in pushd.stdout
     assert diffd.returncode == 0
@@ -828,6 +838,85 @@ def test_sync_autosync_gate_is_read_only_checklist(tmp_path: Path) -> None:
     assert checks["launchctl policy approval"]["status"] == "ok"
     assert checks["rollback policy approval"]["status"] == "ok"
     assert "sync.autosync.gate" in [action["id"] for action in payload["actions"]]
+    assert not any(state_dir.iterdir())
+
+
+def test_sync_migration_gate_is_read_only_checklist(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nexit 0\n")
+    rclone.chmod(0o755)
+    env = _base_env(tmp_path, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / "bisync_status.log").write_text("2026-05-04 12:00:00 SUCCESS mode=autosync\n")
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-migration" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-migration.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "migration-gate",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-status",
+            "--reviewer-approved-scope",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-stop-conditions",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["summary"] == "sync migration validation gate is closed"
+    assert payload["details"]["implementation status"].startswith("read-only checklist")
+    assert payload["details"]["migration gate status"] == "closed"
+    assert payload["details"]["sync/resync can run"] == "no"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["sync state"] == "synced"
+    assert payload["details"]["last error status"] == "none"
+    assert payload["details"]["sync lock status"] == "missing"
+    assert payload["details"]["scope status"] == "loaded"
+    assert payload["details"]["rclone availability"] == "available"
+    assert payload["details"]["migration approval status"] == "complete-read-only"
+    assert payload["details"]["human gate status"] == "required-before-sync-migration-validation"
+    assert checks["saved shadow validation report"]["status"] == "ok"
+    assert checks["rclone binary"]["status"] == "ok"
+    assert checks["latest sync status"]["status"] == "ok"
+    assert checks["sync lock"]["status"] == "ok"
+    assert checks["document/media scope"]["status"] == "ok"
+    assert checks["operator status review"]["status"] == "ok"
+    assert checks["scope approval"]["status"] == "ok"
+    assert checks["rollback policy approval"]["status"] == "ok"
+    assert checks["stop conditions approval"]["status"] == "ok"
+    assert "sync.migration.gate" in [action["id"] for action in payload["actions"]]
     assert not any(state_dir.iterdir())
 
 
