@@ -2676,6 +2676,22 @@ def test_service_daemon_real_gates_are_read_only_and_closed(tmp_path: Path) -> N
     assert "pCloud API long-poll" in diffd_payload["details"]["blocked operations"]
     assert "capture first real upload target with transfer check --final-review" in pushd_payload["details"]["suggested next units"]
     assert "capture first real download target with transfer check --final-review" in diffd_payload["details"]["suggested next units"]
+    assert (
+        "hold real-run implementation until the human gate is explicitly confirmed"
+        in pushd_payload["details"]["suggested next units"]
+    )
+    assert (
+        "hold real-run implementation until the human gate is explicitly confirmed"
+        in diffd_payload["details"]["suggested next units"]
+    )
+    assert (
+        "document real-run queue consumption and rollback behavior before implementation"
+        not in pushd_payload["details"]["suggested next units"]
+    )
+    assert (
+        "document real-run remote-change consumption and rollback behavior before implementation"
+        not in diffd_payload["details"]["suggested next units"]
+    )
     assert "define fswatch event capture schema" not in pushd_payload["details"]["suggested next units"]
     assert "define pCloud diff response fixture schema" not in diffd_payload["details"]["suggested next units"]
     assert "pushd.gate" in [action["id"] for action in pushd_payload["actions"]]

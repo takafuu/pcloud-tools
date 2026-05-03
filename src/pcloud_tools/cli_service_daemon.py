@@ -1515,7 +1515,7 @@ def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefini
         next_units = [
             "capture first real upload target with transfer check --final-review",
             "complete read-only real-gate approvals without opening execution",
-            "document real-run queue consumption and rollback behavior before implementation",
+            "hold real-run implementation until the human gate is explicitly confirmed",
         ]
     else:
         blocked = [
@@ -1527,7 +1527,7 @@ def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefini
         next_units = [
             "capture first real download target with transfer check --final-review",
             "complete read-only real-gate approvals without opening execution",
-            "document real-run remote-change consumption and rollback behavior before implementation",
+            "hold real-run implementation until the human gate is explicitly confirmed",
         ]
     return {
         "gate status": "closed",

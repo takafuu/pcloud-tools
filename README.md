@@ -101,6 +101,7 @@ Config notes:
 - `pushd run` and `diffd run` are one-shot dry-run surfaces; `--execute` records only `last-plan.json`, `last-event.json`, and `cursor` under the dev state dir
 - `pushd gate` and `diffd gate` are read-only real-operation gates; they keep fswatch resident daemons, pCloud API long-poll, launchd registration, and real upload/download execution explicitly blocked until a separate operator/reviewer gate is opened
 - `pushd gate` and `diffd gate` mark read-only gate diagnostics as not requiring routine operator verification; they also expose `human gate status: required-before-real-work`, because the remaining work is real rclone/pCloud transfer, real validation, or archive decisions
+- `pushd gate` and `diffd gate` suggested next units now point to first-target final review, read-only real-gate approvals, and holding real-run implementation until the human gate is explicitly confirmed
 - `pushd fswatch preview --fixture <path>` parses fixture-backed fswatch event records and previews the upload plan without starting fswatch or writing pushd state
 - `pushd fswatch probe` previews the one-shot fswatch command and command availability without running fswatch or writing pushd state
 - `diffd preview` and `diffd diff preview --fixture <path>` apply the document/media allowlist and default excludes before reporting planned downloads; skipped remote records stay visible in the preview
