@@ -302,6 +302,34 @@ def run_validation() -> dict[str, Any]:
                     "missing closed gate status",
                 )
             )
+        api_long_poll_gate = _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll gate",
+            (
+                "diffd",
+                "api-poll",
+                "long-poll-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-response-policy",
+                "--reviewer-approved-credential-policy",
+                "--reviewer-approved-process-policy",
+            ),
+        )
+        if (
+            api_long_poll_gate.get("details", {}).get("long-poll gate status") == "closed"
+            and api_long_poll_gate.get("details", {}).get("long-poll can start") == "no"
+            and api_long_poll_gate.get("details", {}).get("state writes") == "none"
+            and api_long_poll_gate.get("details", {}).get("long-poll approval status") == "complete-read-only"
+            and api_long_poll_gate.get("details", {}).get("request path") == "/diff"
+        ):
+            checks.append(CheckResult("diffd api-poll long-poll gate closed", "ok", "long-poll start is gated"))
+        else:
+            checks.append(
+                CheckResult("diffd api-poll long-poll gate closed", "error", "long-poll gate mismatch")
+            )
         pushd_transfer = _check_json_command(
             checks,
             env,
@@ -854,6 +882,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "pushd.gate", "pushd real-operation gate is closed")
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
+        _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))

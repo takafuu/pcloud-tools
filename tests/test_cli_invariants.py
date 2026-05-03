@@ -904,6 +904,78 @@ def test_diffd_api_poll_preview_is_request_shape_only(tmp_path: Path) -> None:
     assert not (state_dir / "diffd").exists()
 
 
+def test_diffd_api_long_poll_gate_is_read_only_checklist(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-poll" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-api-poll.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "api-poll",
+            "long-poll-gate",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["summary"] == "diffd pCloud API long-poll gate is closed"
+    assert payload["details"]["implementation status"].startswith("read-only checklist")
+    assert payload["details"]["long-poll gate status"] == "closed"
+    assert payload["details"]["long-poll can start"] == "no"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["human gate status"] == "required-before-api-long-poll"
+    assert payload["details"]["request method"] == "GET"
+    assert payload["details"]["request path"] == "/diff"
+    assert payload["details"]["request query"]["diffid"] == "0"
+    assert payload["details"]["poll interval seconds"] == 60
+    assert payload["details"]["batch limit"] == 100
+    assert payload["details"]["long-poll approval status"] == "complete-read-only"
+    assert checks["saved shadow validation report"]["status"] == "ok"
+    assert checks["API preview command"]["status"] == "ok"
+    assert checks["diff cursor state"]["status"] == "ok"
+    assert checks["download scope"]["status"] == "ok"
+    assert checks["operator preview review"]["status"] == "ok"
+    assert checks["response policy approval"]["status"] == "ok"
+    assert checks["credential policy approval"]["status"] == "ok"
+    assert checks["process lifecycle approval"]["status"] == "ok"
+    assert "diffd.api-poll.long-poll-gate" in [action["id"] for action in payload["actions"]]
+    assert not (state_dir / "diffd").exists()
+
+
 def test_transfer_previews_emit_commands_without_state_writes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -1955,6 +2027,14 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
         cwd=tmp_path,
         env=env,
     )
+    diffd_api_poll_gate = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "diffd.api-poll.long-poll-gate"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
     pushd_real_gate = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "action", "pushd.transfer.real-gate"],
         check=False,
@@ -2005,6 +2085,8 @@ def test_transfer_preview_and_check_action_ids_dispatch(tmp_path: Path) -> None:
     assert "pushd real transfer gate checklist is not open" in pushd_check.stdout
     assert pushd_fswatch_gate.returncode == 0
     assert "pushd fswatch resident gate is closed" in pushd_fswatch_gate.stdout
+    assert diffd_api_poll_gate.returncode == 0
+    assert "diffd pCloud API long-poll gate is closed" in diffd_api_poll_gate.stdout
     assert diffd_check.returncode == 0
     assert "diffd real transfer gate checklist is not open" in diffd_check.stdout
     assert pushd_real_gate.returncode == 0

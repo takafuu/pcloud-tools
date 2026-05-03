@@ -343,6 +343,20 @@ def _add_service_parser(
         )
         api_poll_preview_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         api_poll_preview_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        api_poll_long_poll_gate_parser = api_poll_subparsers.add_parser(
+            "long-poll-gate", help="Read-only checklist before enabling diffd pCloud API long-poll."
+        )
+        api_poll_long_poll_gate_parser.add_argument("--report-path", type=Path)
+        api_poll_long_poll_gate_parser.add_argument("--operator-reviewed-preview", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-response-policy", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        api_poll_long_poll_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
 
         transfer_parser = service_subparsers.add_parser(
             "transfer", help="Preview download executor commands without running transfers."
@@ -795,6 +809,69 @@ def _print_fswatch_resident_gate_report(report: CommandReport, args: argparse.Na
     _print_report(report, args)
 
 
+def _render_api_long_poll_gate_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"long-poll gate: {details.get('long-poll gate status', '-')}",
+        f"long-poll can start: {details.get('long-poll can start', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"remote root: {details.get('remote root', '-')}",
+        f"current diffid: {details.get('current diffid', '-')}",
+        f"poll interval seconds: {details.get('poll interval seconds', '-')}",
+        f"batch limit: {details.get('batch limit', '-')}",
+        (
+            "scope: "
+            f"{details.get('scope status', '-')}; "
+            f"{details.get('scope baseline', '-')}; "
+            f"entries={details.get('scope entries', '-')}"
+        ),
+        f"approval status: {details.get('long-poll approval status', '-')}",
+        f"human gate: {details.get('human gate status', '-')}",
+        f"next human check trigger: {details.get('next human check trigger', '-')}",
+    ]
+    preview_command = details.get("preview command")
+    if preview_command:
+        lines.append(f"preview command: {_shell_command(preview_command)}")
+    request_query = details.get("request query")
+    if isinstance(request_query, dict):
+        query = ", ".join(f"{key}={value}" for key, value in request_query.items())
+        lines.append(
+            f"request: {details.get('request method', '-')} {details.get('request path', '-')} ({query})"
+        )
+    checks = details.get("preflight checks")
+    if isinstance(checks, list) and checks:
+        lines.append("preflight checks:")
+        for check in checks:
+            if not isinstance(check, dict):
+                continue
+            lines.append(
+                "- "
+                f"{check.get('name', '-')}: "
+                f"{check.get('status', '-')} - "
+                f"{check.get('detail', '-')}"
+            )
+    blocked = details.get("blocked operations")
+    if isinstance(blocked, list) and blocked:
+        lines.append("blocked operations:")
+        for item in blocked:
+            lines.append(f"- {item}")
+    if report.issues:
+        lines.append("warnings:")
+        for issue in report.issues:
+            if issue.level == "warning":
+                lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _print_api_long_poll_gate_report(report: CommandReport, args: argparse.Namespace) -> None:
+    if _output_format(args) == "human":
+        print(_render_api_long_poll_gate_human(report))
+        return
+    _print_report(report, args)
+
+
 def _render_real_transfer_run_human(report: CommandReport) -> str:
     details = report.details
     lines = [
@@ -1018,6 +1095,15 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             )
         )
     if service.name == "diffd":
+        actions.append(
+            ReportAction(
+                id="diffd.api-poll.long-poll-gate",
+                label="Check diffd API long-poll gate",
+                command=_action_command(paths, "diffd.api-poll.long-poll-gate"),
+                terminal=True,
+                refresh=False,
+            )
+        )
         actions.append(
             ReportAction(
                 id="diffd.remote-change.clear.preview",
@@ -2176,10 +2262,128 @@ def _diffd_api_poll_report(paths: RuntimePaths) -> CommandReport:
     )
 
 
+def _diffd_api_long_poll_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    daemon_state = read_daemon_state(load_result.config)
+    scope = sync_allowlist_info(load_result.config)
+    baseline_label = f"{scope.baseline.mode} ({scope.baseline.status})"
+    issues = list(load_result.issues) + list(daemon_state.issues) + scope_issues(scope)
+    shadow_check, shadow_issues = _shadow_report_check(
+        getattr(args, "report_path", None),
+        issue_key="PCLOUD_TOOLS_DIFFD_API_POLL_SHADOW_REPORT",
+    )
+    issues.extend(shadow_issues)
+    entrypoint = action_entrypoint_command(paths)
+    preview_command = [entrypoint, "diffd", "api-poll", "preview", "--json"]
+    request_query = {
+        "diffid": daemon_state.diffid,
+        "limit": load_result.config.diffd_batch_limit,
+    }
+    checks = [
+        shadow_check,
+        {
+            "name": "API preview command",
+            "status": "ok",
+            "detail": " ".join(preview_command),
+        },
+        {
+            "name": "diff cursor state",
+            "status": "ok",
+            "detail": f"current diffid={daemon_state.diffid}",
+        },
+        {
+            "name": "download scope",
+            "status": "ok" if scope.allowlist_status == "loaded" else "pending",
+            "detail": f"{baseline_label}; entries={scope.allowlist_count}; root={load_result.config.core_dir}",
+        },
+        {
+            "name": "operator preview review",
+            "status": "ok" if getattr(args, "operator_reviewed_preview", False) else "pending",
+            "detail": "operator reviewed diffd api-poll preview request shape",
+        },
+        {
+            "name": "response policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_response_policy", False) else "pending",
+            "detail": "reviewer approved response parsing, skipped records, and cursor mutation policy",
+        },
+        {
+            "name": "credential policy approval",
+            "status": "ok" if getattr(args, "reviewer_approved_credential_policy", False) else "pending",
+            "detail": "reviewer approved least-privilege credential handling before any API call",
+        },
+        {
+            "name": "process lifecycle approval",
+            "status": "ok" if getattr(args, "reviewer_approved_process_policy", False) else "pending",
+            "detail": "reviewer approved timeout, retry, backoff, logs, and cleanup behavior before long-poll",
+        },
+        {
+            "name": "parallel dangerous gates",
+            "status": "ok",
+            "detail": "fswatch resident mode, launchd registration, normal sync/resync, and archive work stay out of scope",
+        },
+    ]
+    approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
+    details: dict[str, object] = {
+        "planned action": "check diffd pCloud API long-poll prerequisites",
+        "implementation status": "read-only checklist; pCloud API long-poll is not started",
+        "long-poll gate status": "closed",
+        "long-poll can start": "no",
+        "operator verification required": "yes-before-api-long-poll-gate",
+        "human gate status": "required-before-api-long-poll",
+        "human gate reason": "pCloud API long-poll would call the live pCloud API and mutate diff cursor state",
+        "state writes": "none",
+        "remote root": load_result.config.core_remote,
+        "current diffid": daemon_state.diffid,
+        "poll interval seconds": load_result.config.diffd_poll_interval_seconds,
+        "batch limit": load_result.config.diffd_batch_limit,
+        "request method": "GET",
+        "request path": "/diff",
+        "request query": request_query,
+        "preview command": preview_command,
+        "scope status": scope.allowlist_status,
+        "scope baseline": baseline_label,
+        "scope entries": scope.allowlist_count,
+        "long-poll approval status": approval_status,
+        "preflight checks": checks,
+        "success policy": "update diff cursor and append remote-change records only after an accepted API response",
+        "failure policy": "retain current diff cursor and record failure for retry/manual review",
+        "rollback policy": "no automatic local/remote delete or cursor rollback beyond retaining the previous cursor",
+        "blocked operations": [
+            "calling pCloud API /diff",
+            "starting pCloud API long-poll loop",
+            "mutating diff cursor from live API responses",
+            "writing diffd remote-change records from live API responses",
+            "launchd registration",
+            "real download execution from API events",
+        ],
+        "next human check trigger": "explicit API long-poll implementation or launchd integration",
+    }
+    issues.append(
+        ConfigIssue(
+            key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",
+            level="warning",
+            message="diffd pCloud API long-poll remains gated; this command is read-only",
+        )
+    )
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command="diffd api-poll long-poll-gate",
+        status=_status_from_issues(issues),
+        summary="diffd pCloud API long-poll gate is closed",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["diffd"]),
+    )
+
+
 def cmd_diffd_api_poll(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.api_poll_command == "preview":
         report = _diffd_api_poll_report(paths)
         _print_report(report, args)
+        return _exit_code_for_report(report)
+    if args.api_poll_command == "long-poll-gate":
+        report = _diffd_api_long_poll_gate_report(args, paths)
+        _print_api_long_poll_gate_report(report, args)
         return _exit_code_for_report(report)
     return None
 
@@ -3903,6 +4107,20 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         )
         api_poll_preview_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         api_poll_preview_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+        api_poll_long_poll_gate_parser = api_poll_subparsers.add_parser(
+            "long-poll-gate", help="Read-only checklist before enabling diffd pCloud API long-poll."
+        )
+        api_poll_long_poll_gate_parser.add_argument("--report-path", type=Path)
+        api_poll_long_poll_gate_parser.add_argument("--operator-reviewed-preview", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-response-policy", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        api_poll_long_poll_gate_parser.add_argument(
+            "--json", action="store_true", help="Emit structured JSON output."
+        )
+        api_poll_long_poll_gate_parser.add_argument(
+            "--xbar", action="store_true", help="Emit xbar menu output."
+        )
 
         transfer_parser = subparsers.add_parser(
             "transfer", help="Preview download executor commands without running transfers."
