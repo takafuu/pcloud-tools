@@ -1517,6 +1517,10 @@ def test_transfer_real_gate_is_read_only_scaffold(tmp_path: Path) -> None:
     assert {
         check["status"] for check in payload["details"]["separate real gate approval checks"]
     } == {"ok"}
+    assert payload["details"]["future real-run policy status"] == "documented-read-only"
+    assert "pushd queue record" in payload["details"]["future real-run success policy"]
+    assert "retain matching pushd queue record" in payload["details"]["future real-run failure policy"]
+    assert payload["details"]["future real-run policy state writes"] == "none"
     assert payload["details"]["state writes"] == "none"
     assert "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE" in [issue["key"] for issue in payload["issues"]]
     assert not (pushd_dir / "last-transfer.json").exists()

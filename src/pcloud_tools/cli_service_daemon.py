@@ -624,6 +624,14 @@ def _render_transfer_check_human(report: CommandReport) -> str:
                     f"{check.get('status', '-')} - "
                     f"{check.get('detail', '-')}"
                 )
+        if "future real-run policy status" in details:
+            lines.append(f"future run policy: {details.get('future real-run policy status', '-')}")
+        if "future real-run success policy" in details:
+            lines.append(f"success policy: {details.get('future real-run success policy', '-')}")
+        if "future real-run failure policy" in details:
+            lines.append(f"failure policy: {details.get('future real-run failure policy', '-')}")
+        if "future real-run rollback policy" in details:
+            lines.append(f"rollback policy: {details.get('future real-run rollback policy', '-')}")
         blocker_details = details.get("final review blocker details")
         if isinstance(blocker_details, list) and blocker_details:
             lines.append("blocked checks:")
@@ -1323,6 +1331,24 @@ def _real_gate_approval_details(args: argparse.Namespace, final_review_status: o
         "separate real gate approval note": (
             "approval checks are recorded only; real transfer execution remains unavailable"
         ),
+    }
+
+
+def _future_real_run_policy_details(service: ServiceDefinition) -> dict[str, object]:
+    record_name = "pushd queue record" if service.name == "pushd" else "diffd remote-change record"
+    return {
+        "future real-run policy status": "documented-read-only",
+        "future real-run success policy": (
+            f"remove matching {record_name} only after rclone exits 0 and the exact transfer target is recorded"
+        ),
+        "future real-run failure policy": f"retain matching {record_name} for retry/manual review",
+        "future real-run unknown policy": (
+            f"retain matching {record_name} when timeout, partial transfer, or result verification is unclear"
+        ),
+        "future real-run rollback policy": (
+            "no automatic local/remote delete or rollback; record the failure and require operator review"
+        ),
+        "future real-run policy state writes": "none",
     }
 
 
@@ -2659,6 +2685,7 @@ def _real_transfer_gate_report(
     report = _real_transfer_check_report(_real_gate_args(args), paths, service)
     details = dict(report.details)
     approval_details = _real_gate_approval_details(args, details.get("final review status"))
+    policy_details = _future_real_run_policy_details(service)
     details.update(
         {
             "planned action": f"inspect {service.name} separate real transfer execution gate",
@@ -2672,6 +2699,7 @@ def _real_transfer_gate_report(
             "fake-rclone gate reuse": "forbidden",
             "state writes": "none",
             **approval_details,
+            **policy_details,
         }
     )
     issues = [
