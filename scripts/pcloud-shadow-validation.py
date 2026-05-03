@@ -101,6 +101,54 @@ def _check_action(checks: list[CheckResult], env: dict[str, str], action_id: str
     checks.append(CheckResult(action_id, "ok", expected))
 
 
+def _check_dev_wrapper(
+    checks: list[CheckResult],
+    workspace: Path,
+    wrapper_name: str,
+    args: tuple[str, ...],
+    expected_command: str,
+    expected_state_dir: Path,
+) -> None:
+    source_link = workspace / "src"
+    if not source_link.exists():
+        source_link.symlink_to(REPO_ROOT / "src", target_is_directory=True)
+    for name in ("pcloud-manager-dev", "pcloud-pushd", "pcloud-diffd"):
+        target = workspace / name
+        target.write_text((REPO_ROOT / name).read_text())
+        target.chmod(0o755)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_TOOLS_") and key != "PYTHONPATH"
+    }
+    env["HOME"] = str(workspace.parent / "wrapper-home")
+    env["XDG_CACHE_HOME"] = str(workspace.parent / "wrapper-cache")
+    Path(env["HOME"]).mkdir(parents=True, exist_ok=True)
+    Path(env["XDG_CACHE_HOME"]).mkdir(parents=True, exist_ok=True)
+    result = subprocess.run(
+        [str(workspace / wrapper_name), *args, "--json"],
+        cwd=workspace,
+        env=env,
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        checks.append(CheckResult(wrapper_name, "error", f"return code {result.returncode}: {result.stderr.strip()}"))
+        return
+    try:
+        payload = _payload(result)
+    except json.JSONDecodeError as exc:
+        checks.append(CheckResult(wrapper_name, "error", f"invalid JSON output: {exc}"))
+        return
+    if payload.get("command") == expected_command and payload.get("details", {}).get("state dir") == str(
+        expected_state_dir
+    ):
+        checks.append(CheckResult(wrapper_name, "ok", f"{wrapper_name} delegates to {expected_command}"))
+    else:
+        checks.append(CheckResult(wrapper_name, "error", f"unexpected wrapper payload: {payload.get('summary', '-')}"))
+
+
 def _read_json(path: Path) -> Any:
     return json.loads(path.read_text())
 
@@ -167,6 +215,23 @@ def run_validation() -> dict[str, Any]:
         )
         autosync_plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
         autosync_plist.write_text("<plist><dict/></plist>\n")
+
+        _check_dev_wrapper(
+            checks,
+            workspace,
+            "pcloud-pushd",
+            ("status",),
+            "pushd status",
+            state_dir / "pushd",
+        )
+        _check_dev_wrapper(
+            checks,
+            workspace,
+            "pcloud-diffd",
+            ("preview",),
+            "diffd preview",
+            state_dir / "diffd",
+        )
 
         _check_json_command(
             checks,

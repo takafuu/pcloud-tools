@@ -34,6 +34,8 @@ Development entrypoint:
 ./pcloud-manager-dev daemon notification record "remote changes detected"
 ./pcloud-manager-dev pushd status --json
 ./pcloud-manager-dev pushd preview
+./pcloud-pushd status --json
+./pcloud-pushd preview
 ./pcloud-manager-dev pushd run
 ./pcloud-manager-dev pushd gate
 ./pcloud-manager-dev pushd fswatch preview --fixture tests/fixtures/pushd-fswatch-events.txt
@@ -50,6 +52,8 @@ Development entrypoint:
 ./pcloud-manager-dev pushd queue clear
 ./pcloud-manager-dev diffd status --json
 ./pcloud-manager-dev diffd preview
+./pcloud-diffd status --json
+./pcloud-diffd preview
 ./pcloud-manager-dev diffd run
 ./pcloud-manager-dev diffd gate
 ./pcloud-manager-dev diffd diff preview --fixture tests/fixtures/pcloud-diff.json
@@ -101,6 +105,7 @@ Config notes:
 - `daemon status` exposes diffid persistence, pending-download state, last notification state, and auto-download on/off visibility from `state_dir/daemon/`
 - `daemon set-diffid`, `daemon auto-download`, `daemon pending-download`, and `daemon notification` are preview-first state commands; `--execute` only writes local daemon state files
 - `pushd status` / `pushd preview` and `diffd status` / `diffd preview` expose the non-destructive scaffold for future `pcloud-pushd` / `pcloud-diffd` work; they read state under `.dev-state/state/{pushd,diffd}/` in dev mode
+- `./pcloud-pushd` and `./pcloud-diffd` are thin development wrappers that delegate to `./pcloud-manager-dev pushd` and `./pcloud-manager-dev diffd`; they do not start resident daemons, call the pCloud API, or open real transfer execution
 - `pushd status` / `diffd status` summarize any existing dev-state `last-transfer.json`, including success, failed, and timeout counts, without mutating queue/change files
 - `pushd preview` classifies `.dev-state/state/pushd/queue.json` into planned uploads, allowlist/exclude skips, and invalid queue records; `diffd preview` combines `.dev-state/state/diffd/remote-changes.json` with daemon pending downloads into a download plan summary
 - `pushd queue add|remove|clear` and `diffd remote-change add|remove|clear` are preview-first; `--execute` only writes the corresponding JSON files when the state dir is under `workspace/.dev-state/state`
@@ -127,7 +132,7 @@ Config notes:
 - `pushd transfer run --execute` and `diffd transfer run --execute` are limited to dev-mode fake-rclone execution and still report `real execution can run: no`: `PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE=dev-fake-rclone`, `PCLOUD_TOOLS_RCLONE_BIN=<workspace>/.dev-state/.../fake-rclone`, and state dir under `workspace/.dev-state/state` are all required; fake-rclone runs use `PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS`, clean up the fake process group on timeout, record `last-transfer.json`, and never consume queue/change files; real rclone and pCloud transfer remain blocked
 - `pushd transfer consume preview` and `diffd transfer consume preview` read the latest dev-state `last-transfer.json` and current queue/change file to show which successful fake-rclone records would be removed; they report `real execution can run: no`, are read-only, write no state, and do not consume queue/change files
 - `pushd transfer consume run --execute` and `diffd transfer consume run --execute` are dev-state guarded consume paths; they remove only queue/change records matching successful fake-rclone results, report `real execution can run: no`, and still do not open real rclone/pCloud transfer
-- `scripts/pcloud-shadow-validation.py` runs a temp-dev-state shadow validation pass over preview, dry-run, action, and safety-guard paths without touching live state or pCloud remotes; it covers the fswatch resident gate using a temp fake `fswatch` discovered through `command -v`, the pCloud API long-poll gate without making API calls, the autosync launchd gate using a temp fake `launchctl`, and the sync migration gate using a temp fake `rclone`
+- `scripts/pcloud-shadow-validation.py` runs a temp-dev-state shadow validation pass over preview, dry-run, action, wrapper, and safety-guard paths without touching live state or pCloud remotes; it covers the thin `pcloud-pushd` / `pcloud-diffd` dev wrappers in a temp workspace, the fswatch resident gate using a temp fake `fswatch` discovered through `command -v`, the pCloud API long-poll gate without making API calls, the autosync launchd gate using a temp fake `launchctl`, and the sync migration gate using a temp fake `rclone`
 - shadow validation can write a JSON report with `--report-path`; use `--summary` for concise human output while preserving full AI/reviewer detail in `--json` and saved reports. A cutover candidate must have `status: ok`, every check `status: ok`, `temporary workspace guard` / `temporary state dir guard` passing, and no evidence of live `~/.pcloud` or pCloud remote IO
 - stable action ids include `sync.autosync.gate`, `sync.migration.gate`, `pushd.status.refresh`, `pushd.preview`, `pushd.run.preview`, `pushd.gate`, `pushd.fswatch.resident-gate`, `pushd.transfer.preview`, `pushd.transfer.check`, `pushd.transfer.real-gate`, `pushd.transfer.real-run.preview`, `pushd.transfer.consume.preview`, `pushd.queue.clear.preview`, `diffd.status.refresh`, `diffd.preview`, `diffd.run.preview`, `diffd.gate`, `diffd.api-poll.long-poll-gate`, `diffd.transfer.preview`, `diffd.transfer.check`, `diffd.transfer.real-gate`, `diffd.transfer.real-run.preview`, `diffd.transfer.consume.preview`, and `diffd.remote-change.clear.preview`
 - `mount` / `umount` now expose preview-first reports; `pcloud-manager-dev` refuses `--execute` so development runs do not touch live mount links

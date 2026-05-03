@@ -448,6 +448,57 @@ def test_pushd_diffd_scaffold_reports_use_isolated_state(tmp_path: Path) -> None
     assert "diffd.preview" in [action["id"] for action in diffd_payload["actions"]]
 
 
+def test_pushd_diffd_root_wrappers_delegate_to_dev_entrypoint(tmp_path: Path) -> None:
+    (tmp_path / "src").symlink_to(REPO_ROOT / "src", target_is_directory=True)
+    for name in ("pcloud-manager-dev", "pcloud-pushd", "pcloud-diffd"):
+        target = tmp_path / name
+        target.write_text((REPO_ROOT / name).read_text())
+        target.chmod(0o755)
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_TOOLS_") and key != "PYTHONPATH"
+    }
+    env["HOME"] = str(tmp_path / "home")
+    env["XDG_CACHE_HOME"] = str(tmp_path / "cache")
+    Path(env["HOME"]).mkdir()
+    Path(env["XDG_CACHE_HOME"]).mkdir()
+    (tmp_path / ".pcloud-sync-allowlist").write_text("Documents/\n")
+
+    pushd = subprocess.run(
+        [str(tmp_path / "pcloud-pushd"), "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    diffd = subprocess.run(
+        [str(tmp_path / "pcloud-diffd"), "preview", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    pushd_payload = _payload(pushd)
+    diffd_payload = _payload(diffd)
+
+    assert os.access(REPO_ROOT / "pcloud-pushd", os.X_OK)
+    assert os.access(REPO_ROOT / "pcloud-diffd", os.X_OK)
+    assert pushd.returncode == 0
+    assert pushd_payload["command"] == "pushd status"
+    assert pushd_payload["details"]["state dir"] == str(tmp_path / ".dev-state" / "state" / "pushd")
+    assert pushd_payload["details"]["queue file"] == str(tmp_path / ".dev-state" / "state" / "pushd" / "queue.json")
+    assert diffd.returncode == 0
+    assert diffd_payload["command"] == "diffd preview"
+    assert diffd_payload["details"]["state dir"] == str(tmp_path / ".dev-state" / "state" / "diffd")
+    assert diffd_payload["details"]["remote changes file"] == str(
+        tmp_path / ".dev-state" / "state" / "diffd" / "remote-changes.json"
+    )
+
+
 def test_service_daemon_pid_zero_is_invalid_not_running(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
