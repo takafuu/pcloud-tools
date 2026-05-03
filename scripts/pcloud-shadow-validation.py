@@ -304,6 +304,7 @@ def run_validation() -> dict[str, Any]:
         if (
             pushd_transfer_check.get("details", {}).get("real transfer gate status") == "closed"
             and pushd_transfer_check.get("details", {}).get("state writes") == "none"
+            and pushd_transfer_check.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("pushd transfer checklist read-only", "ok", "real gate closed"))
         else:
@@ -315,6 +316,7 @@ def run_validation() -> dict[str, Any]:
         if (
             diffd_transfer_check.get("details", {}).get("real transfer gate status") == "closed"
             and diffd_transfer_check.get("details", {}).get("state writes") == "none"
+            and diffd_transfer_check.get("details", {}).get("real execution can run") == "no"
         ):
             checks.append(CheckResult("diffd transfer checklist read-only", "ok", "real gate closed"))
         else:

@@ -579,6 +579,8 @@ def _render_transfer_check_human(report: CommandReport) -> str:
     ]
     if "real transfer execution gate status" in details:
         lines.append(f"execution gate: {details.get('real transfer execution gate status', '-')}")
+    if "real execution can run" in details:
+        lines.append(f"real execution can run: {details.get('real execution can run', '-')}")
     if "future real gate env var" in details:
         lines.append(
             "future gate env: "
@@ -2691,6 +2693,9 @@ def _real_transfer_check_report(
         "planned action": f"check {service.name} real {direction} transfer gate prerequisites",
         "implementation status": "read-only checklist; rclone is not executed",
         "real transfer gate status": "closed",
+        "real execution readiness": "blocked-final-review",
+        "real execution blocked reason": "transfer check is read-only and cannot execute real rclone or pCloud transfer",
+        "real execution can run": "no",
         "state writes": "none",
         "dev mode": "on" if paths.dev_mode else "off",
         "plan summary": plan_summary,
