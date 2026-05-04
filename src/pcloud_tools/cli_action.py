@@ -49,6 +49,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "diffd.transfer.consume.preview": ("diffd", "transfer", "consume", "preview"),
     "diffd.remote-change.clear.preview": ("diffd", "remote-change", "clear"),
     "archive.old-monolith.gate": ("archive", "old-monolith-gate"),
+    "archive.old-monolith-run.preview": ("archive", "old-monolith-run"),
 }
 
 

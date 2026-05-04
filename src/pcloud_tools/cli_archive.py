@@ -1,13 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import json
+import shutil
 import shlex
 import subprocess
+from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import ConfigIssue
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .runtime import RuntimePaths, action_entrypoint_command
+
+_OLD_MONOLITH_ARCHIVE_GATE_VALUE = "operator-approved-old-monolith-archive-v1"
 
 
 def add_archive_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -23,11 +28,24 @@ def add_archive_parser(subparsers: argparse._SubParsersAction) -> None:
     old_monolith_parser.add_argument("--reviewer-approved-archive-target", action="store_true")
     old_monolith_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     old_monolith_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+    old_monolith_run_parser = archive_subparsers.add_parser(
+        "old-monolith-run", help="Run guarded old pcloud-manager monolith archival after the dedicated gate opens."
+    )
+    old_monolith_run_parser.add_argument("--backup-dir", type=Path)
+    old_monolith_run_parser.add_argument("--operator-reviewed-current-wrapper", action="store_true")
+    old_monolith_run_parser.add_argument("--reviewer-approved-backup-source", action="store_true")
+    old_monolith_run_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    old_monolith_run_parser.add_argument("--reviewer-approved-archive-target", action="store_true")
+    old_monolith_run_parser.add_argument("--execute", action="store_true")
+    old_monolith_run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    old_monolith_run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
 
 def cmd_archive(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.archive_command == "old-monolith-gate":
         return cmd_archive_old_monolith_gate(args, paths)
+    if args.archive_command == "old-monolith-run":
+        return cmd_archive_old_monolith_run(args, paths)
     return None
 
 
@@ -46,6 +64,10 @@ def _status_from_issues(issues: list[ConfigIssue]) -> str:
     if issues:
         return "warning"
     return "ok"
+
+
+def _has_errors(issues: list[ConfigIssue]) -> bool:
+    return any(issue.level == "error" for issue in issues)
 
 
 def _command_path(command: str) -> str | None:
@@ -132,6 +154,42 @@ def _render_old_monolith_gate_human(report: CommandReport) -> str:
         for issue in report.issues:
             if issue.level == "warning":
                 lines.append(f"- {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _render_old_monolith_run_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"archive run gate: {details.get('archive run gate status', '-')}",
+        f"archive can run: {details.get('archive can run', '-')}",
+        f"execute requested: {details.get('execute requested', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+        f"legacy backup: {details.get('legacy backup file', '-')}",
+        f"legacy backup status: {details.get('legacy backup status', '-')}",
+        f"archive target: {details.get('archive target', '-')}",
+        f"approval status: {details.get('archive approval status', '-')}",
+    ]
+    manifest = details.get("archive manifest")
+    if manifest:
+        lines.append(f"archive manifest: {manifest}")
+    checks = details.get("preflight checks")
+    blocked_checks: list[str] = []
+    if isinstance(checks, list):
+        for check in checks:
+            if isinstance(check, dict) and check.get("status") != "ok":
+                blocked_checks.append(
+                    f"{check.get('name', '-')}: {check.get('status', '-')} - {check.get('detail', '-')}"
+                )
+    if blocked_checks:
+        lines.append("blocked checks:")
+        for check in blocked_checks:
+            lines.append(f"- {check}")
+    if report.issues:
+        lines.append("warnings:" if report.status != "error" else "issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.key}: {issue.message}")
     return "\n".join(lines)
 
 
@@ -276,6 +334,13 @@ def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> 
                 command=_action_command(paths, "archive.old-monolith.gate"),
                 terminal=True,
                 refresh=False,
+            ),
+            ReportAction(
+                id="archive.old-monolith-run.preview",
+                label="Preview old monolith archive run",
+                command=_action_command(paths, "archive.old-monolith-run.preview"),
+                terminal=True,
+                refresh=False,
             )
         ],
     )
@@ -286,6 +351,168 @@ def cmd_archive_old_monolith_gate(args: argparse.Namespace, paths: RuntimePaths)
     output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
     if output_format == "human":
         print(_render_old_monolith_gate_human(report))
+    else:
+        print(render_report(report, output_format=output_format))
+    return 1 if report.status == "error" else 0
+
+
+def _old_monolith_archive_gate_open() -> bool:
+    import os
+
+    return os.environ.get("PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE", "") == _OLD_MONOLITH_ARCHIVE_GATE_VALUE
+
+
+def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    gate_report = _old_monolith_gate_report(args, paths)
+    execute = bool(getattr(args, "execute", False))
+    details = dict(gate_report.details)
+    issues = [
+        ConfigIssue(key=issue.key, level=issue.level, message=issue.message)
+        for issue in gate_report.issues
+        if issue.key != "PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE"
+    ]
+    approval_status = str(details.get("archive approval status", "pending"))
+    gate_open = _old_monolith_archive_gate_open()
+    backup_dir = Path(str(details.get("backup dir", "-")))
+    legacy_backup = Path(str(details.get("legacy backup file", "-")))
+    shadow_backup = Path(str(details.get("shadow validation backup", "-")))
+    archive_target = Path(str(details.get("archive target preview", "-")))
+    manifest_path = archive_target / "archive-manifest.json"
+
+    details.update(
+        {
+            "planned action": "archive old pcloud-manager monolith backup" if execute else "preview old monolith archive run",
+            "implementation status": (
+                "guarded archive copy; public wrappers and launchd are not modified"
+                if execute
+                else "old monolith archive run preview only; files are not copied or moved"
+            ),
+            "archive run gate status": (
+                f"open: {_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+            ),
+            "archive gate status": (
+                f"open: {_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+                if gate_open
+                else f"closed: requires PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+            ),
+            "archive can run": "yes" if gate_open and approval_status == "complete-read-only" else "no",
+            "execute requested": "yes" if execute else "no",
+            "state writes": "archive target copy and manifest" if execute else "none",
+            "archive target": str(archive_target),
+            "archive manifest": str(manifest_path),
+            "future gate env": f"PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE}",
+        }
+    )
+
+    if approval_status != "complete-read-only":
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_APPROVAL",
+                level="error" if execute else "warning",
+                message="old monolith archive execution requires complete read-only approvals",
+            )
+        )
+    if not gate_open:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_EXECUTION_GATE",
+                level="error" if execute else "warning",
+                message=(
+                    "old monolith archive execution requires "
+                    f"PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE!r}"
+                ),
+            )
+        )
+    if execute and (not legacy_backup.exists() or not _file_contains(legacy_backup, "PCLOUD_MANAGER_CONFIG")):
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_ARCHIVE_LEGACY_BACKUP",
+                level="error",
+                message=f"legacy monolith backup is not usable: {legacy_backup}",
+            )
+        )
+    if execute and not shadow_backup.exists():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_ARCHIVE_SHADOW_BACKUP",
+                level="error",
+                message=f"shadow validation backup is missing: {shadow_backup}",
+            )
+        )
+    dev_archive_root = paths.workspace_root / ".dev-state" / "old-monolith-archive"
+    try:
+        archive_target.relative_to(dev_archive_root)
+    except ValueError:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_ARCHIVE_TARGET",
+                level="error",
+                message=f"refusing archive target outside {dev_archive_root}: {archive_target}",
+            )
+        )
+
+    if not execute or _has_errors(issues):
+        if _has_errors(issues):
+            details["state writes"] = "none"
+        sorted_issues = _sort_issues(issues)
+        return CommandReport(
+            command="archive old-monolith-run",
+            status=_status_from_issues(sorted_issues),
+            summary=(
+                "old monolith archive execution is gated"
+                if _has_errors(sorted_issues) or not gate_open
+                else "old monolith archive run is ready"
+            ),
+            details=details,
+            issues=_report_issues(sorted_issues),
+            actions=gate_report.actions,
+        )
+
+    archive_target.mkdir(parents=True, exist_ok=True)
+    archived_legacy = archive_target / "pcloud-manager.current"
+    archived_shadow = archive_target / "shadow-validation.json"
+    shutil.copy2(legacy_backup, archived_legacy)
+    shutil.copy2(shadow_backup, archived_shadow)
+    manifest = {
+        "archived_at": datetime.now(timezone.utc).isoformat(),
+        "backup_dir": str(backup_dir),
+        "archive_target": str(archive_target),
+        "legacy_backup": str(legacy_backup),
+        "shadow_validation_backup": str(shadow_backup),
+        "archived_files": [str(archived_legacy), str(archived_shadow)],
+        "public_wrapper_modified": False,
+        "launchd_modified": False,
+        "sync_executed": False,
+        "source_backup_retained": legacy_backup.exists(),
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+    details.update(
+        {
+            "archived legacy backup": str(archived_legacy),
+            "archived shadow validation": str(archived_shadow),
+            "archive manifest payload": manifest,
+            "source backup retained": "yes" if legacy_backup.exists() else "no",
+            "state writes": "archive target copy and manifest",
+        }
+    )
+    sorted_issues = _sort_issues(issues)
+    return CommandReport(
+        command="archive old-monolith-run",
+        status=_status_from_issues(sorted_issues),
+        summary="old monolith archive run completed",
+        details=details,
+        issues=_report_issues(sorted_issues),
+        actions=gate_report.actions,
+    )
+
+
+def cmd_archive_old_monolith_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _old_monolith_run_report(args, paths)
+    output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
+    if output_format == "human":
+        print(_render_old_monolith_run_human(report))
     else:
         print(render_report(report, output_format=output_format))
     return 1 if report.status == "error" else 0

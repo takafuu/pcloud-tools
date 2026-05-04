@@ -726,6 +726,61 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("old monolith archive gate closed", "ok", "old monolith archive is gated"))
         else:
             checks.append(CheckResult("old monolith archive gate closed", "error", "archive gate mismatch"))
+        archive_run_closed = _check_json_command(
+            checks,
+            env,
+            "old monolith archive-run gate closed",
+            (
+                "archive",
+                "old-monolith-run",
+                "--backup-dir",
+                str(backup_dir),
+                "--operator-reviewed-current-wrapper",
+                "--reviewer-approved-backup-source",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-archive-target",
+                "--execute",
+            ),
+            allowed_status={"error"},
+        )
+        archive_target = workspace / ".dev-state" / "old-monolith-archive" / "20260426-040551"
+        if (
+            archive_run_closed.get("details", {}).get("state writes") == "none"
+            and archive_run_closed.get("details", {}).get("archive can run") == "no"
+            and not archive_target.exists()
+        ):
+            checks.append(CheckResult("old monolith archive-run closed no writes", "ok", "archive gate refused"))
+        else:
+            checks.append(CheckResult("old monolith archive-run closed no writes", "error", "closed archive gate wrote"))
+        archive_run_env = dict(env)
+        archive_run_env["PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE"] = "operator-approved-old-monolith-archive-v1"
+        archive_run = _check_json_command(
+            checks,
+            archive_run_env,
+            "old monolith archive-run copy",
+            (
+                "archive",
+                "old-monolith-run",
+                "--backup-dir",
+                str(backup_dir),
+                "--operator-reviewed-current-wrapper",
+                "--reviewer-approved-backup-source",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-archive-target",
+                "--execute",
+            ),
+        )
+        if (
+            archive_run.get("details", {}).get("archive can run") == "yes"
+            and archive_run.get("details", {}).get("state writes") == "archive target copy and manifest"
+            and (archive_target / "pcloud-manager.current").exists()
+            and (archive_target / "shadow-validation.json").exists()
+            and (archive_target / "archive-manifest.json").exists()
+            and (backup_dir / "pcloud-manager.current").exists()
+        ):
+            checks.append(CheckResult("old monolith archive-run copy state", "ok", str(archive_target)))
+        else:
+            checks.append(CheckResult("old monolith archive-run copy state", "error", "archive-run mismatch"))
         migration_bin_dir = workspace / ".dev-state" / "migration-bin"
         migration_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_migration_rclone = migration_bin_dir / "rclone"
@@ -1444,6 +1499,7 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, migration_gate_env, "sync.migration.gate", "sync migration validation gate is closed")
         _check_action(checks, migration_gate_env, "sync.migration-run.preview", "sync migration execution is gated")
         _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")
+        _check_action(checks, env, "archive.old-monolith-run.preview", "old monolith archive execution is gated")
         _check_action(checks, env, "gates.status", "all execution gates closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
