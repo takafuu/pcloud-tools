@@ -19,6 +19,7 @@ from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import DaemonState, read_daemon_state, write_diffid
 from .diffd_events import diff_changes_to_records, parse_diff_response_fixture, parse_diff_response_text
 from .output import CommandReport, ReportAction, ReportIssue, render_report
+from .rclone_config import load_rclone_pcloud_credentials, rclone_config_path
 from .pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
 from .runtime import RuntimePaths, action_entrypoint_command, detect_runtime_paths
 from .service_daemon_plan import (
@@ -982,6 +983,7 @@ def _render_api_long_poll_run_human(report: CommandReport) -> str:
         f"execute requested: {details.get('execute requested', '-')}",
         f"state writes: {details.get('state writes', '-')}",
         f"live API requested: {details.get('live API requested', '-')}",
+        f"API credential source: {details.get('API credential source', '-')}",
         f"API token provided: {details.get('API token provided', '-')}",
         f"API request URL: {details.get('API request URL', '-')}",
         f"fixture: {details.get('fixture file', '-')}",
@@ -2794,24 +2796,68 @@ def _diffd_api_long_poll_run_state_file(config: AppConfig) -> Path:
     return config.state_dir / "diffd" / "api-long-poll-last-run.json"
 
 
-def _pcloud_diff_request_url(config: AppConfig, diffid: str, *, block: bool) -> tuple[str, str]:
+@dataclass(frozen=True)
+class PcloudApiCredential:
+    base_url: str
+    auth_param: str
+    token: str
+    source: str
+    source_detail: str
+
+
+def _pcloud_api_credential(config: AppConfig) -> PcloudApiCredential:
+    if config.pcloud_api_token:
+        return PcloudApiCredential(
+            base_url=config.pcloud_api_base_url,
+            auth_param=config.pcloud_api_auth_param,
+            token=config.pcloud_api_token,
+            source="env/config",
+            source_detail="PCLOUD_TOOLS_PCLOUD_API_TOKEN",
+        )
+    credentials = load_rclone_pcloud_credentials(config)
+    if credentials is not None:
+        return PcloudApiCredential(
+            base_url=(
+                credentials.hostname
+                if credentials.hostname.startswith(("http://", "https://"))
+                else f"https://{credentials.hostname}"
+            ),
+            auth_param="access_token",
+            token=credentials.access_token,
+            source="rclone config",
+            source_detail=f"{credentials.source_path} [{credentials.remote_name}]",
+        )
+    return PcloudApiCredential(
+        base_url=config.pcloud_api_base_url,
+        auth_param=config.pcloud_api_auth_param,
+        token="",
+        source="missing",
+        source_detail=f"PCLOUD_TOOLS_PCLOUD_API_TOKEN or {rclone_config_path()} [{config.core_remote.split(':', 1)[0]}]",
+    )
+
+
+def _pcloud_diff_request_url(
+    config: AppConfig, credential: PcloudApiCredential, diffid: str, *, block: bool
+) -> tuple[str, str]:
     query = {
         "diffid": diffid,
         "limit": str(config.diffd_batch_limit),
-        config.pcloud_api_auth_param: config.pcloud_api_token,
+        credential.auth_param: credential.token,
     }
     if block:
         query["block"] = "1"
-    endpoint = config.pcloud_api_base_url.rstrip("/") + "/diff"
+    endpoint = credential.base_url.rstrip("/") + "/diff"
     url = endpoint + "?" + urllib.parse.urlencode(query)
     redacted_query = dict(query)
-    redacted_query[config.pcloud_api_auth_param] = "<redacted>"
+    redacted_query[credential.auth_param] = "<redacted>"
     redacted_url = endpoint + "?" + urllib.parse.urlencode(redacted_query)
     return url, redacted_url
 
 
-def _fetch_pcloud_diff_response(config: AppConfig, diffid: str, *, block: bool) -> tuple[str, str]:
-    url, redacted_url = _pcloud_diff_request_url(config, diffid, block=block)
+def _fetch_pcloud_diff_response(
+    config: AppConfig, credential: PcloudApiCredential, diffid: str, *, block: bool
+) -> tuple[str, str]:
+    url, redacted_url = _pcloud_diff_request_url(config, credential, diffid, block=block)
     request = urllib.request.Request(url, headers={"User-Agent": "pcloud-tools/diffd"})
     with urllib.request.urlopen(request, timeout=config.pcloud_api_timeout_seconds) as response:
         charset = response.headers.get_content_charset() or "utf-8"
@@ -2848,6 +2894,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     plan: DiffdPlan | None = None
     live_request_url = "-"
     api_response_source = str(fixture_path) if fixture_path else "-"
+    api_credential = _pcloud_api_credential(config)
 
     details.update(
         {
@@ -2880,9 +2927,11 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "state writes": "diffd remote-change records, diff cursor, and long-poll run state" if execute else "none",
             "live API requested": "yes" if live_api else "no",
             "API block requested": "yes" if block else "no",
-            "API base URL": config.pcloud_api_base_url,
-            "API auth parameter": config.pcloud_api_auth_param,
-            "API token provided": "yes" if config.pcloud_api_token else "no",
+            "API base URL": api_credential.base_url,
+            "API auth parameter": api_credential.auth_param,
+            "API credential source": api_credential.source,
+            "API credential source detail": api_credential.source_detail,
+            "API token provided": "yes" if api_credential.token else "no",
             "API timeout seconds": config.pcloud_api_timeout_seconds,
             "fixture file": str(fixture_path) if fixture_path else "-",
             "API response source": api_response_source,
@@ -2946,12 +2995,12 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 message="--fixture and --live-api cannot be used together",
             )
         )
-    if execute and live_api and not config.pcloud_api_token:
+    if execute and live_api and not api_credential.token:
         issues.append(
             ConfigIssue(
                 key="PCLOUD_TOOLS_PCLOUD_API_TOKEN",
                 level="error",
-                message="PCLOUD_TOOLS_PCLOUD_API_TOKEN is required for live pCloud API long-poll",
+                message="PCLOUD_TOOLS_PCLOUD_API_TOKEN or rclone pCloud access_token is required for live pCloud API long-poll",
             )
         )
     if execute and live_api and requested_iterations != 1:
@@ -2978,7 +3027,9 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
 
     if execute and live_api and not _has_errors(issues):
         try:
-            response_text, live_request_url = _fetch_pcloud_diff_response(config, daemon_state.diffid, block=block)
+            response_text, live_request_url = _fetch_pcloud_diff_response(
+                config, api_credential, daemon_state.diffid, block=block
+            )
             api_response_source = live_request_url
             parsed = parse_diff_response_text(response_text, live_request_url)
         except (OSError, urllib.error.URLError, TimeoutError) as exc:

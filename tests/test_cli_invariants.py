@@ -2513,6 +2513,124 @@ def test_diffd_api_long_poll_run_executes_live_api_against_local_server(tmp_path
     assert run_state["written_diffid"] == "456"
 
 
+def test_diffd_api_long_poll_run_uses_rclone_config_credentials(tmp_path: Path) -> None:
+    requests: list[dict[str, list[str]]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            requests.append(urllib.parse.parse_qs(parsed.query))
+            body = json.dumps(
+                {
+                    "diffid": "789",
+                    "entries": [
+                        {"path": "Documents/from-rclone-config.pdf", "event": "created"},
+                    ],
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = _base_env(
+            tmp_path,
+            {
+                "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1",
+                "PCLOUD_TOOLS_CORE_REMOTE": "pcloud:core",
+                "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS": "5",
+            },
+        )
+        state_dir = _use_default_dev_state_dir(env)
+        rclone_config = tmp_path / "rclone.conf"
+        env["RCLONE_CONFIG"] = str(rclone_config)
+        rclone_config.write_text(
+            "\n".join(
+                [
+                    "[pcloud]",
+                    "type = pcloud",
+                    f"hostname = http://127.0.0.1:{server.server_port}",
+                    'token = {"access_token":"rclone-secret","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}',
+                    "",
+                    "[pcloud-crypt]",
+                    "type = crypt",
+                    "remote = pcloud:crypt",
+                    "password = should-not-be-read",
+                    "password2 = should-not-be-read",
+                    "",
+                ]
+            )
+        )
+        shadow_report = tmp_path / "shadow-validation-api-rclone-ok.json"
+        shadow_workspace = tmp_path / "pcloud-shadow-validation-api-rclone-ok" / "workspace"
+        shadow_report.write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "workspace": str(shadow_workspace),
+                    "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                    "checks": [
+                        {"name": "temporary workspace guard", "status": "ok"},
+                        {"name": "temporary state dir guard", "status": "ok"},
+                        {"name": "unsafe state dir guard", "status": "ok"},
+                    ],
+                }
+            )
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pcloud_tools.cli",
+                "diffd",
+                "api-poll",
+                "long-poll-run",
+                "--report-path",
+                str(shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-response-policy",
+                "--reviewer-approved-credential-policy",
+                "--reviewer-approved-process-policy",
+                "--live-api",
+                "--max-iterations",
+                "1",
+                "--execute",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = _payload(result)
+    remote_changes = json.loads((state_dir / "diffd" / "remote-changes.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["details"]["API credential source"] == "rclone config"
+    assert payload["details"]["API auth parameter"] == "access_token"
+    assert payload["details"]["API token provided"] == "yes"
+    assert "rclone-secret" not in result.stdout
+    assert "should-not-be-read" not in result.stdout
+    assert requests[0]["access_token"] == ["rclone-secret"]
+    assert remote_changes == [
+        {"path": "Documents/from-rclone-config.pdf", "action": "download", "reason": "diff:created"}
+    ]
+
+
 def test_transfer_previews_emit_commands_without_state_writes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

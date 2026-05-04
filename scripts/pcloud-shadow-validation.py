@@ -677,6 +677,78 @@ def run_validation() -> dict[str, Any]:
             "diffd api-poll long-poll-run fake live API cleanup",
             ("diffd", "remote-change", "remove", "Documents/api-live-shadow.txt", "--execute"),
         )
+        rclone_config = workspace / ".dev-state" / "rclone.conf"
+        api_server = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)
+        rclone_config.write_text(
+            "\n".join(
+                [
+                    "[pcloud]",
+                    "type = pcloud",
+                    f"hostname = http://127.0.0.1:{api_server.server_port}",
+                    'token = {"access_token":"rclone-shadow-token","token_type":"bearer","expiry":"0001-01-01T00:00:00Z"}',
+                    "",
+                    "[pcloud-crypt]",
+                    "type = crypt",
+                    "remote = pcloud:crypt",
+                    "password = should-not-be-read",
+                    "password2 = should-not-be-read",
+                    "",
+                ]
+            )
+        )
+        api_thread = threading.Thread(target=api_server.serve_forever, daemon=True)
+        api_thread.start()
+        try:
+            rclone_live_env = dict(api_long_poll_run_env)
+            rclone_live_env["RCLONE_CONFIG"] = str(rclone_config)
+            rclone_live_env["PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS"] = "5"
+            api_rclone_run = _check_json_command(
+                checks,
+                rclone_live_env,
+                "diffd api-poll long-poll-run rclone config fake API",
+                (
+                    "diffd",
+                    "api-poll",
+                    "long-poll-run",
+                    "--report-path",
+                    str(saved_shadow_report),
+                    "--operator-reviewed-preview",
+                    "--reviewer-approved-response-policy",
+                    "--reviewer-approved-credential-policy",
+                    "--reviewer-approved-process-policy",
+                    "--live-api",
+                    "--max-iterations",
+                    "1",
+                    "--execute",
+                ),
+            )
+        finally:
+            api_server.shutdown()
+            api_server.server_close()
+        rclone_has_record = False
+        if api_long_poll_remote_changes.exists():
+            rclone_remote_changes = json.loads(api_long_poll_remote_changes.read_text())
+            rclone_has_record = any(
+                isinstance(item, dict) and item.get("path") == "Documents/api-live-shadow.txt"
+                for item in rclone_remote_changes
+            )
+        if (
+            api_rclone_run.get("details", {}).get("API credential source") == "rclone config"
+            and api_rclone_run.get("details", {}).get("API auth parameter") == "access_token"
+            and api_rclone_run.get("details", {}).get("download records appended") == 1
+            and "rclone-shadow-token" not in json.dumps(api_rclone_run, ensure_ascii=False)
+            and "should-not-be-read" not in json.dumps(api_rclone_run, ensure_ascii=False)
+            and rclone_has_record
+        ):
+            checks.append(CheckResult("diffd api-poll long-poll-run rclone config fake API state", "ok", "rclone token diff recorded"))
+        else:
+            checks.append(CheckResult("diffd api-poll long-poll-run rclone config fake API state", "error", "rclone fake API mismatch"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll-run rclone config fake API cleanup",
+            ("diffd", "remote-change", "remove", "Documents/api-live-shadow.txt", "--execute"),
+        )
         launchctl_bin_dir = workspace / ".dev-state" / "launchctl-bin"
         launchctl_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_launchctl = launchctl_bin_dir / "launchctl"
