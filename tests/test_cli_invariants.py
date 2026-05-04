@@ -1897,6 +1897,10 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
     assert gates["old monolith archive"]["approval status"] == "complete-read-only"
     assert "sync autosync launchd" in gates
     assert gates["sync migration validation"]["approval status"] == "complete-read-only"
+    assert gates["pushd fswatch resident"]["guarded run path"] == "available"
+    assert gates["diffd pCloud API long-poll"]["run command"] == ["diffd", "api-poll", "long-poll-run"]
+    assert gates["sync autosync launchd"]["execution gate env"].startswith("PCLOUD_TOOLS_AUTOSYNC")
+    assert "old monolith archive" in payload["details"]["guarded run paths"]
     assert not any(state_dir.iterdir())
     assert not (workspace / ".dev-state" / "old-monolith-archive").exists()
 
@@ -1918,6 +1922,7 @@ def test_gates_status_human_output_is_concise(tmp_path: Path) -> None:
     assert "pushd fswatch resident" in result.stdout
     assert "diffd pCloud API long-poll" in result.stdout
     assert "old monolith archive" in result.stdout
+    assert "run=archive old-monolith-run" in result.stdout
 
 
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:

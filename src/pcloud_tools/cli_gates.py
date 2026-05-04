@@ -11,6 +11,12 @@ from .output import CommandReport, ReportIssue, render_report
 from .runtime import RuntimePaths
 
 
+def _shell_join(value: object) -> str:
+    if isinstance(value, (list, tuple)):
+        return " ".join(str(part) for part in value)
+    return str(value)
+
+
 def add_gates_parser(subparsers: argparse._SubParsersAction) -> None:
     gates_parser = subparsers.add_parser("gates", help="Summarize remaining human gates without executing them.")
     gates_subparsers = gates_parser.add_subparsers(dest="gates_command")
@@ -78,7 +84,17 @@ def _first_detail(details: dict[str, Any], keys: tuple[str, ...]) -> str:
     return "-"
 
 
-def _gate_item(name: str, report: CommandReport, gate_keys: tuple[str, ...], can_keys: tuple[str, ...], approval_keys: tuple[str, ...]) -> dict[str, Any]:
+def _gate_item(
+    name: str,
+    report: CommandReport,
+    gate_keys: tuple[str, ...],
+    can_keys: tuple[str, ...],
+    approval_keys: tuple[str, ...],
+    *,
+    run_command: tuple[str, ...],
+    execution_gate_env: str,
+    run_scope: str,
+) -> dict[str, Any]:
     details = report.details
     blockers = _check_blockers(report)
     return {
@@ -92,6 +108,10 @@ def _gate_item(name: str, report: CommandReport, gate_keys: tuple[str, ...], can
         "next human check trigger": str(details.get("next human check trigger", "-")),
         "state writes": str(details.get("state writes", "-")),
         "blockers": blockers,
+        "guarded run path": "available",
+        "run command": list(run_command),
+        "execution gate env": execution_gate_env,
+        "run scope": run_scope,
     }
 
 
@@ -104,6 +124,9 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             ("resident gate status",),
             ("resident can start",),
             ("resident approval status",),
+            run_command=("pushd", "fswatch", "resident-run"),
+            execution_gate_env="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE=operator-approved-fswatch-resident-v1",
+            run_scope="foreground fswatch event-to-queue loop; no upload transfer",
         ),
         _gate_item(
             "diffd pCloud API long-poll",
@@ -111,6 +134,9 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             ("long-poll gate status",),
             ("long-poll can start",),
             ("long-poll approval status",),
+            run_command=("diffd", "api-poll", "long-poll-run"),
+            execution_gate_env="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE=operator-approved-api-long-poll-v1",
+            run_scope="fixture-backed diff response processing; live API still requires separate approval",
         ),
         _gate_item(
             "sync autosync launchd",
@@ -118,6 +144,9 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             ("launchd gate status",),
             ("autosync changes can run",),
             ("autosync approval status",),
+            run_command=("sync", "autosync-run", "enable|disable"),
+            execution_gate_env="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE=operator-approved-autosync-launchd-v1",
+            run_scope="launchctl enable/bootstrap or bootout/disable only; no direct sync run",
         ),
         _gate_item(
             "sync migration validation",
@@ -125,6 +154,9 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             ("migration gate status",),
             ("sync/resync can run",),
             ("migration approval status",),
+            run_command=("sync", "migration-run", "normal|resync"),
+            execution_gate_env="PCLOUD_TOOLS_SYNC_MIGRATION_GATE=operator-approved-sync-migration-v1",
+            run_scope="approved rclone bisync validation command only; no launchd/listing-cache mutation",
         ),
         _gate_item(
             "old monolith archive",
@@ -132,6 +164,9 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             ("archive gate status",),
             ("archive can run",),
             ("archive approval status",),
+            run_command=("archive", "old-monolith-run"),
+            execution_gate_env="PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE=operator-approved-old-monolith-archive-v1",
+            run_scope="copy selected backup into dev archive and write manifest; no wrapper modification",
         ),
     ]
     ready_read_only = sum(1 for item in reports if item["approval status"] == "complete-read-only")
@@ -153,6 +188,14 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
         "pending gates": len(reports) - ready_read_only,
         "gates": reports,
         "blockers": blockers,
+        "guarded run paths": {
+            item["name"]: {
+                "command": item["run command"],
+                "execution gate env": item["execution gate env"],
+                "scope": item["run scope"],
+            }
+            for item in reports
+        },
     }
     issues = [
         ReportIssue(
@@ -193,7 +236,8 @@ def _render_gates_human(report: CommandReport) -> str:
                 f"can-run={item.get('can run', '-')}; "
                 f"approval={item.get('approval status', '-')}; "
                 f"human={item.get('human gate', '-')}; "
-                f"blockers={blocker_text}"
+                f"blockers={blocker_text}; "
+                f"run={_shell_join(item.get('run command', '-'))}"
             )
     if report.issues:
         lines.append("warnings:")
