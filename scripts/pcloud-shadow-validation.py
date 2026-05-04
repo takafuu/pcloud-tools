@@ -507,7 +507,27 @@ def run_validation() -> dict[str, Any]:
                 {
                     "diffid": "123",
                     "entries": [
+                        {"diffid": 0, "event": "reset"},
+                        {
+                            "diffid": 1,
+                            "event": "createfolder",
+                            "metadata": {
+                                "isfolder": True,
+                                "folderid": 10,
+                                "parentfolderid": 0,
+                                "name": "Documents",
+                            },
+                        },
                         {"path": "Documents/api-shadow.txt", "event": "modified"},
+                        {
+                            "diffid": 2,
+                            "event": "createfile",
+                            "metadata": {
+                                "isfolder": False,
+                                "parentfolderid": 10,
+                                "name": "api-shadow-metadata.txt",
+                            },
+                        },
                         {"path": "private/api-shadow.txt", "event": "modified"},
                     ],
                 }
@@ -583,8 +603,9 @@ def run_validation() -> dict[str, Any]:
         )
         if (
             api_long_poll_run.get("details", {}).get("long-poll can start") == "yes"
-            and api_long_poll_run.get("details", {}).get("download records appended") == 1
+            and api_long_poll_run.get("details", {}).get("download records appended") == 2
             and api_long_poll_run.get("details", {}).get("skipped download records") == 1
+            and api_long_poll_run.get("details", {}).get("invalid diff changes") == 0
             and api_long_poll_run.get("details", {}).get("written diffid") == "123"
             and api_long_poll_remote_changes.exists()
             and api_long_poll_diffid.read_text().strip() == "123"
@@ -597,6 +618,12 @@ def run_validation() -> dict[str, Any]:
             env,
             "diffd api-poll long-poll-run cleanup",
             ("diffd", "remote-change", "remove", "Documents/api-shadow.txt", "--execute"),
+        )
+        _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll-run metadata cleanup",
+            ("diffd", "remote-change", "remove", "Documents/api-shadow-metadata.txt", "--execute"),
         )
         api_requests: list[dict[str, list[str]]] = []
 

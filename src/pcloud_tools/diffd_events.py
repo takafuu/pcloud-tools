@@ -34,14 +34,52 @@ def _string(value: object, default: str = "") -> str:
     return str(value if value is not None else default).strip()
 
 
+def _metadata_path(item: dict[str, Any], folder_paths: dict[str, str]) -> str:
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict):
+        return ""
+    path = normalize_plan_path(metadata.get("path", ""))
+    if path:
+        return path
+    name = _string(metadata.get("name"))
+    if not name:
+        return ""
+    parent_id = _string(metadata.get("parentfolderid"), "0")
+    if parent_id == "0":
+        return normalize_plan_path(name)
+    parent_path = folder_paths.get(parent_id)
+    if not parent_path:
+        return ""
+    return normalize_plan_path(f"{parent_path}/{name}")
+
+
+def _remember_folder_path(item: dict[str, Any], folder_paths: dict[str, str]) -> None:
+    metadata = item.get("metadata")
+    if not isinstance(metadata, dict) or not metadata.get("isfolder"):
+        return
+    folder_id = _string(metadata.get("folderid"))
+    path = _metadata_path(item, folder_paths)
+    if folder_id and path:
+        folder_paths[folder_id] = path
+
+
 def _change_from_mapping(
-    item: dict[str, Any], raw: str, default_diffid: str = "0"
-) -> DiffdRemoteChange | InvalidDiffdRemoteChange:
-    path_value = item.get("path", item.get("name", ""))
+    item: dict[str, Any], raw: str, default_diffid: str = "0", folder_paths: dict[str, str] | None = None
+) -> DiffdRemoteChange | InvalidDiffdRemoteChange | None:
+    event = _string(item.get("event", item.get("type", item.get("action", "change"))), "change")
+    metadata = item.get("metadata")
+    if event in {"reset", "modifyuserinfo"}:
+        return None
+    if isinstance(metadata, dict) and metadata.get("isfolder"):
+        return None
+    path_value = item.get("path", "")
+    if not path_value and isinstance(metadata, dict):
+        path_value = _metadata_path(item, folder_paths or {})
+    if not path_value:
+        path_value = item.get("name", "")
     path = normalize_plan_path(path_value)
     if not path:
         return InvalidDiffdRemoteChange(raw=raw, reason="missing or unsafe path")
-    event = _string(item.get("event", item.get("type", item.get("action", "change"))), "change")
     diffid = _string(item.get("diffid", default_diffid), default_diffid)
     return DiffdRemoteChange(path=path, event=event or "change", diffid=diffid or default_diffid, raw=raw)
 
@@ -73,10 +111,14 @@ def parse_diff_response_text(text: str, source: str) -> DiffdResponseParseResult
         return DiffdResponseParseResult(source=source, diffid="0", changes=(), invalid=(entries,))
 
     diffid, items = entries
+    folder_paths: dict[str, str] = {}
     parsed: list[DiffdRemoteChange | InvalidDiffdRemoteChange] = []
     for item in items:
         if isinstance(item, dict):
-            parsed.append(_change_from_mapping(item, json.dumps(item, ensure_ascii=False, sort_keys=True), diffid))
+            _remember_folder_path(item, folder_paths)
+            change = _change_from_mapping(item, json.dumps(item, ensure_ascii=False, sort_keys=True), diffid, folder_paths)
+            if change is not None:
+                parsed.append(change)
         elif isinstance(item, str):
             parsed.append(_change_from_mapping({"path": item}, item, diffid))
         else:

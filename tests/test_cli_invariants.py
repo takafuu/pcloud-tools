@@ -2345,6 +2345,102 @@ def test_diffd_api_long_poll_run_executes_fixture_in_dev_state(tmp_path: Path) -
     assert run_state["written_diffid"] == "123"
 
 
+def test_diffd_api_long_poll_parses_pcloud_metadata_paths(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    fixture = tmp_path / "api-long-poll-metadata.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "diffid": "124",
+                "entries": [
+                    {"diffid": 0, "event": "reset"},
+                    {
+                        "diffid": 1,
+                        "event": "createfolder",
+                        "metadata": {"isfolder": True, "folderid": 10, "parentfolderid": 0, "name": "Documents"},
+                    },
+                    {
+                        "diffid": 2,
+                        "event": "createfile",
+                        "metadata": {"isfolder": False, "parentfolderid": 10, "name": "from-metadata.pdf"},
+                    },
+                    {
+                        "diffid": 3,
+                        "event": "createfolder",
+                        "metadata": {"isfolder": True, "folderid": 11, "parentfolderid": 0, "name": "private"},
+                    },
+                    {
+                        "diffid": 4,
+                        "event": "createfile",
+                        "metadata": {"isfolder": False, "parentfolderid": 11, "name": "skip.pdf"},
+                    },
+                    {"diffid": 5, "event": "modifyuserinfo"},
+                ],
+            }
+        )
+    )
+    shadow_report = tmp_path / "shadow-validation-api-long-poll-metadata.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-long-poll-metadata" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "api-poll",
+            "long-poll-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+            "--fixture",
+            str(fixture),
+            "--max-iterations",
+            "1",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    remote_changes = json.loads((state_dir / "diffd" / "remote-changes.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["details"]["parsed diff changes"] == 2
+    assert payload["details"]["invalid diff changes"] == 0
+    assert payload["details"]["download records appended"] == 1
+    assert payload["details"]["skipped download records"] == 1
+    assert remote_changes == [
+        {"path": "Documents/from-metadata.pdf", "action": "download", "reason": "diff:createfile"}
+    ]
+
+
 def test_diffd_api_long_poll_run_refuses_live_api_without_token(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,
