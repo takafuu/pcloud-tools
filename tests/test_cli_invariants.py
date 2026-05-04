@@ -1420,7 +1420,7 @@ def test_sync_migration_gate_can_use_saved_sync_status_report(tmp_path: Path) ->
                     "scope status": "loaded",
                     "scope entries": 4,
                     "last resync scope": "allowlist",
-                    "allowlist": "/Users/takafumi/p-core/.pcloud-sync-allowlist",
+                    "allowlist": str(workspace / ".pcloud-sync-allowlist"),
                     "autosync state": "active",
                     "autosync runs": "7",
                 },
@@ -1460,10 +1460,91 @@ def test_sync_migration_gate_can_use_saved_sync_status_report(tmp_path: Path) ->
     assert payload["details"]["sync state"] == "synced"
     assert payload["details"]["sync lock status"] == "missing"
     assert payload["details"]["scope entries"] == 4
+    assert payload["details"]["migration target root status"] == "ok"
     assert payload["details"]["migration approval status"] == "complete-read-only"
     assert checks["saved sync status report"]["status"] == "ok"
     assert checks["latest sync status"]["status"] == "ok"
     assert checks["sync lock"]["status"] == "ok"
+    assert checks["migration target root"]["status"] == "ok"
+
+
+def test_sync_migration_gate_blocks_saved_status_target_root_mismatch(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nexit 0\n")
+    rclone.chmod(0o755)
+    env = _base_env(tmp_path, {"PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}"})
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-migration-mismatch" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-migration-mismatch.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    status_report = tmp_path / "sync-status-mismatch.json"
+    status_report.write_text(
+        json.dumps(
+            {
+                "command": "sync status",
+                "status": "ok",
+                "details": {
+                    "sync state": "synced",
+                    "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                    "last error status": "historical",
+                    "sync lock status": "missing",
+                    "sync lock active": "no",
+                    "scope status": "loaded",
+                    "scope entries": 4,
+                    "last resync scope": "allowlist",
+                    "allowlist": "/Users/takafumi/p-core/.pcloud-sync-allowlist",
+                },
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "migration-gate",
+            "--report-path",
+            str(shadow_report),
+            "--sync-status-report-path",
+            str(status_report),
+            "--operator-reviewed-status",
+            "--reviewer-approved-scope",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-stop-conditions",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 0
+    assert payload["details"]["migration approval status"] == "pending"
+    assert payload["details"]["migration target root status"] == "mismatch"
+    assert payload["details"]["sync/resync can run"] == "no"
+    assert checks["migration target root"]["status"] == "pending"
+    assert "PCLOUD_TOOLS_SYNC_MIGRATION_TARGET_ROOT" in [issue["key"] for issue in payload["issues"]]
 
 
 def test_sync_migration_run_refuses_without_execution_gate(tmp_path: Path) -> None:
@@ -1963,7 +2044,7 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
                     "scope status": "loaded",
                     "scope entries": 4,
                     "last resync scope": "allowlist",
-                    "allowlist": "/Users/takafumi/p-core/.pcloud-sync-allowlist",
+                    "allowlist": str(workspace / ".pcloud-sync-allowlist"),
                     "autosync state": "active",
                     "autosync runs": "7",
                 },

@@ -76,6 +76,15 @@ def _process_active(pid: str) -> str:
     return "yes"
 
 
+def _allowlist_root(path: str) -> str:
+    if not path or path == "-":
+        return "-"
+    candidate = Path(path).expanduser()
+    if candidate.name == ".pcloud-sync-allowlist":
+        return str(candidate.parent)
+    return "-"
+
+
 def _rclone_bisync_lock_info(config: AppConfig) -> dict[str, object]:
     path = _rclone_bisync_lock_file(config)
     info: dict[str, object] = {
@@ -1917,6 +1926,7 @@ def _render_migration_gate_human(report: CommandReport) -> str:
         f"sync state: {details.get('sync state', '-')}",
         f"last result: {details.get('last result', '-')}",
         f"last error status: {details.get('last error status', '-')}",
+        f"target root: {details.get('migration target root status', '-')} ({details.get('configured core dir', '-')})",
         f"sync lock: {details.get('sync lock status', '-')}",
         (
             "rclone bisync lock: "
@@ -1991,6 +2001,7 @@ def _render_migration_run_human(report: CommandReport) -> str:
         f"state writes: {details.get('state writes', '-')}",
         f"sync state: {details.get('sync state', '-')}",
         f"last result: {details.get('last result', '-')}",
+        f"target root: {details.get('migration target root status', '-')} ({details.get('configured core dir', '-')})",
         f"sync lock: {details.get('sync lock status', '-')}",
         (
             "rclone bisync lock: "
@@ -2158,6 +2169,25 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         str(saved_status.get("last resync scope", baseline_label)) if saved_status else baseline_label
     )
     allowlist_path = str(saved_status.get("allowlist", scope.allowlist_file)) if saved_status else str(scope.allowlist_file)
+    saved_allowlist_root = _allowlist_root(allowlist_path)
+    configured_core_dir = str(config.core_dir)
+    target_root_ok = saved_allowlist_root in {"-", configured_core_dir}
+    target_root_check = {
+        "name": "migration target root",
+        "status": "ok" if target_root_ok else "pending",
+        "detail": f"configured_core_dir={configured_core_dir}; saved_allowlist_root={saved_allowlist_root}; source={status_source}",
+    }
+    if not target_root_ok:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_TARGET_ROOT",
+                level="warning",
+                message=(
+                    "saved sync status appears to describe a different core root than this command would sync: "
+                    f"{saved_allowlist_root} != {configured_core_dir}"
+                ),
+            )
+        )
     autosync_state = str(saved_status.get("autosync state", autosync.state)) if saved_status else autosync.state
     autosync_runs = str(saved_status.get("autosync runs", autosync.runs)) if saved_status else autosync.runs
     sync_ok = sync_state_value == "synced" and "SUCCESS" in last_result
@@ -2212,6 +2242,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         sync_state_check,
         lock_check,
         rclone_lock_check,
+        target_root_check,
         scope_check,
         {
             "name": "sync preview commands",
@@ -2263,6 +2294,9 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         "human gate reason": "normal sync/resync validation would run live rclone bisync against the configured remote",
         "state writes": "none",
         "core remote": config.core_remote,
+        "configured core dir": configured_core_dir,
+        "saved allowlist root": saved_allowlist_root,
+        "migration target root status": "ok" if target_root_ok else "mismatch",
         "sync status source": status_source,
         "sync status report": str(getattr(args, "sync_status_report_path", None) or "-"),
         "sync state": sync_state_value,
