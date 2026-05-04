@@ -679,6 +679,37 @@ def run_validation() -> dict[str, Any]:
             "diffd api-poll long-poll-run folder cache cleanup",
             ("diffd", "remote-change", "remove", "Documents/api-shadow-cache.txt", "--execute"),
         )
+        folder_cache_add = _check_json_command(
+            checks,
+            env,
+            "diffd folder-cache add",
+            ("diffd", "folder-cache", "add", "29913863697", "bench_test", "--execute"),
+        )
+        folder_cache_status = _check_json_command(
+            checks,
+            env,
+            "diffd folder-cache status",
+            ("diffd", "folder-cache", "status"),
+        )
+        folder_entries = folder_cache_status.get("details", {}).get("entries", [])
+        if (
+            folder_cache_add.get("details", {}).get("state writes") == "diffd folder cache"
+            and any(
+                isinstance(item, dict)
+                and item.get("folder_id") == "29913863697"
+                and item.get("path") == "bench_test"
+                for item in folder_entries
+            )
+        ):
+            checks.append(CheckResult("diffd folder-cache state", "ok", "folder cache mapping recorded"))
+        else:
+            checks.append(CheckResult("diffd folder-cache state", "error", "folder cache mapping missing"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd folder-cache remove",
+            ("diffd", "folder-cache", "remove", "29913863697", "--execute"),
+        )
         api_requests: list[dict[str, list[str]]] = []
 
         class ApiHandler(BaseHTTPRequestHandler):

@@ -355,6 +355,45 @@ def _add_service_parser(
         diff_preview_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         diff_preview_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
+        folder_cache_parser = service_subparsers.add_parser(
+            "folder-cache", help="Preview or update diffd pCloud folder metadata cache under the dev state dir."
+        )
+        folder_cache_subparsers = folder_cache_parser.add_subparsers(dest="folder_cache_command")
+        folder_cache_status_parser = folder_cache_subparsers.add_parser(
+            "status", help="Inspect cached pCloud folder id to path mappings."
+        )
+        folder_cache_status_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        folder_cache_add_parser = folder_cache_subparsers.add_parser(
+            "add", help="Add one folder id to path mapping, preview-only unless --execute is provided."
+        )
+        folder_cache_add_parser.add_argument("folder_id")
+        folder_cache_add_parser.add_argument("path")
+        folder_cache_add_parser.add_argument(
+            "--execute",
+            action="store_true",
+            help="Write the folder cache mapping under the dev state dir.",
+        )
+        folder_cache_add_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        folder_cache_remove_parser = folder_cache_subparsers.add_parser(
+            "remove", help="Remove one folder id mapping, preview-only unless --execute is provided."
+        )
+        folder_cache_remove_parser.add_argument("folder_id")
+        folder_cache_remove_parser.add_argument(
+            "--execute",
+            action="store_true",
+            help="Write the folder cache removal under the dev state dir.",
+        )
+        folder_cache_remove_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+        folder_cache_clear_parser = folder_cache_subparsers.add_parser(
+            "clear", help="Clear all folder cache mappings, preview-only unless --execute is provided."
+        )
+        folder_cache_clear_parser.add_argument(
+            "--execute",
+            action="store_true",
+            help="Clear the folder cache file under the dev state dir.",
+        )
+        folder_cache_clear_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+
         api_poll_parser = service_subparsers.add_parser(
             "api-poll", help="Preview a one-shot pCloud API poll without calling the API."
         )
@@ -599,6 +638,8 @@ def cmd_service_daemon(args: argparse.Namespace, paths: RuntimePaths) -> int | N
         return cmd_pushd_fswatch(args, paths)
     if service.name == "diffd" and args.service_command == "diff":
         return cmd_diffd_diff(args, paths)
+    if service.name == "diffd" and args.service_command == "folder-cache":
+        return cmd_diffd_folder_cache(args, paths)
     if service.name == "diffd" and args.service_command == "api-poll":
         return cmd_diffd_api_poll(args, paths)
     if service.name in {"pushd", "diffd"} and args.service_command == "transfer":
@@ -1021,6 +1062,47 @@ def _render_api_long_poll_run_human(report: CommandReport) -> str:
 def _print_api_long_poll_run_report(report: CommandReport, args: argparse.Namespace) -> None:
     if _output_format(args) == "human":
         print(_render_api_long_poll_run_human(report))
+        return
+    _print_report(report, args)
+
+
+def _render_diffd_folder_cache_human(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"{report.command}: {report.status}",
+        report.summary,
+        f"folder cache file: {details.get('folder cache file', '-')}",
+        f"folder cache entries: {details.get('folder cache entries before', '-')} -> {details.get('folder cache entries after', '-')}",
+        f"state writes: {details.get('state writes', '-')}",
+    ]
+    folder_id = details.get("folder id")
+    if folder_id:
+        lines.append(f"folder id: {folder_id}")
+    path = details.get("path")
+    if path:
+        lines.append(f"path: {path}")
+    previous_path = details.get("previous path")
+    if previous_path:
+        lines.append(f"previous path: {previous_path}")
+    removed = details.get("folder cache entries removed")
+    if removed is not None:
+        lines.append(f"removed entries: {removed}")
+    entries = details.get("entries")
+    if isinstance(entries, list) and entries:
+        lines.append("entries:")
+        for entry in entries:
+            if isinstance(entry, dict):
+                lines.append(f"- {entry.get('folder_id', '-')} -> {entry.get('path', '-')}")
+    if report.issues:
+        lines.append("issues:")
+        for issue in report.issues:
+            lines.append(f"- {issue.level}: {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _print_diffd_folder_cache_report(report: CommandReport, args: argparse.Namespace) -> None:
+    if _output_format(args) == "human":
+        print(_render_diffd_folder_cache_human(report))
         return
     _print_report(report, args)
 
@@ -2818,6 +2900,149 @@ def _write_diffd_folder_cache(config: AppConfig, folder_paths: dict[str, str]) -
     path = _diffd_folder_cache_file(config)
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(folder_paths, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+
+def _diffd_folder_cache_entries(folder_paths: dict[str, str]) -> list[dict[str, str]]:
+    return [
+        {"folder_id": folder_id, "path": path}
+        for folder_id, path in sorted(folder_paths.items(), key=lambda item: item[0])
+    ]
+
+
+def _diffd_folder_cache_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    cache_file = _diffd_folder_cache_file(config)
+    before = _read_diffd_folder_cache(config)
+    after = dict(before)
+    execute = bool(getattr(args, "execute", False))
+    command = str(getattr(args, "folder_cache_command", "") or "")
+    issues = list(load_result.issues)
+    state_writes = "none"
+    details: dict[str, object] = {
+        "folder cache file": str(cache_file),
+        "folder cache entries before": len(before),
+        "folder cache entries after": len(after),
+        "state writes": state_writes,
+        "entries": _diffd_folder_cache_entries(after),
+    }
+
+    if command == "status":
+        summary = "diffd folder cache status is available"
+        details["planned action"] = "inspect diffd folder cache"
+    elif command == "add":
+        folder_id = str(getattr(args, "folder_id", "") or "").strip()
+        path = normalize_plan_path(getattr(args, "path", ""))
+        details.update(
+            {
+                "planned action": "add diffd folder cache mapping" if execute else "preview add diffd folder cache mapping",
+                "folder id": folder_id,
+                "path": path,
+                "previous path": before.get(folder_id, "-"),
+            }
+        )
+        if not folder_id or not folder_id.isdigit():
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_FOLDER_CACHE_ID",
+                    level="error",
+                    message="folder-cache add requires a numeric pCloud folder id",
+                )
+            )
+        if not path:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_FOLDER_CACHE_PATH",
+                    level="error",
+                    message="folder-cache add requires a safe relative folder path",
+                )
+            )
+        if not _has_errors(issues):
+            after[folder_id] = path
+        summary = "diffd folder cache mapping added" if execute and not _has_errors(issues) else "diffd folder cache add preview is ready"
+    elif command == "remove":
+        folder_id = str(getattr(args, "folder_id", "") or "").strip()
+        details.update(
+            {
+                "planned action": (
+                    "remove diffd folder cache mapping" if execute else "preview remove diffd folder cache mapping"
+                ),
+                "folder id": folder_id,
+                "previous path": before.get(folder_id, "-"),
+            }
+        )
+        if not folder_id or not folder_id.isdigit():
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_FOLDER_CACHE_ID",
+                    level="error",
+                    message="folder-cache remove requires a numeric pCloud folder id",
+                )
+            )
+        if not _has_errors(issues):
+            after.pop(folder_id, None)
+        details["folder cache entries removed"] = len(before) - len(after)
+        summary = (
+            "diffd folder cache mapping removed"
+            if execute and not _has_errors(issues)
+            else "diffd folder cache remove preview is ready"
+        )
+    elif command == "clear":
+        details["planned action"] = "clear diffd folder cache" if execute else "preview clear diffd folder cache"
+        after = {}
+        details["folder cache entries removed"] = len(before)
+        summary = "diffd folder cache cleared" if execute and not _has_errors(issues) else "diffd folder cache clear preview is ready"
+    else:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_DIFFD_FOLDER_CACHE_COMMAND",
+                level="error",
+                message="folder-cache command must be status, add, remove, or clear",
+            )
+        )
+        details["planned action"] = "none"
+        summary = "diffd folder cache command is invalid"
+
+    details["folder cache entries after"] = len(after)
+    details["entries"] = _diffd_folder_cache_entries(after)
+
+    if execute:
+        dev_issue = _dev_execute_issue(paths, config, f"diffd folder-cache {command}")
+        if dev_issue:
+            issues.append(dev_issue)
+        if not _has_errors(issues):
+            try:
+                _write_diffd_folder_cache(config, after)
+                state_writes = "diffd folder cache"
+            except OSError as exc:
+                issues.append(
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_DIFFD_FOLDER_CACHE",
+                        level="error",
+                        message=f"cannot write diffd folder cache {cache_file}: {exc}",
+                    )
+                )
+    if _has_errors(issues):
+        state_writes = "none"
+        if command != "status":
+            summary = "diffd folder cache cannot be updated until issues are resolved"
+    details["state writes"] = state_writes
+
+    issues = _sort_issues(issues)
+    return CommandReport(
+        command=f"diffd folder-cache {command}".strip(),
+        status=_status_from_issues(issues),
+        summary=summary,
+        details=details,
+        issues=_report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["diffd"]),
+    )
+
+
+def cmd_diffd_folder_cache(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _diffd_folder_cache_report(args, paths)
+    _print_diffd_folder_cache_report(report, args)
+    return _exit_code_for_report(report)
 
 
 @dataclass(frozen=True)

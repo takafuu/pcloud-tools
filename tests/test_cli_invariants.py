@@ -2547,6 +2547,101 @@ def test_diffd_api_long_poll_reuses_folder_cache_across_runs(tmp_path: Path) -> 
     ]
 
 
+def test_diffd_folder_cache_add_status_remove_is_dev_state_only(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    cache_file = state_dir / "diffd" / "folder-cache.json"
+
+    preview = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "folder-cache",
+            "add",
+            "29913863697",
+            "bench_test",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    add = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "folder-cache",
+            "add",
+            "29913863697",
+            "bench_test",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    status = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "folder-cache",
+            "status",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    remove = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "folder-cache",
+            "remove",
+            "29913863697",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    preview_payload = _payload(preview)
+    add_payload = _payload(add)
+    status_payload = _payload(status)
+    remove_payload = _payload(remove)
+
+    assert preview.returncode == 0
+    assert add.returncode == 0
+    assert status.returncode == 0
+    assert remove.returncode == 0
+    assert preview_payload["details"]["state writes"] == "none"
+    assert add_payload["details"]["state writes"] == "diffd folder cache"
+    assert status_payload["details"]["entries"] == [
+        {"folder_id": "29913863697", "path": "bench_test"}
+    ]
+    assert json.loads(cache_file.read_text()) == {}
+    assert remove_payload["details"]["folder cache entries removed"] == 1
+
+
 def test_diffd_api_long_poll_run_refuses_live_api_without_token(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,
