@@ -625,6 +625,60 @@ def run_validation() -> dict[str, Any]:
             "diffd api-poll long-poll-run metadata cleanup",
             ("diffd", "remote-change", "remove", "Documents/api-shadow-metadata.txt", "--execute"),
         )
+        api_long_poll_cache_fixture = workspace / "pcloud-api-long-poll-cache.json"
+        api_long_poll_cache_fixture.write_text(
+            json.dumps(
+                {
+                    "diffid": "124",
+                    "entries": [
+                        {
+                            "diffid": 124,
+                            "event": "createfile",
+                            "metadata": {
+                                "isfolder": False,
+                                "parentfolderid": 10,
+                                "name": "api-shadow-cache.txt",
+                            },
+                        },
+                    ],
+                }
+            )
+        )
+        api_long_poll_cache_run = _check_json_command(
+            checks,
+            api_long_poll_run_env,
+            "diffd api-poll long-poll-run folder cache",
+            (
+                "diffd",
+                "api-poll",
+                "long-poll-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-response-policy",
+                "--reviewer-approved-credential-policy",
+                "--reviewer-approved-process-policy",
+                "--fixture",
+                str(api_long_poll_cache_fixture),
+                "--max-iterations",
+                "1",
+                "--execute",
+            ),
+        )
+        if (
+            api_long_poll_cache_run.get("details", {}).get("folder cache entries before", 0) >= 1
+            and api_long_poll_cache_run.get("details", {}).get("download records appended") == 1
+            and api_long_poll_cache_run.get("details", {}).get("invalid diff changes") == 0
+        ):
+            checks.append(CheckResult("diffd api-poll long-poll-run folder cache state", "ok", "cached folder path reused"))
+        else:
+            checks.append(CheckResult("diffd api-poll long-poll-run folder cache state", "error", "folder cache mismatch"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll-run folder cache cleanup",
+            ("diffd", "remote-change", "remove", "Documents/api-shadow-cache.txt", "--execute"),
+        )
         api_requests: list[dict[str, list[str]]] = []
 
         class ApiHandler(BaseHTTPRequestHandler):

@@ -28,6 +28,7 @@ class DiffdResponseParseResult:
     diffid: str
     changes: tuple[DiffdRemoteChange, ...]
     invalid: tuple[InvalidDiffdRemoteChange, ...]
+    folder_paths: dict[str, str]
 
 
 def _string(value: object, default: str = "") -> str:
@@ -95,7 +96,9 @@ def _payload_entries(payload: Any) -> tuple[str, list[Any]] | InvalidDiffdRemote
     return _string(payload.get("diffid", payload.get("newdiffid", "0")), "0"), entries
 
 
-def parse_diff_response_text(text: str, source: str) -> DiffdResponseParseResult:
+def parse_diff_response_text(
+    text: str, source: str, initial_folder_paths: dict[str, str] | None = None
+) -> DiffdResponseParseResult:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
@@ -104,14 +107,21 @@ def parse_diff_response_text(text: str, source: str) -> DiffdResponseParseResult
             diffid="0",
             changes=(),
             invalid=(InvalidDiffdRemoteChange(raw=text.strip(), reason=f"invalid JSON fixture: {exc}"),),
+            folder_paths=dict(initial_folder_paths or {}),
         )
 
     entries = _payload_entries(payload)
     if isinstance(entries, InvalidDiffdRemoteChange):
-        return DiffdResponseParseResult(source=source, diffid="0", changes=(), invalid=(entries,))
+        return DiffdResponseParseResult(
+            source=source,
+            diffid="0",
+            changes=(),
+            invalid=(entries,),
+            folder_paths=dict(initial_folder_paths or {}),
+        )
 
     diffid, items = entries
-    folder_paths: dict[str, str] = {}
+    folder_paths: dict[str, str] = dict(initial_folder_paths or {})
     parsed: list[DiffdRemoteChange | InvalidDiffdRemoteChange] = []
     for item in items:
         if isinstance(item, dict):
@@ -129,11 +139,12 @@ def parse_diff_response_text(text: str, source: str) -> DiffdResponseParseResult
         diffid=diffid,
         changes=tuple(item for item in parsed if isinstance(item, DiffdRemoteChange)),
         invalid=tuple(item for item in parsed if isinstance(item, InvalidDiffdRemoteChange)),
+        folder_paths=folder_paths,
     )
 
 
-def parse_diff_response_fixture(path: Path) -> DiffdResponseParseResult:
-    return parse_diff_response_text(path.read_text(), str(path))
+def parse_diff_response_fixture(path: Path, initial_folder_paths: dict[str, str] | None = None) -> DiffdResponseParseResult:
+    return parse_diff_response_text(path.read_text(), str(path), initial_folder_paths)
 
 
 def diff_changes_to_records(changes: tuple[DiffdRemoteChange, ...]) -> tuple[PlanRecord, ...]:

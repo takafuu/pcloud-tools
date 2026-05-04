@@ -2441,6 +2441,112 @@ def test_diffd_api_long_poll_parses_pcloud_metadata_paths(tmp_path: Path) -> Non
     ]
 
 
+def test_diffd_api_long_poll_reuses_folder_cache_across_runs(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    shadow_report = tmp_path / "shadow-validation-api-folder-cache.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-folder-cache" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    first_fixture = tmp_path / "api-folder-cache-first.json"
+    first_fixture.write_text(
+        json.dumps(
+            {
+                "diffid": "10",
+                "entries": [
+                    {
+                        "diffid": 10,
+                        "event": "createfolder",
+                        "metadata": {"isfolder": True, "folderid": 42, "parentfolderid": 0, "name": "Documents"},
+                    }
+                ],
+            }
+        )
+    )
+    second_fixture = tmp_path / "api-folder-cache-second.json"
+    second_fixture.write_text(
+        json.dumps(
+            {
+                "diffid": "11",
+                "entries": [
+                    {
+                        "diffid": 11,
+                        "event": "createfile",
+                        "metadata": {"isfolder": False, "parentfolderid": 42, "name": "from-cache.pdf"},
+                    }
+                ],
+            }
+        )
+    )
+    common = [
+        sys.executable,
+        "-m",
+        "pcloud_tools.cli",
+        "diffd",
+        "api-poll",
+        "long-poll-run",
+        "--report-path",
+        str(shadow_report),
+        "--operator-reviewed-preview",
+        "--reviewer-approved-response-policy",
+        "--reviewer-approved-credential-policy",
+        "--reviewer-approved-process-policy",
+        "--max-iterations",
+        "1",
+        "--execute",
+        "--json",
+    ]
+
+    first = subprocess.run(
+        [*common, "--fixture", str(first_fixture)],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    second = subprocess.run(
+        [*common, "--fixture", str(second_fixture)],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    first_payload = _payload(first)
+    second_payload = _payload(second)
+    folder_cache = json.loads((state_dir / "diffd" / "folder-cache.json").read_text())
+    remote_changes = json.loads((state_dir / "diffd" / "remote-changes.json").read_text())
+
+    assert first.returncode == 0
+    assert second.returncode == 0
+    assert first_payload["details"]["folder cache entries before"] == 0
+    assert first_payload["details"]["folder cache entries after"] == 1
+    assert second_payload["details"]["folder cache entries before"] == 1
+    assert second_payload["details"]["parsed diff changes"] == 1
+    assert second_payload["details"]["invalid diff changes"] == 0
+    assert folder_cache == {"42": "Documents"}
+    assert remote_changes == [
+        {"path": "Documents/from-cache.pdf", "action": "download", "reason": "diff:createfile"}
+    ]
+
+
 def test_diffd_api_long_poll_run_refuses_live_api_without_token(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,

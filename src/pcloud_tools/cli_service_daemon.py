@@ -994,6 +994,7 @@ def _render_api_long_poll_run_human(report: CommandReport) -> str:
         f"download records appended: {details.get('download records appended', '-')}",
         f"skipped records: {details.get('skipped download records', '-')}",
         f"invalid changes: {details.get('invalid diff changes', '-')}",
+        f"folder cache: {details.get('folder cache entries before', '-')} -> {details.get('folder cache entries after', '-')}",
     ]
     state_file = details.get("long-poll state file")
     if state_file:
@@ -2796,6 +2797,29 @@ def _diffd_api_long_poll_run_state_file(config: AppConfig) -> Path:
     return config.state_dir / "diffd" / "api-long-poll-last-run.json"
 
 
+def _diffd_folder_cache_file(config: AppConfig) -> Path:
+    return config.state_dir / "diffd" / "folder-cache.json"
+
+
+def _read_diffd_folder_cache(config: AppConfig) -> dict[str, str]:
+    path = _diffd_folder_cache_file(config)
+    if not path.exists():
+        return {}
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    if not isinstance(payload, dict):
+        return {}
+    return {str(key): str(value) for key, value in payload.items() if str(key) and str(value)}
+
+
+def _write_diffd_folder_cache(config: AppConfig, folder_paths: dict[str, str]) -> None:
+    path = _diffd_folder_cache_file(config)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(folder_paths, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+
+
 @dataclass(frozen=True)
 class PcloudApiCredential:
     base_url: str
@@ -2895,6 +2919,8 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     live_request_url = "-"
     api_response_source = str(fixture_path) if fixture_path else "-"
     api_credential = _pcloud_api_credential(config)
+    initial_folder_cache = _read_diffd_folder_cache(config)
+    folder_cache_file = _diffd_folder_cache_file(config)
 
     details.update(
         {
@@ -2937,6 +2963,9 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "API response source": api_response_source,
             "API request URL": "-",
             "long-poll state file": str(state_file),
+            "folder cache file": str(folder_cache_file),
+            "folder cache entries before": len(initial_folder_cache),
+            "folder cache entries after": len(initial_folder_cache),
             "future gate env": f"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}",
             "max iterations": requested_iterations,
             "new diffid": "-",
@@ -3014,7 +3043,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
 
     if fixture_path is not None:
         try:
-            parsed = parse_diff_response_fixture(fixture_path)
+            parsed = parse_diff_response_fixture(fixture_path, initial_folder_cache)
             api_response_source = str(fixture_path)
         except OSError as exc:
             issues.append(
@@ -3031,7 +3060,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 config, api_credential, daemon_state.diffid, block=block
             )
             api_response_source = live_request_url
-            parsed = parse_diff_response_text(response_text, live_request_url)
+            parsed = parse_diff_response_text(response_text, live_request_url, initial_folder_cache)
         except (OSError, urllib.error.URLError, TimeoutError) as exc:
             issues.append(
                 ConfigIssue(
@@ -3058,6 +3087,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 "new diffid": parsed.diffid,
                 "parsed diff changes": len(parsed.changes),
                 "invalid diff changes": len(parsed.invalid),
+                "folder cache entries after": len(parsed.folder_paths),
                 "invalid diff records": _invalid_diff_details(parsed.invalid),
                 **_diffd_plan_details(plan),
             }
@@ -3124,6 +3154,9 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         "iterations_processed": requested_iterations,
         "previous_diffid": daemon_state.diffid,
         "written_diffid": written_diffid,
+        "folder_cache_file": str(folder_cache_file),
+        "folder_cache_entries_before": len(initial_folder_cache),
+        "folder_cache_entries_after": len(parsed.folder_paths),
         "parsed_diff_changes": len(parsed.changes),
         "invalid_diff_changes": len(parsed.invalid),
         "appended_records": appended_records,
@@ -3133,6 +3166,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     if not _has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
         state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+        _write_diffd_folder_cache(config, parsed.folder_paths)
 
     details.update(
         {
