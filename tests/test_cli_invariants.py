@@ -3449,6 +3449,37 @@ def test_transfer_check_rejects_incomplete_shadow_report_without_state_writes(tm
     assert not (pushd_dir / "last-transfer.json").exists()
 
 
+def test_transfer_check_default_sample_uses_allowlist_root(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / ".pcloud-sync-allowlist").write_text("dev-fixtures/Documents/\n")
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "check",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["details"]["sample path"] == "dev-fixtures/Documents/pushd-transfer-gate-sample.txt"
+    assert payload["details"]["sample path status"] == "ready"
+    assert payload["details"]["dev-state sample setup command"][4] == (
+        "dev-fixtures/Documents/pushd-transfer-gate-sample.txt"
+    )
+
+
 def test_transfer_check_accepts_operator_confirmations_without_opening_gate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

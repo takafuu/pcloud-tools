@@ -4102,7 +4102,12 @@ def _real_transfer_check_report(
 
     entrypoint = action_entrypoint_command(paths)
     preview_command = [entrypoint, service.name, "transfer", "preview", "--json"]
-    default_sample_path = f"Documents/{service.name}-transfer-gate-sample.txt"
+    scope = sync_allowlist_info(load_result.config)
+    sample_root = "Documents/"
+    if scope.allowlist_status == "loaded" and scope.entries:
+        first_entry = scope.entries[0]
+        sample_root = first_entry if first_entry.endswith("/") else f"{first_entry}/"
+    default_sample_path = f"{sample_root}{service.name}-transfer-gate-sample.txt"
     sample_path = normalize_plan_path(getattr(args, "sample_path", None) or default_sample_path)
     check_command = [entrypoint, service.name, "transfer", "check", "--sample-path", sample_path]
     report_path = getattr(args, "report_path", None)

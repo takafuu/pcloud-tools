@@ -1,2 +1,3 @@
-# Starter allowlist for pcloud-tools development
-Documents/
+# Starter allowlist for pcloud-tools development.
+# Keep this path separate from /Users/takafumi/p-core/Documents.
+dev-fixtures/Documents/

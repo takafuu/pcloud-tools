@@ -610,7 +610,11 @@ def repair_env_file(paths: RuntimePaths) -> Path:
 
 def render_allowlist_template(paths: RuntimePaths) -> str:
     if paths.dev_mode:
-        return "# Starter allowlist for pcloud-tools development\nDocuments/\n"
+        return (
+            "# Starter allowlist for pcloud-tools development.\n"
+            "# Keep this path separate from /Users/takafumi/p-core/Documents.\n"
+            "dev-fixtures/Documents/\n"
+        )
     return "# Starter allowlist for pcloud-tools\nDocuments/\n"
 
 

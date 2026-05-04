@@ -35,7 +35,7 @@ Development entrypoint:
 ./pcloud-manager-dev daemon status --json
 ./pcloud-manager-dev daemon set-diffid 12345
 ./pcloud-manager-dev daemon auto-download on
-./pcloud-manager-dev daemon pending-download add Documents/example.pdf --diffid 12345
+./pcloud-manager-dev daemon pending-download add dev-fixtures/Documents/example.pdf --diffid 12345
 ./pcloud-manager-dev daemon notification record "remote changes detected"
 ./pcloud-manager-dev pushd status --json
 ./pcloud-manager-dev pushd preview
@@ -49,12 +49,12 @@ Development entrypoint:
 ./pcloud-manager-dev pushd fswatch resident-run
 ./pcloud-manager-dev pushd transfer preview
 ./pcloud-manager-dev pushd transfer check
-./pcloud-manager-dev pushd transfer check --confirm-path Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
-./pcloud-manager-dev pushd transfer real-gate --confirm-path Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --operator-reviewed-dry-run --reviewer-approved-real-command --reviewer-approved-consume-policy
+./pcloud-manager-dev pushd transfer check --confirm-path dev-fixtures/Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
+./pcloud-manager-dev pushd transfer real-gate --confirm-path dev-fixtures/Documents/example.pdf --confirm-direction upload --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --operator-reviewed-dry-run --reviewer-approved-real-command --reviewer-approved-consume-policy
 ./pcloud-manager-dev pushd transfer real-run --execute
 ./pcloud-manager-dev pushd transfer consume preview
-./pcloud-manager-dev pushd queue add Documents/example.pdf
-./pcloud-manager-dev pushd queue remove Documents/example.pdf
+./pcloud-manager-dev pushd queue add dev-fixtures/Documents/example.pdf
+./pcloud-manager-dev pushd queue remove dev-fixtures/Documents/example.pdf
 ./pcloud-manager-dev pushd queue clear
 ./pcloud-manager-dev diffd status --json
 ./pcloud-manager-dev diffd preview
@@ -68,12 +68,12 @@ Development entrypoint:
 ./pcloud-manager-dev diffd api-poll long-poll-run --live-api
 ./pcloud-manager-dev diffd transfer preview
 ./pcloud-manager-dev diffd transfer check
-./pcloud-manager-dev diffd transfer check --confirm-path Documents/example.pdf --confirm-direction download --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
-./pcloud-manager-dev diffd transfer real-gate --confirm-path Documents/example.pdf --confirm-direction download --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --operator-reviewed-dry-run --reviewer-approved-real-command --reviewer-approved-consume-policy
+./pcloud-manager-dev diffd transfer check --confirm-path dev-fixtures/Documents/example.pdf --confirm-direction download --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --final-review
+./pcloud-manager-dev diffd transfer real-gate --confirm-path dev-fixtures/Documents/example.pdf --confirm-direction download --consume-policy remove-on-success-retain-on-failure --timeout-policy reuse-fake-rclone-cleanup --operator-reviewed-dry-run --reviewer-approved-real-command --reviewer-approved-consume-policy
 ./pcloud-manager-dev diffd transfer real-run --execute
 ./pcloud-manager-dev diffd transfer consume preview
-./pcloud-manager-dev diffd remote-change add Documents/example.pdf
-./pcloud-manager-dev diffd remote-change remove Documents/example.pdf
+./pcloud-manager-dev diffd remote-change add dev-fixtures/Documents/example.pdf
+./pcloud-manager-dev diffd remote-change remove dev-fixtures/Documents/example.pdf
 ./pcloud-manager-dev diffd remote-change clear
 python3 scripts/pcloud-shadow-validation.py
 python3 scripts/pcloud-shadow-validation.py --summary
@@ -88,6 +88,7 @@ The development wrapper keeps config, state, and logs under `.dev-state/` in thi
 Config notes:
 
 - the active config file is `.dev-state/config/.env` in development mode
+- the development allowlist uses `dev-fixtures/Documents/` instead of repo-root `Documents/` so real personal documents do not get materialized inside this source tree during dev validation
 - the public wrapper reads live config from `/Users/takafumi/.config/pcloud-tools/.env`; `/Users/takafumi/.config` is a symlink into `/Users/takafumi/p-core/dotfiles/.config`
 - the live public `.env` is machine-local and must stay ignored by the tools repo; `.env.example` captures the shareable non-secret key set for the migrated tool
 - `doctor --repair` creates a starter `.env` when one does not exist
@@ -162,7 +163,7 @@ Limited migration validation:
 - The download invoked `/usr/local/bin/rclone copyto pcloud:core/Documents/DQ2-呪文.png /Users/takafumi/p-core/dev/pcloud-tools/Documents/DQ2-呪文.png`, returned `0`, did not time out, and recorded `.dev-state/state/diffd/last-transfer.json` with `mode: real-rclone-transfer`
 - The downloaded file and backup both had SHA-256 `c0412cf18081b35bee90f0fd30dfd6c0d0d0a0c8a10c0f362b326de2c090cccb`
 - The successful download was consumed with `diffd transfer consume run --execute` under the approved policy; `diffd transfer preview` then reported planned transfers `0`
-- Remaining live gates are fswatch resident start, live pCloud API long-poll start, real launchd/autosync execution, real normal sync/resync migration validation execution, and old monolith archive execution; each now has a dedicated guarded run path, but live starts/execution still require the explicit operator env gate and `--execute`
+- Completed live checks now include bounded fswatch resident start, live pCloud API `/diff` one-shot, public normal sync migration validation, public autosync re-enable, and old monolith archive execution. Further continuous daemon operation, launchd changes, and additional real transfer validation still require explicit operator gates and `--execute`
 
 Live sync operations note:
 
