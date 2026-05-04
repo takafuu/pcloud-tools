@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shlex
 from pathlib import Path
 from typing import Any
 
@@ -17,6 +18,114 @@ def _shell_join(value: object) -> str:
     return str(value)
 
 
+def _command_example(env_assignment: str, parts: list[str]) -> str:
+    return f"{env_assignment} {shlex.join(parts)}"
+
+
+def _arg_path(args: argparse.Namespace, name: str, default: str) -> str:
+    value = getattr(args, name, None)
+    return str(value) if value else default
+
+
+def _read_only_command_examples(args: argparse.Namespace) -> dict[str, list[str]]:
+    report_path = _arg_path(args, "report_path", ".dev-state/reports/shadow-validation.json")
+    sync_status_report_path = _arg_path(args, "sync_status_report_path", ".dev-state/reports/sync-status.json")
+    backup_dir = _arg_path(args, "backup_dir", ".dev-state/cutover-backups/<timestamp>")
+    fixture = ".dev-state/fixtures/pcloud-diff-response.json"
+    manager = "./pcloud-manager-dev"
+    return {
+        "pushd fswatch resident": [
+            _command_example(
+                "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE=operator-approved-fswatch-resident-v1",
+                [
+                    manager,
+                    "pushd",
+                    "fswatch",
+                    "resident-run",
+                    "--report-path",
+                    report_path,
+                    "--operator-reviewed-probe",
+                    "--reviewer-approved-queue-policy",
+                    "--reviewer-approved-process-policy",
+                ],
+            )
+        ],
+        "diffd pCloud API long-poll": [
+            _command_example(
+                "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE=operator-approved-api-long-poll-v1",
+                [
+                    manager,
+                    "diffd",
+                    "api-poll",
+                    "long-poll-run",
+                    "--report-path",
+                    report_path,
+                    "--fixture",
+                    fixture,
+                    "--operator-reviewed-preview",
+                    "--reviewer-approved-response-policy",
+                    "--reviewer-approved-credential-policy",
+                    "--reviewer-approved-process-policy",
+                ],
+            )
+        ],
+        "sync autosync launchd": [
+            _command_example(
+                "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE=operator-approved-autosync-launchd-v1",
+                [
+                    manager,
+                    "sync",
+                    "autosync-run",
+                    mode,
+                    "--report-path",
+                    report_path,
+                    "--operator-reviewed-preview",
+                    "--reviewer-approved-plist",
+                    "--reviewer-approved-launchctl-policy",
+                    "--reviewer-approved-rollback-policy",
+                ],
+            )
+            for mode in ("enable", "disable")
+        ],
+        "sync migration validation": [
+            _command_example(
+                "PCLOUD_TOOLS_SYNC_MIGRATION_GATE=operator-approved-sync-migration-v1",
+                [
+                    manager,
+                    "sync",
+                    "migration-run",
+                    mode,
+                    "--report-path",
+                    report_path,
+                    "--sync-status-report-path",
+                    sync_status_report_path,
+                    "--operator-reviewed-status",
+                    "--reviewer-approved-scope",
+                    "--reviewer-approved-rollback-policy",
+                    "--reviewer-approved-stop-conditions",
+                ],
+            )
+            for mode in ("normal", "resync")
+        ],
+        "old monolith archive": [
+            _command_example(
+                "PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE=operator-approved-old-monolith-archive-v1",
+                [
+                    manager,
+                    "archive",
+                    "old-monolith-run",
+                    "--backup-dir",
+                    backup_dir,
+                    "--operator-reviewed-current-wrapper",
+                    "--reviewer-approved-backup-source",
+                    "--reviewer-approved-rollback-policy",
+                    "--reviewer-approved-archive-target",
+                ],
+            )
+        ],
+    }
+
+
 def add_gates_parser(subparsers: argparse._SubParsersAction) -> None:
     gates_parser = subparsers.add_parser("gates", help="Summarize remaining human gates without executing them.")
     gates_subparsers = gates_parser.add_subparsers(dest="gates_command")
@@ -28,6 +137,11 @@ def add_gates_parser(subparsers: argparse._SubParsersAction) -> None:
         "--assume-read-only-approvals",
         action="store_true",
         help="Summarize as if the existing read-only reviewer/operator approval flags were provided.",
+    )
+    status_parser.add_argument(
+        "--show-command-examples",
+        action="store_true",
+        help="Show read-only guarded run review commands without --execute.",
     )
     status_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     status_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -94,6 +208,7 @@ def _gate_item(
     run_command: tuple[str, ...],
     execution_gate_env: str,
     run_scope: str,
+    read_only_review_commands: list[str],
 ) -> dict[str, Any]:
     details = report.details
     blockers = _check_blockers(report)
@@ -112,11 +227,13 @@ def _gate_item(
         "run command": list(run_command),
         "execution gate env": execution_gate_env,
         "run scope": run_scope,
+        "read-only review commands": read_only_review_commands,
     }
 
 
 def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     gate_args = _approval_namespace(args)
+    command_examples = _read_only_command_examples(args)
     reports = [
         _gate_item(
             "pushd fswatch resident",
@@ -127,6 +244,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             run_command=("pushd", "fswatch", "resident-run"),
             execution_gate_env="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE=operator-approved-fswatch-resident-v1",
             run_scope="foreground fswatch event-to-queue loop; no upload transfer",
+            read_only_review_commands=command_examples["pushd fswatch resident"],
         ),
         _gate_item(
             "diffd pCloud API long-poll",
@@ -137,6 +255,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             run_command=("diffd", "api-poll", "long-poll-run"),
             execution_gate_env="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE=operator-approved-api-long-poll-v1",
             run_scope="fixture-backed diff response processing; live API still requires separate approval",
+            read_only_review_commands=command_examples["diffd pCloud API long-poll"],
         ),
         _gate_item(
             "sync autosync launchd",
@@ -147,6 +266,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             run_command=("sync", "autosync-run", "enable|disable"),
             execution_gate_env="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE=operator-approved-autosync-launchd-v1",
             run_scope="launchctl enable/bootstrap or bootout/disable only; no direct sync run",
+            read_only_review_commands=command_examples["sync autosync launchd"],
         ),
         _gate_item(
             "sync migration validation",
@@ -157,6 +277,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             run_command=("sync", "migration-run", "normal|resync"),
             execution_gate_env="PCLOUD_TOOLS_SYNC_MIGRATION_GATE=operator-approved-sync-migration-v1",
             run_scope="approved rclone bisync validation command only; no launchd/listing-cache mutation",
+            read_only_review_commands=command_examples["sync migration validation"],
         ),
         _gate_item(
             "old monolith archive",
@@ -167,6 +288,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
             run_command=("archive", "old-monolith-run"),
             execution_gate_env="PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE=operator-approved-old-monolith-archive-v1",
             run_scope="copy selected backup into dev archive and write manifest; no wrapper modification",
+            read_only_review_commands=command_examples["old monolith archive"],
         ),
     ]
     ready_read_only = sum(1 for item in reports if item["approval status"] == "complete-read-only")
@@ -180,6 +302,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
         "implementation status": "read-only aggregate; no gated operation is executed",
         "state writes": "none",
         "assume read-only approvals": "yes" if getattr(args, "assume_read_only_approvals", False) else "no",
+        "show command examples": "yes" if getattr(args, "show_command_examples", False) else "no",
         "report path": str(getattr(args, "report_path", None) or "-"),
         "sync status report": str(getattr(args, "sync_status_report_path", None) or "-"),
         "backup dir": str(getattr(args, "backup_dir", None) or "-"),
@@ -193,9 +316,11 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
                 "command": item["run command"],
                 "execution gate env": item["execution gate env"],
                 "scope": item["run scope"],
+                "read-only review commands": item["read-only review commands"],
             }
             for item in reports
         },
+        "read-only command examples": command_examples,
     }
     issues = [
         ReportIssue(
@@ -239,6 +364,15 @@ def _render_gates_human(report: CommandReport) -> str:
                 f"blockers={blocker_text}; "
                 f"run={_shell_join(item.get('run command', '-'))}"
             )
+    if details.get("show command examples") == "yes":
+        examples = details.get("read-only command examples")
+        if isinstance(examples, dict) and examples:
+            lines.append("read-only command examples:")
+            for name, commands in examples.items():
+                if not isinstance(commands, list):
+                    continue
+                for command in commands:
+                    lines.append(f"- {name}: {command}")
     if report.issues:
         lines.append("warnings:")
         for issue in report.issues:

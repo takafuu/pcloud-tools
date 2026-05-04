@@ -1901,6 +1901,8 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
     assert gates["diffd pCloud API long-poll"]["run command"] == ["diffd", "api-poll", "long-poll-run"]
     assert gates["sync autosync launchd"]["execution gate env"].startswith("PCLOUD_TOOLS_AUTOSYNC")
     assert "old monolith archive" in payload["details"]["guarded run paths"]
+    assert "--execute" not in payload["details"]["read-only command examples"]["pushd fswatch resident"][0]
+    assert "sync migration-run normal" in payload["details"]["read-only command examples"]["sync migration validation"][0]
     assert not any(state_dir.iterdir())
     assert not (workspace / ".dev-state" / "old-monolith-archive").exists()
 
@@ -1923,6 +1925,32 @@ def test_gates_status_human_output_is_concise(tmp_path: Path) -> None:
     assert "diffd pCloud API long-poll" in result.stdout
     assert "old monolith archive" in result.stdout
     assert "run=archive old-monolith-run" in result.stdout
+    assert "read-only command examples:" not in result.stdout
+
+
+def test_gates_status_human_output_can_show_read_only_command_examples(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "gates",
+            "status",
+            "--show-command-examples",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    assert result.returncode == 0
+    assert "read-only command examples:" in result.stdout
+    assert "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE=operator-approved-fswatch-resident-v1" in result.stdout
+    assert "./pcloud-manager-dev pushd fswatch resident-run" in result.stdout
+    assert "--execute" not in result.stdout
 
 
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:
