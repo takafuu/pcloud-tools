@@ -45,6 +45,70 @@ _AUTOSYNC_LAUNCHD_GATE_VALUE = "operator-approved-autosync-launchd-v1"
 _SYNC_MIGRATION_GATE_VALUE = "operator-approved-sync-migration-v1"
 
 
+def _rclone_cache_dir() -> Path:
+    raw = os.environ.get("XDG_CACHE_HOME", "").strip()
+    if raw:
+        return Path(raw).expanduser() / "rclone"
+    if sys.platform == "darwin":
+        return Path.home() / "Library" / "Caches" / "rclone"
+    return Path.home() / ".cache" / "rclone"
+
+
+def _rclone_bisync_lock_file(config: AppConfig) -> Path:
+    def encode(value: str) -> str:
+        return value.replace("/", "_").replace(":", "_")
+
+    session = f"local_{encode(str(config.core_dir))}..{encode(config.core_remote)}"
+    return _rclone_cache_dir() / "bisync" / f"{session}.lck"
+
+
+def _process_active(pid: str) -> str:
+    if not pid or pid == "-":
+        return "unknown"
+    try:
+        os.kill(int(pid), 0)
+    except ValueError:
+        return "unknown"
+    except ProcessLookupError:
+        return "no"
+    except PermissionError:
+        return "yes"
+    return "yes"
+
+
+def _rclone_bisync_lock_info(config: AppConfig) -> dict[str, object]:
+    path = _rclone_bisync_lock_file(config)
+    info: dict[str, object] = {
+        "path": str(path),
+        "status": "present" if path.exists() else "missing",
+        "pid": "-",
+        "process active": "unknown",
+        "session": "-",
+        "time renewed": "-",
+        "time expires": "-",
+        "delete command": ["rclone", "deletefile", str(path)],
+    }
+    if not path.exists():
+        return info
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return info
+    if not isinstance(payload, dict):
+        return info
+    pid = str(payload.get("PID", "-") or "-")
+    info.update(
+        {
+            "pid": pid,
+            "process active": _process_active(pid),
+            "session": str(payload.get("Session", "-") or "-"),
+            "time renewed": str(payload.get("TimeRenewed", "-") or "-"),
+            "time expires": str(payload.get("TimeExpires", "-") or "-"),
+        }
+    )
+    return info
+
+
 def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_parser = subparsers.add_parser("sync", help="Sync command surface scaffold.")
     sync_parser.add_argument(
@@ -1855,6 +1919,12 @@ def _render_migration_gate_human(report: CommandReport) -> str:
         f"last error status: {details.get('last error status', '-')}",
         f"sync lock: {details.get('sync lock status', '-')}",
         (
+            "rclone bisync lock: "
+            f"{details.get('rclone bisync lock status', '-')} "
+            f"(pid={details.get('rclone bisync lock pid', '-')}; "
+            f"process_active={details.get('rclone bisync lock process active', '-')})"
+        ),
+        (
             "scope: "
             f"{details.get('scope status', '-')}; "
             f"{details.get('scope baseline', '-')}; "
@@ -1873,6 +1943,9 @@ def _render_migration_gate_human(report: CommandReport) -> str:
     for label, command in commands:
         if command:
             lines.append(f"{label}: {_shell_command(command)}")
+    rclone_lock_delete = details.get("rclone bisync lock delete command")
+    if details.get("rclone bisync lock status") == "present" and rclone_lock_delete:
+        lines.append(f"rclone lock cleanup candidate: {_shell_command(rclone_lock_delete)}")
     checks = details.get("preflight checks")
     if isinstance(checks, list) and checks:
         lines.append("preflight checks:")
@@ -1919,6 +1992,12 @@ def _render_migration_run_human(report: CommandReport) -> str:
         f"sync state: {details.get('sync state', '-')}",
         f"last result: {details.get('last result', '-')}",
         f"sync lock: {details.get('sync lock status', '-')}",
+        (
+            "rclone bisync lock: "
+            f"{details.get('rclone bisync lock status', '-')} "
+            f"(pid={details.get('rclone bisync lock pid', '-')}; "
+            f"process_active={details.get('rclone bisync lock process active', '-')})"
+        ),
         f"rclone: {details.get('rclone availability', '-')} ({details.get('rclone binary', '-')})",
         f"approval status: {details.get('migration approval status', '-')}",
     ]
@@ -1928,6 +2007,9 @@ def _render_migration_run_human(report: CommandReport) -> str:
     state_file = details.get("migration run state file")
     if state_file:
         lines.append(f"migration run state: {state_file}")
+    rclone_lock_delete = details.get("rclone bisync lock delete command")
+    if details.get("rclone bisync lock status") == "present" and rclone_lock_delete:
+        lines.append(f"rclone lock cleanup candidate: {_shell_command(rclone_lock_delete)}")
     checks = details.get("preflight checks")
     blocked_checks: list[str] = []
     if isinstance(checks, list):
@@ -2019,6 +2101,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
     config = load_result.config
     sync_state = read_sync_state(config)
     lock_state = read_sync_lock_state(config)
+    rclone_lock = _rclone_bisync_lock_info(config)
     scope = sync_allowlist_info(config)
     autosync = read_autosync_state(config)
     listing_recovery = bisync_listing_recovery_state(config)
@@ -2089,6 +2172,26 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         "status": "ok" if lock_ok else "pending",
         "detail": f"{sync_lock_status}; active={sync_lock_active}; pid={sync_lock_pid}; source={status_source}",
     }
+    rclone_lock_present = rclone_lock["status"] == "present"
+    rclone_lock_check = {
+        "name": "rclone bisync lock",
+        "status": "pending" if rclone_lock_present else "ok",
+        "detail": (
+            f"{rclone_lock['status']}; pid={rclone_lock['pid']}; "
+            f"process_active={rclone_lock['process active']}; path={rclone_lock['path']}"
+        ),
+    }
+    if rclone_lock_present:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_SYNC_MIGRATION_RCLONE_LOCK",
+                level="warning",
+                message=(
+                    "rclone bisync prior lock exists; inspect it before running migration validation: "
+                    f"{rclone_lock['path']}"
+                ),
+            )
+        )
     scope_ok = scope_status == "loaded" and (saved_status is not None or scope.baseline.status != "invalid")
     scope_check = {
         "name": "document/media scope",
@@ -2108,6 +2211,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
     checks.extend([
         sync_state_check,
         lock_check,
+        rclone_lock_check,
         scope_check,
         {
             "name": "sync preview commands",
@@ -2170,6 +2274,13 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         "sync lock pid": sync_lock_pid,
         "sync lock mode": sync_lock_mode,
         "sync lock started": sync_lock_started,
+        "rclone bisync lock status": rclone_lock["status"],
+        "rclone bisync lock path": rclone_lock["path"],
+        "rclone bisync lock pid": rclone_lock["pid"],
+        "rclone bisync lock process active": rclone_lock["process active"],
+        "rclone bisync lock time renewed": rclone_lock["time renewed"],
+        "rclone bisync lock time expires": rclone_lock["time expires"],
+        "rclone bisync lock delete command": rclone_lock["delete command"],
         "autosync state": autosync_state,
         "autosync runs": autosync_runs,
         "scope status": scope_status,
@@ -2334,7 +2445,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
             status=_status_from_issues(issues),
             summary=(
                 "sync migration execution is gated"
-                if _has_errors(issues) or not gate_open
+                if _has_errors(issues) or not gate_open or approval_status != "complete-read-only"
                 else "sync migration run is ready"
             ),
             details=details,

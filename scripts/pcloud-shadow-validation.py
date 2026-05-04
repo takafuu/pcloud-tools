@@ -1173,6 +1173,48 @@ def run_validation() -> dict[str, Any]:
         migration_rclone_log.write_text("")
         migration_run_env = dict(migration_gate_env)
         migration_run_env["PCLOUD_TOOLS_SYNC_MIGRATION_GATE"] = "operator-approved-sync-migration-v1"
+        rclone_lock_name = f"local_{str(workspace).replace('/', '_')}..pcloud_core.lck"
+        rclone_lock_file = root / "cache" / "rclone" / "bisync" / rclone_lock_name
+        rclone_lock_file.parent.mkdir(parents=True, exist_ok=True)
+        rclone_lock_file.write_text(
+            json.dumps(
+                {
+                    "Session": str(rclone_lock_file.with_suffix("")),
+                    "PID": "999999",
+                    "TimeRenewed": "2026-04-24T15:42:31+09:00",
+                    "TimeExpires": "2226-03-07T15:42:31+09:00",
+                }
+            )
+        )
+        migration_run_lock = _check_json_command(
+            checks,
+            migration_run_env,
+            "sync migration-run rclone lock blocked",
+            (
+                "sync",
+                "migration-run",
+                "normal",
+                "--report-path",
+                str(saved_shadow_report),
+                "--sync-status-report-path",
+                str(saved_sync_status_report),
+                "--operator-reviewed-status",
+                "--reviewer-approved-scope",
+                "--reviewer-approved-rollback-policy",
+                "--reviewer-approved-stop-conditions",
+                "--execute",
+            ),
+            allowed_status={"error"},
+        )
+        if (
+            migration_run_lock.get("details", {}).get("rclone bisync lock status") == "present"
+            and migration_run_lock.get("details", {}).get("state writes") == "none"
+            and "bisync" not in migration_rclone_log.read_text()
+        ):
+            checks.append(CheckResult("sync migration-run rclone lock guard", "ok", "rclone lock blocked sync"))
+        else:
+            checks.append(CheckResult("sync migration-run rclone lock guard", "error", "rclone lock did not block sync"))
+        rclone_lock_file.unlink()
         migration_run = _check_json_command(
             checks,
             migration_run_env,

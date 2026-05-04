@@ -1549,6 +1549,112 @@ def test_sync_migration_run_refuses_without_execution_gate(tmp_path: Path) -> No
     assert not (state_dir / "sync" / "migration-last-run.json").exists()
 
 
+def test_sync_migration_run_refuses_with_rclone_bisync_lock(tmp_path: Path) -> None:
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    log = tmp_path / "rclone.log"
+    rclone = bin_dir / "rclone"
+    rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$RCLONE_LOG\"\nexit 0\n")
+    rclone.chmod(0o755)
+    env = _base_env(
+        tmp_path,
+        {
+            "PATH": f"{bin_dir}{os.pathsep}{os.environ.get('PATH', '')}",
+            "PCLOUD_TOOLS_SYNC_MIGRATION_GATE": "operator-approved-sync-migration-v1",
+        },
+    )
+    env["RCLONE_LOG"] = str(log)
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    lock_name = f"local_{str(workspace).replace('/', '_')}..pcloud_core.lck"
+    lock_file = Path(env["XDG_CACHE_HOME"]) / "rclone" / "bisync" / lock_name
+    lock_file.parent.mkdir(parents=True)
+    lock_file.write_text(
+        json.dumps(
+            {
+                "Session": str(lock_file.with_suffix("")),
+                "PID": "999999",
+                "TimeRenewed": "2026-04-24T15:42:31+09:00",
+                "TimeExpires": "2226-03-07T15:42:31+09:00",
+            }
+        )
+    )
+    shadow_report = tmp_path / "shadow-validation-migration-run-lock.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-migration-run-lock" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    status_report = tmp_path / "sync-status-lock.json"
+    status_report.write_text(
+        json.dumps(
+            {
+                "command": "sync status",
+                "details": {
+                    "sync state": "synced",
+                    "last result": "2026-05-04 12:00:00 SUCCESS mode=autosync",
+                    "last error status": "historical",
+                    "sync lock status": "missing",
+                    "sync lock active": "no",
+                    "scope status": "loaded",
+                    "scope entries": 4,
+                    "last resync scope": "allowlist",
+                },
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "sync",
+            "migration-run",
+            "normal",
+            "--report-path",
+            str(shadow_report),
+            "--sync-status-report-path",
+            str(status_report),
+            "--operator-reviewed-status",
+            "--reviewer-approved-scope",
+            "--reviewer-approved-rollback-policy",
+            "--reviewer-approved-stop-conditions",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    checks = {check["name"]: check for check in payload["details"]["preflight checks"]}
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["sync/resync can run"] == "no"
+    assert payload["details"]["rclone bisync lock status"] == "present"
+    assert payload["details"]["rclone bisync lock process active"] == "no"
+    assert checks["rclone bisync lock"]["status"] == "pending"
+    assert "PCLOUD_TOOLS_SYNC_MIGRATION_RCLONE_LOCK" in [issue["key"] for issue in payload["issues"]]
+    assert not log.exists()
+    assert not (state_dir / "sync" / "migration-last-run.json").exists()
+
+
 def test_sync_migration_run_executes_fake_rclone_in_dev_state(tmp_path: Path) -> None:
     bin_dir = tmp_path / "bin"
     bin_dir.mkdir()
