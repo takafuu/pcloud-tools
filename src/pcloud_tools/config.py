@@ -66,6 +66,10 @@ class AppConfig:
     pushd_queue_limit: int
     diffd_poll_interval_seconds: int
     diffd_batch_limit: int
+    pcloud_api_base_url: str
+    pcloud_api_auth_param: str
+    pcloud_api_token: str
+    pcloud_api_timeout_seconds: int
 
 
 def _expand_value(value: str, mapping: dict[str, str]) -> str:
@@ -173,6 +177,10 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT": "1000",
         "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS": "60",
         "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT": "100",
+        "PCLOUD_TOOLS_PCLOUD_API_BASE_URL": "https://api.pcloud.com",
+        "PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM": "auth",
+        "PCLOUD_TOOLS_PCLOUD_API_TOKEN": "",
+        "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS": "30",
     }
 
     if paths.dev_mode:
@@ -314,6 +322,25 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
                 "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT",
                 values["PCLOUD_TOOLS_DIFFD_BATCH_LIMIT"],
             ),
+            pcloud_api_base_url=_string_value(
+                "PCLOUD_TOOLS_PCLOUD_API_BASE_URL",
+                values,
+                defaults["PCLOUD_TOOLS_PCLOUD_API_BASE_URL"],
+            ),
+            pcloud_api_auth_param=_string_value(
+                "PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM",
+                values,
+                defaults["PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM"],
+            ),
+            pcloud_api_token=_string_value(
+                "PCLOUD_TOOLS_PCLOUD_API_TOKEN",
+                values,
+                defaults["PCLOUD_TOOLS_PCLOUD_API_TOKEN"],
+            ),
+            pcloud_api_timeout_seconds=_int_from_value(
+                "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS",
+                values["PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS"],
+            ),
         )
     except ConfigError as exc:
         issues.append(ConfigIssue(key="config", level="error", message=str(exc)))
@@ -363,6 +390,10 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
         pushd_queue_limit=int(defaults["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"]),
         diffd_poll_interval_seconds=int(defaults["PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS"]),
         diffd_batch_limit=int(defaults["PCLOUD_TOOLS_DIFFD_BATCH_LIMIT"]),
+        pcloud_api_base_url=defaults["PCLOUD_TOOLS_PCLOUD_API_BASE_URL"],
+        pcloud_api_auth_param=defaults["PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM"],
+        pcloud_api_token=defaults["PCLOUD_TOOLS_PCLOUD_API_TOKEN"],
+        pcloud_api_timeout_seconds=int(defaults["PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS"]),
     )
 
 
@@ -408,6 +439,7 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
         ("PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", config.transfer_exec_timeout_seconds),
         ("PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", config.pushd_debounce_seconds),
         ("PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", config.diffd_poll_interval_seconds),
+        ("PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS", config.pcloud_api_timeout_seconds),
     ):
         if value < 1:
             issues.append(ConfigIssue(key=key, level="error", message=f"value must be >= 1: {value}"))
@@ -433,6 +465,22 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
                 key="PCLOUD_TOOLS_CORE_REMOTE",
                 level="error",
                 message="core remote must contain ':'",
+            )
+        )
+    if not (config.pcloud_api_base_url.startswith("https://") or config.pcloud_api_base_url.startswith("http://")):
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PCLOUD_API_BASE_URL",
+                level="error",
+                message="pCloud API base URL must start with https:// or http://",
+            )
+        )
+    if config.pcloud_api_auth_param not in {"auth", "access_token"}:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM",
+                level="error",
+                message="pCloud API auth parameter must be auth or access_token",
             )
         )
 

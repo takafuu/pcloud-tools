@@ -24,7 +24,7 @@ class InvalidDiffdRemoteChange:
 
 @dataclass(frozen=True)
 class DiffdResponseParseResult:
-    source: Path
+    source: str
     diffid: str
     changes: tuple[DiffdRemoteChange, ...]
     invalid: tuple[InvalidDiffdRemoteChange, ...]
@@ -57,13 +57,12 @@ def _payload_entries(payload: Any) -> tuple[str, list[Any]] | InvalidDiffdRemote
     return _string(payload.get("diffid", payload.get("newdiffid", "0")), "0"), entries
 
 
-def parse_diff_response_fixture(path: Path) -> DiffdResponseParseResult:
-    text = path.read_text()
+def parse_diff_response_text(text: str, source: str) -> DiffdResponseParseResult:
     try:
         payload = json.loads(text)
     except json.JSONDecodeError as exc:
         return DiffdResponseParseResult(
-            source=path,
+            source=source,
             diffid="0",
             changes=(),
             invalid=(InvalidDiffdRemoteChange(raw=text.strip(), reason=f"invalid JSON fixture: {exc}"),),
@@ -71,7 +70,7 @@ def parse_diff_response_fixture(path: Path) -> DiffdResponseParseResult:
 
     entries = _payload_entries(payload)
     if isinstance(entries, InvalidDiffdRemoteChange):
-        return DiffdResponseParseResult(source=path, diffid="0", changes=(), invalid=(entries,))
+        return DiffdResponseParseResult(source=source, diffid="0", changes=(), invalid=(entries,))
 
     diffid, items = entries
     parsed: list[DiffdRemoteChange | InvalidDiffdRemoteChange] = []
@@ -84,11 +83,15 @@ def parse_diff_response_fixture(path: Path) -> DiffdResponseParseResult:
             parsed.append(InvalidDiffdRemoteChange(raw=repr(item), reason="diff entry must be object or string"))
 
     return DiffdResponseParseResult(
-        source=path,
+        source=source,
         diffid=diffid,
         changes=tuple(item for item in parsed if isinstance(item, DiffdRemoteChange)),
         invalid=tuple(item for item in parsed if isinstance(item, InvalidDiffdRemoteChange)),
     )
+
+
+def parse_diff_response_fixture(path: Path) -> DiffdResponseParseResult:
+    return parse_diff_response_text(path.read_text(), str(path))
 
 
 def diff_changes_to_records(changes: tuple[DiffdRemoteChange, ...]) -> tuple[PlanRecord, ...]:

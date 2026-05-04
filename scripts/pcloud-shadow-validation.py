@@ -8,7 +8,10 @@ import plistlib
 import subprocess
 import sys
 import tempfile
+import threading
+import urllib.parse
 from dataclasses import dataclass
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from typing import Any
 
@@ -594,6 +597,85 @@ def run_validation() -> dict[str, Any]:
             env,
             "diffd api-poll long-poll-run cleanup",
             ("diffd", "remote-change", "remove", "Documents/api-shadow.txt", "--execute"),
+        )
+        api_requests: list[dict[str, list[str]]] = []
+
+        class ApiHandler(BaseHTTPRequestHandler):
+            def do_GET(self) -> None:  # noqa: N802
+                parsed_url = urllib.parse.urlparse(self.path)
+                api_requests.append(urllib.parse.parse_qs(parsed_url.query))
+                body = json.dumps(
+                    {
+                        "diffid": "456",
+                        "entries": [
+                            {"path": "Documents/api-live-shadow.txt", "event": "modified"},
+                            {"path": "private/api-live-shadow.txt", "event": "modified"},
+                        ],
+                    }
+                ).encode()
+                self.send_response(200)
+                self.send_header("Content-Type", "application/json")
+                self.send_header("Content-Length", str(len(body)))
+                self.end_headers()
+                self.wfile.write(body)
+
+            def log_message(self, format: str, *args: object) -> None:
+                return
+
+        api_server = ThreadingHTTPServer(("127.0.0.1", 0), ApiHandler)
+        api_thread = threading.Thread(target=api_server.serve_forever, daemon=True)
+        api_thread.start()
+        try:
+            api_live_env = dict(api_long_poll_run_env)
+            api_live_env["PCLOUD_TOOLS_PCLOUD_API_BASE_URL"] = f"http://127.0.0.1:{api_server.server_port}"
+            api_live_env["PCLOUD_TOOLS_PCLOUD_API_TOKEN"] = "shadow-token"
+            api_live_env["PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS"] = "5"
+            api_live_run = _check_json_command(
+                checks,
+                api_live_env,
+                "diffd api-poll long-poll-run fake live API",
+                (
+                    "diffd",
+                    "api-poll",
+                    "long-poll-run",
+                    "--report-path",
+                    str(saved_shadow_report),
+                    "--operator-reviewed-preview",
+                    "--reviewer-approved-response-policy",
+                    "--reviewer-approved-credential-policy",
+                    "--reviewer-approved-process-policy",
+                    "--live-api",
+                    "--max-iterations",
+                    "1",
+                    "--execute",
+                ),
+            )
+        finally:
+            api_server.shutdown()
+            api_server.server_close()
+        live_remote_changes = json.loads(api_long_poll_remote_changes.read_text()) if api_long_poll_remote_changes.exists() else []
+        live_has_record = any(
+            isinstance(item, dict) and item.get("path") == "Documents/api-live-shadow.txt"
+            for item in live_remote_changes
+        )
+        if (
+            api_live_run.get("details", {}).get("live API requested") == "yes"
+            and api_live_run.get("details", {}).get("download records appended") == 1
+            and api_live_run.get("details", {}).get("written diffid") == "456"
+            and api_requests
+            and api_requests[0].get("auth") == ["shadow-token"]
+            and "shadow-token" not in json.dumps(api_live_run, ensure_ascii=False)
+            and live_has_record
+            and api_long_poll_diffid.read_text().strip() == "456"
+        ):
+            checks.append(CheckResult("diffd api-poll long-poll-run fake live API state", "ok", "fake API diff recorded"))
+        else:
+            checks.append(CheckResult("diffd api-poll long-poll-run fake live API state", "error", "fake live API mismatch"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd api-poll long-poll-run fake live API cleanup",
+            ("diffd", "remote-change", "remove", "Documents/api-live-shadow.txt", "--execute"),
         )
         launchctl_bin_dir = workspace / ".dev-state" / "launchctl-bin"
         launchctl_bin_dir.mkdir(parents=True, exist_ok=True)

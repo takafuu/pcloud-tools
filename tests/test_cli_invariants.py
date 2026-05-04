@@ -8,6 +8,9 @@ import subprocess
 import sys
 import tempfile
 import time
+import threading
+import urllib.parse
+from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 
 from pcloud_tools.config import AppConfig
@@ -164,6 +167,10 @@ def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Pa
         pushd_queue_limit=100,
         diffd_poll_interval_seconds=30,
         diffd_batch_limit=100,
+        pcloud_api_base_url="https://api.pcloud.com",
+        pcloud_api_auth_param="auth",
+        pcloud_api_token="",
+        pcloud_api_timeout_seconds=30,
     )
 
     plan = build_sync_plan(config, "autosync", ("Documents/",), rclone_bin="/usr/local/bin/rclone")
@@ -2336,6 +2343,174 @@ def test_diffd_api_long_poll_run_executes_fixture_in_dev_state(tmp_path: Path) -
     assert diffid == "123"
     assert run_state["appended_records"] == remote_changes
     assert run_state["written_diffid"] == "123"
+
+
+def test_diffd_api_long_poll_run_refuses_live_api_without_token(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    shadow_report = tmp_path / "shadow-validation-api-live-no-token.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-live-no-token" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "api-poll",
+            "long-poll-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+            "--live-api",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["details"]["live API requested"] == "yes"
+    assert payload["details"]["API token provided"] == "no"
+    assert payload["details"]["state writes"] == "none"
+    assert "PCLOUD_TOOLS_PCLOUD_API_TOKEN" in [issue["key"] for issue in payload["issues"]]
+    assert not (state_dir / "diffd" / "remote-changes.json").exists()
+    assert not (state_dir / "daemon" / "diffid").exists()
+
+
+def test_diffd_api_long_poll_run_executes_live_api_against_local_server(tmp_path: Path) -> None:
+    requests: list[dict[str, list[str]]] = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_GET(self) -> None:  # noqa: N802
+            parsed = urllib.parse.urlparse(self.path)
+            requests.append(urllib.parse.parse_qs(parsed.query))
+            body = json.dumps(
+                {
+                    "diffid": "456",
+                    "entries": [
+                        {"path": "Documents/from-live-api.pdf", "event": "modified"},
+                        {"path": "private/outside.pdf", "event": "modified"},
+                    ],
+                }
+            ).encode()
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, format: str, *args: object) -> None:
+            return
+
+    server = ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    try:
+        env = _base_env(
+            tmp_path,
+            {
+                "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1",
+                "PCLOUD_TOOLS_PCLOUD_API_BASE_URL": f"http://127.0.0.1:{server.server_port}",
+                "PCLOUD_TOOLS_PCLOUD_API_TOKEN": "topsecret-token",
+                "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS": "5",
+            },
+        )
+        state_dir = _use_default_dev_state_dir(env)
+        shadow_report = tmp_path / "shadow-validation-api-live-ok.json"
+        shadow_workspace = tmp_path / "pcloud-shadow-validation-api-live-ok" / "workspace"
+        shadow_report.write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "workspace": str(shadow_workspace),
+                    "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                    "checks": [
+                        {"name": "temporary workspace guard", "status": "ok"},
+                        {"name": "temporary state dir guard", "status": "ok"},
+                        {"name": "unsafe state dir guard", "status": "ok"},
+                    ],
+                }
+            )
+        )
+
+        result = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "pcloud_tools.cli",
+                "diffd",
+                "api-poll",
+                "long-poll-run",
+                "--report-path",
+                str(shadow_report),
+                "--operator-reviewed-preview",
+                "--reviewer-approved-response-policy",
+                "--reviewer-approved-credential-policy",
+                "--reviewer-approved-process-policy",
+                "--live-api",
+                "--max-iterations",
+                "1",
+                "--execute",
+                "--json",
+            ],
+            check=False,
+            capture_output=True,
+            text=True,
+            cwd=tmp_path,
+            env=env,
+        )
+    finally:
+        server.shutdown()
+        server.server_close()
+
+    payload = _payload(result)
+    remote_changes = json.loads((state_dir / "diffd" / "remote-changes.json").read_text())
+    diffid = (state_dir / "daemon" / "diffid").read_text().strip()
+    run_state = json.loads((state_dir / "diffd" / "api-long-poll-last-run.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["details"]["live API requested"] == "yes"
+    assert payload["details"]["API token provided"] == "yes"
+    assert "topsecret-token" not in result.stdout
+    assert payload["details"]["API request URL"].endswith("auth=%3Credacted%3E")
+    assert requests[0]["auth"] == ["topsecret-token"]
+    assert requests[0]["diffid"] == ["0"]
+    assert requests[0]["limit"] == ["100"]
+    assert payload["details"]["download records appended"] == 1
+    assert payload["details"]["skipped download records"] == 1
+    assert remote_changes == [{"path": "Documents/from-live-api.pdf", "action": "download", "reason": "diff:modified"}]
+    assert diffid == "456"
+    assert run_state["live_api"] is True
+    assert run_state["written_diffid"] == "456"
 
 
 def test_transfer_previews_emit_commands_without_state_writes(tmp_path: Path) -> None:

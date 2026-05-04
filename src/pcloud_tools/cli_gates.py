@@ -67,7 +67,25 @@ def _read_only_command_examples(args: argparse.Namespace) -> dict[str, list[str]
                     "--reviewer-approved-credential-policy",
                     "--reviewer-approved-process-policy",
                 ],
-            )
+            ),
+            _command_example(
+                "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE=operator-approved-api-long-poll-v1",
+                [
+                    manager,
+                    "diffd",
+                    "api-poll",
+                    "long-poll-run",
+                    "--report-path",
+                    report_path,
+                    "--live-api",
+                    "--max-iterations",
+                    "1",
+                    "--operator-reviewed-preview",
+                    "--reviewer-approved-response-policy",
+                    "--reviewer-approved-credential-policy",
+                    "--reviewer-approved-process-policy",
+                ],
+            ),
         ],
         "sync autosync launchd": [
             _command_example(

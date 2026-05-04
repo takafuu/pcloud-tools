@@ -8,13 +8,16 @@ import signal
 import shutil
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
 from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import DaemonState, read_daemon_state, write_diffid
-from .diffd_events import diff_changes_to_records, parse_diff_response_fixture
+from .diffd_events import diff_changes_to_records, parse_diff_response_fixture, parse_diff_response_text
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
 from .runtime import RuntimePaths, action_entrypoint_command, detect_runtime_paths
@@ -384,6 +387,16 @@ def _add_service_parser(
         api_poll_long_poll_run_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
         api_poll_long_poll_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
         api_poll_long_poll_run_parser.add_argument("--fixture", type=Path)
+        api_poll_long_poll_run_parser.add_argument(
+            "--live-api",
+            action="store_true",
+            help="Call the live pCloud /diff API after the dedicated gate opens.",
+        )
+        api_poll_long_poll_run_parser.add_argument(
+            "--block",
+            action="store_true",
+            help="Pass block=1 to the live pCloud /diff request.",
+        )
         api_poll_long_poll_run_parser.add_argument("--max-iterations", type=int)
         api_poll_long_poll_run_parser.add_argument("--execute", action="store_true")
         api_poll_long_poll_run_parser.add_argument(
@@ -968,6 +981,9 @@ def _render_api_long_poll_run_human(report: CommandReport) -> str:
         f"long-poll can start: {details.get('long-poll can start', '-')}",
         f"execute requested: {details.get('execute requested', '-')}",
         f"state writes: {details.get('state writes', '-')}",
+        f"live API requested: {details.get('live API requested', '-')}",
+        f"API token provided: {details.get('API token provided', '-')}",
+        f"API request URL: {details.get('API request URL', '-')}",
         f"fixture: {details.get('fixture file', '-')}",
         f"current diffid: {details.get('current diffid', '-')}",
         f"new diffid: {details.get('new diffid', '-')}",
@@ -2778,6 +2794,30 @@ def _diffd_api_long_poll_run_state_file(config: AppConfig) -> Path:
     return config.state_dir / "diffd" / "api-long-poll-last-run.json"
 
 
+def _pcloud_diff_request_url(config: AppConfig, diffid: str, *, block: bool) -> tuple[str, str]:
+    query = {
+        "diffid": diffid,
+        "limit": str(config.diffd_batch_limit),
+        config.pcloud_api_auth_param: config.pcloud_api_token,
+    }
+    if block:
+        query["block"] = "1"
+    endpoint = config.pcloud_api_base_url.rstrip("/") + "/diff"
+    url = endpoint + "?" + urllib.parse.urlencode(query)
+    redacted_query = dict(query)
+    redacted_query[config.pcloud_api_auth_param] = "<redacted>"
+    redacted_url = endpoint + "?" + urllib.parse.urlencode(redacted_query)
+    return url, redacted_url
+
+
+def _fetch_pcloud_diff_response(config: AppConfig, diffid: str, *, block: bool) -> tuple[str, str]:
+    url, redacted_url = _pcloud_diff_request_url(config, diffid, block=block)
+    request = urllib.request.Request(url, headers={"User-Agent": "pcloud-tools/diffd"})
+    with urllib.request.urlopen(request, timeout=config.pcloud_api_timeout_seconds) as response:
+        charset = response.headers.get_content_charset() or "utf-8"
+        return response.read().decode(charset), redacted_url
+
+
 def _api_long_poll_gate_open(config: AppConfig) -> bool:
     return config.diffd_api_long_poll_gate == _DIFFD_API_LONG_POLL_GATE_VALUE
 
@@ -2790,6 +2830,8 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     state = read_service_daemon_state(config, "diffd")
     execute = bool(getattr(args, "execute", False))
     fixture = getattr(args, "fixture", None)
+    live_api = bool(getattr(args, "live_api", False))
+    block = bool(getattr(args, "block", False))
     max_iterations = getattr(args, "max_iterations", None)
     details = dict(gate_report.details)
     issues = [
@@ -2804,12 +2846,22 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     requested_iterations = 1 if max_iterations is None else max_iterations
     parsed = None
     plan: DiffdPlan | None = None
+    live_request_url = "-"
+    api_response_source = str(fixture_path) if fixture_path else "-"
 
     details.update(
         {
-            "planned action": "run diffd pCloud API long-poll fixture" if execute else "preview diffd API long-poll run",
+            "planned action": (
+                "run diffd live pCloud API long-poll"
+                if execute and live_api
+                else "run diffd pCloud API long-poll fixture"
+                if execute
+                else "preview diffd API long-poll run"
+            ),
             "implementation status": (
-                "fixture-backed long-poll loop; live pCloud API is not called"
+                "live pCloud API /diff call; guarded by explicit API gate and --live-api"
+                if execute and live_api
+                else "fixture-backed long-poll loop; live pCloud API is not called"
                 if execute
                 else "long-poll run preview only; live pCloud API is not called"
             ),
@@ -2826,7 +2878,15 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "long-poll can start": "yes" if gate_open and approval_status == "complete-read-only" else "no",
             "execute requested": "yes" if execute else "no",
             "state writes": "diffd remote-change records, diff cursor, and long-poll run state" if execute else "none",
+            "live API requested": "yes" if live_api else "no",
+            "API block requested": "yes" if block else "no",
+            "API base URL": config.pcloud_api_base_url,
+            "API auth parameter": config.pcloud_api_auth_param,
+            "API token provided": "yes" if config.pcloud_api_token else "no",
+            "API timeout seconds": config.pcloud_api_timeout_seconds,
             "fixture file": str(fixture_path) if fixture_path else "-",
+            "API response source": api_response_source,
+            "API request URL": "-",
             "long-poll state file": str(state_file),
             "future gate env": f"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}",
             "max iterations": requested_iterations,
@@ -2870,17 +2930,43 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             )
         )
     if execute and fixture_path is None:
+        if not live_api:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_FIXTURE",
+                    level="error",
+                    message="--fixture is required unless --live-api is explicitly requested",
+                )
+            )
+    if execute and live_api and fixture_path is not None:
         issues.append(
             ConfigIssue(
                 key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_FIXTURE",
                 level="error",
-                message="--fixture is required for guarded long-poll execution in this build",
+                message="--fixture and --live-api cannot be used together",
+            )
+        )
+    if execute and live_api and not config.pcloud_api_token:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PCLOUD_API_TOKEN",
+                level="error",
+                message="PCLOUD_TOOLS_PCLOUD_API_TOKEN is required for live pCloud API long-poll",
+            )
+        )
+    if execute and live_api and requested_iterations != 1:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_MAX_ITERATIONS",
+                level="error",
+                message="live pCloud API long-poll is limited to --max-iterations 1 in this build",
             )
         )
 
     if fixture_path is not None:
         try:
             parsed = parse_diff_response_fixture(fixture_path)
+            api_response_source = str(fixture_path)
         except OSError as exc:
             issues.append(
                 ConfigIssue(
@@ -2889,33 +2975,51 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                     message=f"cannot read pCloud diff fixture {fixture_path}: {exc}",
                 )
             )
-        if parsed is not None:
-            remote_records = diff_changes_to_records(parsed.changes)
-            plan = build_diffd_plan_from_records(
-                config=config,
-                remote_changes_file=state.state_dir / "remote-changes.json",
-                pending_downloads_file=daemon_state.pending_downloads_file,
-                remote_records=remote_records,
-            )
-            issues.extend(plan.issues)
-            details.update(
-                {
-                    "fixture diffid": parsed.diffid,
-                    "new diffid": parsed.diffid,
-                    "parsed diff changes": len(parsed.changes),
-                    "invalid diff changes": len(parsed.invalid),
-                    "invalid diff records": _invalid_diff_details(parsed.invalid),
-                    **_diffd_plan_details(plan),
-                }
-            )
-            if execute and not parsed.diffid.isdigit():
-                issues.append(
-                    ConfigIssue(
-                        key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_DIFFID",
-                        level="error",
-                        message=f"fixture diffid must be a non-negative integer before cursor mutation: {parsed.diffid!r}",
-                    )
+
+    if execute and live_api and not _has_errors(issues):
+        try:
+            response_text, live_request_url = _fetch_pcloud_diff_response(config, daemon_state.diffid, block=block)
+            api_response_source = live_request_url
+            parsed = parse_diff_response_text(response_text, live_request_url)
+        except (OSError, urllib.error.URLError, TimeoutError) as exc:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_HTTP",
+                    level="error",
+                    message=f"live pCloud API /diff request failed: {exc}",
                 )
+            )
+
+    if parsed is not None:
+        remote_records = diff_changes_to_records(parsed.changes)
+        plan = build_diffd_plan_from_records(
+            config=config,
+            remote_changes_file=state.state_dir / "remote-changes.json",
+            pending_downloads_file=daemon_state.pending_downloads_file,
+            remote_records=remote_records,
+        )
+        issues.extend(plan.issues)
+        details.update(
+            {
+                "API response source": api_response_source,
+                "API request URL": live_request_url,
+                "fixture diffid": parsed.diffid if fixture_path else "-",
+                "new diffid": parsed.diffid,
+                "parsed diff changes": len(parsed.changes),
+                "invalid diff changes": len(parsed.invalid),
+                "invalid diff records": _invalid_diff_details(parsed.invalid),
+                **_diffd_plan_details(plan),
+            }
+        )
+        if execute and not parsed.diffid.isdigit():
+            label = "API" if live_api else "fixture"
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_DIFFID",
+                    level="error",
+                    message=f"{label} diffid must be a non-negative integer before cursor mutation: {parsed.diffid!r}",
+                )
+            )
 
     if not execute or _has_errors(issues):
         if _has_errors(issues):
@@ -2959,7 +3063,11 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             )
     finished_at = datetime.now(timezone.utc).isoformat()
     run_state = {
-        "fixture": str(fixture_path),
+        "source": api_response_source,
+        "fixture": str(fixture_path) if fixture_path else "-",
+        "live_api": live_api,
+        "api_request_url": live_request_url,
+        "api_block_requested": block,
         "started_at": started_at,
         "finished_at": finished_at,
         "iterations_processed": requested_iterations,
