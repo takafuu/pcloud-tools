@@ -217,10 +217,38 @@ def run_validation() -> dict[str, Any]:
                 sort_keys=True,
             )
         )
+        shadow_upload = workspace / "Documents" / "shadow-upload.pdf"
+        shadow_upload.parent.mkdir(parents=True, exist_ok=True)
+        shadow_upload.write_text("shadow upload\n")
         autosync_plist = workspace / ".dev-state" / "com.example.pcloud-bisync.dev.plist"
         dev_entrypoint = workspace / "pcloud-manager-dev"
         dev_entrypoint.write_text("#!/bin/sh\nexit 0\n")
         dev_entrypoint.chmod(0o755)
+        help_ai = _run_cli(
+            env,
+            "help",
+            "--ai",
+            "inspect pushd launchd status safely",
+            "--topic",
+            "pushd",
+            "--topic",
+            "launchd",
+        )
+        try:
+            help_ai_payload = _payload(help_ai)
+        except json.JSONDecodeError:
+            help_ai_payload = {}
+        if (
+            help_ai.returncode == 0
+            and help_ai_payload.get("schema_version") == "pcloud-tools-help-ai.v1"
+            and help_ai_payload.get("command_name") == "pcloud-manager-dev"
+            and help_ai_payload.get("runtime_mode") == "dev"
+            and "pushd" in help_ai_payload.get("generated_help", {}).get("subcommands", {})
+            and not any(state_dir.iterdir())
+        ):
+            checks.append(CheckResult("help ai context read-only", "ok", "help --ai emits JSON context"))
+        else:
+            checks.append(CheckResult("help ai context read-only", "error", "help --ai context mismatch or state mutation"))
         autosync_plist_preview = _check_json_command(
             checks,
             env,
@@ -288,6 +316,8 @@ def run_validation() -> dict[str, Any]:
 
         pushd_preview = _check_json_command(checks, env, "pushd preview", ("pushd", "preview"))
         diffd_preview = _check_json_command(checks, env, "diffd preview", ("diffd", "preview"))
+        pushd_status = _check_json_command(checks, env, "pushd status", ("pushd", "status"))
+        diffd_status = _check_json_command(checks, env, "diffd status", ("diffd", "status"))
         if pushd_preview.get("details", {}).get("planned uploads") != 1:
             checks.append(CheckResult("pushd planned uploads", "error", "expected planned uploads = 1"))
         else:
@@ -296,6 +326,628 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd planned downloads", "error", "expected planned downloads = 1"))
         else:
             checks.append(CheckResult("diffd planned downloads", "ok", "planned downloads = 1"))
+        if (
+            pushd_status.get("details", {}).get("state writes") == "none"
+            and pushd_status.get("details", {}).get("planned uploads") == 1
+            and pushd_status.get("details", {}).get("launchd gate") == "closed"
+            and pushd_status.get("details", {}).get("transfer gate") == "closed"
+            and "last resident run status" in pushd_status.get("details", {})
+            and "preflight checks" not in pushd_status.get("details", {})
+        ):
+            checks.append(CheckResult("pushd status read-only aggregate", "ok", "status summarizes plan/gates"))
+        else:
+            checks.append(CheckResult("pushd status read-only aggregate", "error", "pushd status summary mismatch"))
+        if (
+            diffd_status.get("details", {}).get("state writes") == "none"
+            and diffd_status.get("details", {}).get("planned downloads") == 1
+            and diffd_status.get("details", {}).get("launchd gate") == "closed"
+            and diffd_status.get("details", {}).get("transfer gate") == "closed"
+            and "last api poll run status" in diffd_status.get("details", {})
+            and "preflight checks" not in diffd_status.get("details", {})
+        ):
+            checks.append(CheckResult("diffd status read-only aggregate", "ok", "status summarizes plan/gates"))
+        else:
+            checks.append(CheckResult("diffd status read-only aggregate", "error", "diffd status summary mismatch"))
+        pushd_status_xbar = _run_cli(env, "pushd", "status", "--xbar")
+        diffd_status_xbar = _run_cli(env, "diffd", "status", "--xbar")
+        if (
+            pushd_status_xbar.returncode == 0
+            and "plan: uploads=1" in pushd_status_xbar.stdout
+            and "last resident:" in pushd_status_xbar.stdout
+            and "real-run" not in pushd_status_xbar.stdout
+            and "validation-matrix" not in pushd_status_xbar.stdout
+            and "last transfer:" not in pushd_status_xbar.stdout
+        ):
+            checks.append(CheckResult("pushd status xbar concise", "ok", "xbar shows safe summary"))
+        else:
+            checks.append(CheckResult("pushd status xbar concise", "error", "pushd xbar summary mismatch"))
+        if (
+            diffd_status_xbar.returncode == 0
+            and "plan: downloads=1" in diffd_status_xbar.stdout
+            and "last api poll:" in diffd_status_xbar.stdout
+            and "real-run" not in diffd_status_xbar.stdout
+            and "validation-matrix" not in diffd_status_xbar.stdout
+            and "last transfer:" not in diffd_status_xbar.stdout
+        ):
+            checks.append(CheckResult("diffd status xbar concise", "ok", "xbar shows safe summary"))
+        else:
+            checks.append(CheckResult("diffd status xbar concise", "error", "diffd xbar summary mismatch"))
+        gates_status_xbar = _run_cli(env, "gates", "status", "--xbar")
+        if (
+            gates_status_xbar.returncode == 0
+            and "gate summary:" in gates_status_xbar.stdout
+            and "pushd fswatch resident: gate=closed" in gates_status_xbar.stdout
+            and "read-only command examples" not in gates_status_xbar.stdout
+            and "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE" not in gates_status_xbar.stdout
+            and "--execute" not in gates_status_xbar.stdout
+        ):
+            checks.append(CheckResult("gates status xbar concise", "ok", "xbar shows safe gate summary"))
+        else:
+            checks.append(CheckResult("gates status xbar concise", "error", "gates xbar summary mismatch"))
+
+        pushd_policy = _check_json_command(checks, env, "pushd policy", ("pushd", "policy"))
+        diffd_policy = _check_json_command(checks, env, "diffd policy", ("diffd", "policy"))
+        if pushd_policy.get("details", {}).get("state writes") == "none":
+            checks.append(CheckResult("pushd daemon policy read-only", "ok", "state writes none"))
+        else:
+            checks.append(CheckResult("pushd daemon policy read-only", "error", "policy mutated state"))
+        if diffd_policy.get("details", {}).get("state writes") == "none":
+            checks.append(CheckResult("diffd daemon policy read-only", "ok", "state writes none"))
+        else:
+            checks.append(CheckResult("diffd daemon policy read-only", "error", "policy mutated state"))
+        pushd_launchd_gate = _check_json_command(
+            checks,
+            env,
+            "pushd launchd gate",
+            ("pushd", "launchd", "gate"),
+        )
+        diffd_launchd_gate = _check_json_command(
+            checks,
+            env,
+            "diffd launchd gate",
+            ("diffd", "launchd", "gate"),
+        )
+        pushd_launchd_plist_path = workspace / ".dev-state" / "launchd" / "com.example.pcloud-pushd.dev.plist"
+        diffd_launchd_plist_path = workspace / ".dev-state" / "launchd" / "com.example.pcloud-diffd.dev.plist"
+        pushd_launchd_plist_preview = _check_json_command(
+            checks,
+            env,
+            "pushd launchd plist preview",
+            ("pushd", "launchd", "plist"),
+        )
+        if (
+            pushd_launchd_plist_preview.get("details", {}).get("state writes") == "none"
+            and pushd_launchd_plist_preview.get("details", {}).get("launchctl execution") == "no"
+            and not pushd_launchd_plist_path.exists()
+        ):
+            checks.append(CheckResult("pushd launchd plist preview read-only", "ok", "preview writes no plist"))
+        else:
+            checks.append(CheckResult("pushd launchd plist preview read-only", "error", "preview mutated state"))
+        pushd_launchd_plist_write = _check_json_command(
+            checks,
+            env,
+            "pushd launchd plist write",
+            ("pushd", "launchd", "plist", "--execute"),
+        )
+        diffd_launchd_plist_write = _check_json_command(
+            checks,
+            env,
+            "diffd launchd plist write",
+            ("diffd", "launchd", "plist", "--execute"),
+        )
+        pushd_plist_payload = plistlib.loads(pushd_launchd_plist_path.read_bytes()) if pushd_launchd_plist_path.exists() else {}
+        diffd_plist_payload = plistlib.loads(diffd_launchd_plist_path.read_bytes()) if diffd_launchd_plist_path.exists() else {}
+        if (
+            pushd_launchd_plist_write.get("details", {}).get("state writes") == "launchd plist only"
+            and pushd_launchd_plist_write.get("details", {}).get("launchctl execution") == "no"
+            and pushd_plist_payload.get("Label") == "com.example.pcloud-pushd.dev"
+            and pushd_plist_payload.get("ProgramArguments", [])[1:4] == ["pushd", "fswatch", "resident-run"]
+        ):
+            checks.append(CheckResult("pushd launchd plist write dev-only", "ok", str(pushd_launchd_plist_path)))
+        else:
+            checks.append(CheckResult("pushd launchd plist write dev-only", "error", "pushd plist write mismatch"))
+        if (
+            diffd_launchd_plist_write.get("details", {}).get("state writes") == "launchd plist only"
+            and diffd_launchd_plist_write.get("details", {}).get("launchctl execution") == "no"
+            and diffd_plist_payload.get("Label") == "com.example.pcloud-diffd.dev"
+            and diffd_plist_payload.get("ProgramArguments", [])[1:4] == ["diffd", "api-poll", "long-poll-run"]
+        ):
+            checks.append(CheckResult("diffd launchd plist write dev-only", "ok", str(diffd_launchd_plist_path)))
+        else:
+            checks.append(CheckResult("diffd launchd plist write dev-only", "error", "diffd plist write mismatch"))
+        public_bin = root / "public-bin"
+        public_bin.mkdir(parents=True, exist_ok=True)
+        public_pcloud_manager = public_bin / "pcloud-manager"
+        public_pcloud_manager.write_text("#!/bin/sh\nprintf 'shadow public pcloud-manager\\n'\n")
+        public_pcloud_manager.chmod(0o755)
+        public_launchctl_log = root / "public-launchctl.log"
+        public_launchctl = public_bin / "launchctl"
+        public_launchctl.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$PUBLIC_LAUNCHCTL_LOG\"\nexit 0\n")
+        public_launchctl.chmod(0o755)
+        public_fswatch = public_bin / "fswatch"
+        public_fswatch.write_text("#!/bin/sh\nprintf 'shadow public fswatch\\n'\n")
+        public_fswatch.chmod(0o755)
+        public_env = dict(env)
+        public_env.pop("PCLOUD_TOOLS_DEV", None)
+        public_env["PCLOUD_TOOLS_CORE_DIR"] = str(workspace)
+        public_env["PCLOUD_TOOLS_ALLOWLIST_FILE"] = str(workspace / ".pcloud-sync-allowlist")
+        public_env["PCLOUD_TOOLS_PCLOUD_API_TOKEN"] = "shadow-token"
+        public_env["PATH"] = f"{public_bin}:{public_env.get('PATH', '')}"
+        public_env["PUBLIC_LAUNCHCTL_LOG"] = str(public_launchctl_log)
+        public_pushd_plist_path = Path(public_env["HOME"]) / "Library" / "LaunchAgents" / "com.takafumi.pcloud-pushd.plist"
+        public_diffd_plist_path = Path(public_env["HOME"]) / "Library" / "LaunchAgents" / "com.takafumi.pcloud-diffd.plist"
+        pushd_launchd_review = _check_json_command(
+            checks,
+            public_env,
+            "pushd launchd review",
+            ("pushd", "launchd", "review"),
+        )
+        diffd_launchd_review = _check_json_command(
+            checks,
+            public_env,
+            "diffd launchd review",
+            ("diffd", "launchd", "review"),
+        )
+        if (
+            pushd_launchd_review.get("details", {}).get("state writes") == "none"
+            and pushd_launchd_review.get("details", {}).get("launchctl execution") == "no"
+            and pushd_launchd_review.get("details", {}).get("service label") == "com.takafumi.pcloud-pushd"
+            and pushd_launchd_review.get("details", {}).get("program arguments", [])[:4]
+            == [str(public_pcloud_manager), "pushd", "fswatch", "resident-run"]
+            and not public_pushd_plist_path.exists()
+        ):
+            checks.append(CheckResult("pushd launchd review read-only", "ok", "public plist review only"))
+        else:
+            checks.append(CheckResult("pushd launchd review read-only", "error", "pushd review mismatch"))
+        if (
+            diffd_launchd_review.get("details", {}).get("state writes") == "none"
+            and diffd_launchd_review.get("details", {}).get("launchctl execution") == "no"
+            and diffd_launchd_review.get("details", {}).get("service label") == "com.takafumi.pcloud-diffd"
+            and diffd_launchd_review.get("details", {}).get("foreground command preview", [])[:4]
+            == [str(public_pcloud_manager), "diffd", "api-poll", "long-poll-run"]
+            and not public_diffd_plist_path.exists()
+        ):
+            checks.append(CheckResult("diffd launchd review read-only", "ok", "public plist review only"))
+        else:
+            checks.append(CheckResult("diffd launchd review read-only", "error", "diffd review mismatch"))
+        public_closed = _run_cli(
+            public_env,
+            "pushd",
+            "launchd",
+            "plist",
+            "--execute",
+            "--public-write",
+            "--json",
+        )
+        try:
+            public_closed_payload = _payload(public_closed)
+        except json.JSONDecodeError:
+            public_closed_payload = {}
+        if (
+            public_closed.returncode == 1
+            and public_closed_payload.get("status") == "error"
+            and public_closed_payload.get("details", {}).get("state writes") == "none"
+            and not public_pushd_plist_path.exists()
+        ):
+            checks.append(CheckResult("pushd launchd public plist gate closed", "ok", "public write refused"))
+        else:
+            checks.append(CheckResult("pushd launchd public plist gate closed", "error", "closed gate wrote or returned ok"))
+        public_open_env = dict(public_env)
+        public_open_env["PCLOUD_TOOLS_PUSHD_LAUNCHD_PLIST_GATE"] = "operator-approved-pushd-launchd-plist-v1"
+        public_open = _check_json_command(
+            checks,
+            public_open_env,
+            "pushd launchd public plist write",
+            (
+                "pushd",
+                "launchd",
+                "plist",
+                "--execute",
+                "--public-write",
+                "--operator-reviewed-plist",
+                "--reviewer-approved-public-target",
+                "--reviewer-approved-no-bootstrap",
+            ),
+        )
+        public_pushd_payload = (
+            plistlib.loads(public_pushd_plist_path.read_bytes()) if public_pushd_plist_path.exists() else {}
+        )
+        if (
+            public_open.get("details", {}).get("state writes") == "public launchd plist only"
+            and public_open.get("details", {}).get("launchctl execution") == "no"
+            and public_open.get("details", {}).get("persistent daemon start") == "no"
+            and public_pushd_payload.get("Label") == "com.takafumi.pcloud-pushd"
+            and public_pushd_payload.get("ProgramArguments", [])[:4]
+            == [str(public_pcloud_manager), "pushd", "fswatch", "resident-run"]
+            and not public_diffd_plist_path.exists()
+            and not public_launchctl_log.exists()
+        ):
+            checks.append(CheckResult("pushd launchd public plist write gated", "ok", str(public_pushd_plist_path)))
+        else:
+            checks.append(CheckResult("pushd launchd public plist write gated", "error", "public plist write mismatch"))
+        resident_report_path = root / "launchd-resident-plist-shadow-report.json"
+        resident_report_path.write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "workspace": str(workspace),
+                    "state_dir": str(state_dir),
+                    "checks": [
+                        {"name": "temporary workspace guard", "status": "ok"},
+                        {"name": "temporary state dir guard", "status": "ok"},
+                        {"name": "unsafe state dir guard", "status": "ok"},
+                    ],
+                }
+            )
+        )
+        resident_preview = _check_json_command(
+            checks,
+            public_env,
+            "pushd launchd resident plist preview",
+            ("pushd", "launchd", "resident-plist", "--report-path", str(resident_report_path)),
+        )
+        if (
+            resident_preview.get("details", {}).get("state writes") == "none"
+            and resident_preview.get("details", {}).get("launchctl execution") == "no"
+            and resident_preview.get("details", {}).get("persistent daemon start") == "no"
+        ):
+            checks.append(CheckResult("pushd launchd resident plist preview read-only", "ok", "no launchctl"))
+        else:
+            checks.append(CheckResult("pushd launchd resident plist preview read-only", "error", "resident preview mismatch"))
+        resident_closed = _run_cli(
+            public_env,
+            "pushd",
+            "launchd",
+            "resident-plist",
+            "--report-path",
+            str(resident_report_path),
+            "--execute",
+            "--json",
+        )
+        try:
+            resident_closed_payload = _payload(resident_closed)
+        except json.JSONDecodeError:
+            resident_closed_payload = {}
+        if (
+            resident_closed.returncode == 1
+            and resident_closed_payload.get("details", {}).get("state writes") == "none"
+        ):
+            checks.append(CheckResult("pushd launchd resident plist gate closed", "ok", "resident write refused"))
+        else:
+            checks.append(CheckResult("pushd launchd resident plist gate closed", "error", "closed resident gate wrote"))
+        public_resident_env = dict(public_env)
+        public_resident_env["PCLOUD_TOOLS_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE"] = (
+            "operator-approved-pushd-launchd-resident-plist-v1"
+        )
+        resident_open = _check_json_command(
+            checks,
+            public_resident_env,
+            "pushd launchd resident plist write",
+            (
+                "pushd",
+                "launchd",
+                "resident-plist",
+                "--report-path",
+                str(resident_report_path),
+                "--operator-reviewed-resident-command",
+                "--reviewer-approved-resident-environment",
+                "--reviewer-approved-no-bootstrap",
+                "--execute",
+            ),
+        )
+        resident_payload = plistlib.loads(public_pushd_plist_path.read_bytes()) if public_pushd_plist_path.exists() else {}
+        resident_env = resident_payload.get("EnvironmentVariables", {})
+        if (
+            resident_open.get("details", {}).get("state writes") == "public launchd resident plist only"
+            and resident_open.get("details", {}).get("launchctl execution") == "no"
+            and resident_open.get("details", {}).get("persistent daemon start") == "no"
+            and resident_payload.get("ProgramArguments", [])[:4]
+            == [str(public_pcloud_manager), "pushd", "fswatch", "resident-run"]
+            and "--execute" in resident_payload.get("ProgramArguments", [])
+            and resident_env.get("PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE") == "operator-approved-fswatch-resident-v1"
+            and "/opt/homebrew/bin" in resident_env.get("PATH", "")
+        ):
+            checks.append(CheckResult("pushd launchd resident plist write gated", "ok", "resident plist written"))
+        else:
+            checks.append(CheckResult("pushd launchd resident plist write gated", "error", "resident plist mismatch"))
+        reload_preview = _check_json_command(
+            checks,
+            public_env,
+            "pushd launchd reload preview",
+            ("pushd", "launchd", "reload", "--report-path", str(resident_report_path)),
+        )
+        if (
+            reload_preview.get("details", {}).get("launchctl execution") == "no"
+            and reload_preview.get("details", {}).get("persistent daemon start") == "no"
+            and reload_preview.get("details", {}).get("resident plist status") == "operational"
+        ):
+            checks.append(CheckResult("pushd launchd reload preview read-only", "ok", "launchctl not executed"))
+        else:
+            checks.append(CheckResult("pushd launchd reload preview read-only", "error", "reload preview mismatch"))
+        reload_closed = _run_cli(
+            public_env,
+            "pushd",
+            "launchd",
+            "reload",
+            "--report-path",
+            str(resident_report_path),
+            "--execute",
+            "--json",
+        )
+        try:
+            reload_closed_payload = _payload(reload_closed)
+        except json.JSONDecodeError:
+            reload_closed_payload = {}
+        if (
+            reload_closed.returncode == 1
+            and reload_closed_payload.get("details", {}).get("launchctl execution") == "no"
+        ):
+            checks.append(CheckResult("pushd launchd reload gate closed", "ok", "reload refused"))
+        else:
+            checks.append(CheckResult("pushd launchd reload gate closed", "error", "closed reload gate ran"))
+        if public_launchctl_log.exists():
+            public_launchctl_log.write_text("")
+        public_reload_env = dict(public_env)
+        public_reload_env["PCLOUD_TOOLS_PUSHD_LAUNCHD_RELOAD_GATE"] = "operator-approved-pushd-launchd-reload-v1"
+        reload_open = _check_json_command(
+            checks,
+            public_reload_env,
+            "pushd launchd reload fake launchctl",
+            (
+                "pushd",
+                "launchd",
+                "reload",
+                "--report-path",
+                str(resident_report_path),
+                "--operator-reviewed-resident-plist",
+                "--reviewer-approved-bootout-bootstrap",
+                "--reviewer-approved-rollback-policy",
+                "--execute",
+            ),
+        )
+        reload_launchctl_log = public_launchctl_log.read_text() if public_launchctl_log.exists() else ""
+        if (
+            reload_open.get("details", {}).get("launchctl execution") == "yes"
+            and reload_open.get("details", {}).get("persistent daemon start") == "yes-if-bootstrap-succeeds"
+            and reload_open.get("details", {}).get("state writes") == "launchctl reload only"
+            and "bootout gui/" in reload_launchctl_log
+            and "bootstrap gui/" in reload_launchctl_log
+        ):
+            checks.append(CheckResult("pushd launchd reload fake launchctl state", "ok", "fake launchctl recorded"))
+        else:
+            checks.append(CheckResult("pushd launchd reload fake launchctl state", "error", "reload mismatch"))
+        diffd_operational_preview = _check_json_command(
+            checks,
+            public_env,
+            "diffd launchd operational plist preview",
+            (
+                "diffd",
+                "launchd",
+                "resident-plist",
+                "--report-path",
+                str(resident_report_path),
+                "--start-interval-seconds",
+                "60",
+            ),
+        )
+        if (
+            diffd_operational_preview.get("details", {}).get("state writes") == "none"
+            and diffd_operational_preview.get("details", {}).get("launchctl execution") == "no"
+            and diffd_operational_preview.get("details", {}).get("persistent daemon start") == "no"
+            and diffd_operational_preview.get("details", {}).get("start interval seconds") == 60
+        ):
+            checks.append(CheckResult("diffd launchd operational plist preview read-only", "ok", "no launchctl"))
+        else:
+            checks.append(CheckResult("diffd launchd operational plist preview read-only", "error", "operational preview mismatch"))
+        public_diffd_operational_env = dict(public_env)
+        public_diffd_operational_env["PCLOUD_TOOLS_DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE"] = (
+            "operator-approved-diffd-launchd-long-poll-plist-v1"
+        )
+        diffd_operational_open = _check_json_command(
+            checks,
+            public_diffd_operational_env,
+            "diffd launchd operational plist write",
+            (
+                "diffd",
+                "launchd",
+                "resident-plist",
+                "--report-path",
+                str(resident_report_path),
+                "--start-interval-seconds",
+                "60",
+                "--operator-reviewed-resident-command",
+                "--reviewer-approved-resident-environment",
+                "--reviewer-approved-no-bootstrap",
+                "--execute",
+            ),
+        )
+        diffd_operational_payload = (
+            plistlib.loads(public_diffd_plist_path.read_bytes()) if public_diffd_plist_path.exists() else {}
+        )
+        diffd_operational_env = diffd_operational_payload.get("EnvironmentVariables", {})
+        if (
+            diffd_operational_open.get("details", {}).get("state writes") == "public launchd resident plist only"
+            and diffd_operational_open.get("details", {}).get("launchctl execution") == "no"
+            and diffd_operational_payload.get("ProgramArguments", [])[:4]
+            == [str(public_pcloud_manager), "diffd", "api-poll", "long-poll-run"]
+            and "--live-api" in diffd_operational_payload.get("ProgramArguments", [])
+            and "--max-iterations" in diffd_operational_payload.get("ProgramArguments", [])
+            and "--execute" in diffd_operational_payload.get("ProgramArguments", [])
+            and diffd_operational_payload.get("StartInterval") == 60
+            and diffd_operational_env.get("PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE")
+            == "operator-approved-api-long-poll-v1"
+        ):
+            checks.append(CheckResult("diffd launchd operational plist write gated", "ok", "operational plist written"))
+        else:
+            checks.append(CheckResult("diffd launchd operational plist write gated", "error", "operational plist mismatch"))
+        diffd_reload_preview = _check_json_command(
+            checks,
+            public_env,
+            "diffd launchd reload preview",
+            ("diffd", "launchd", "reload", "--report-path", str(resident_report_path)),
+        )
+        if (
+            diffd_reload_preview.get("details", {}).get("launchctl execution") == "no"
+            and diffd_reload_preview.get("details", {}).get("persistent daemon start") == "no"
+            and diffd_reload_preview.get("details", {}).get("resident plist status") == "operational"
+        ):
+            checks.append(CheckResult("diffd launchd reload preview read-only", "ok", "launchctl not executed"))
+        else:
+            checks.append(CheckResult("diffd launchd reload preview read-only", "error", "reload preview mismatch"))
+        public_launchctl_log.write_text("")
+        public_diffd_reload_env = dict(public_env)
+        public_diffd_reload_env["PCLOUD_TOOLS_DIFFD_LAUNCHD_RELOAD_GATE"] = "operator-approved-diffd-launchd-reload-v1"
+        diffd_reload_open = _check_json_command(
+            checks,
+            public_diffd_reload_env,
+            "diffd launchd reload fake launchctl",
+            (
+                "diffd",
+                "launchd",
+                "reload",
+                "--report-path",
+                str(resident_report_path),
+                "--operator-reviewed-resident-plist",
+                "--reviewer-approved-bootout-bootstrap",
+                "--reviewer-approved-rollback-policy",
+                "--execute",
+            ),
+        )
+        diffd_reload_launchctl_log = public_launchctl_log.read_text() if public_launchctl_log.exists() else ""
+        if (
+            diffd_reload_open.get("details", {}).get("launchctl execution") == "yes"
+            and diffd_reload_open.get("details", {}).get("persistent daemon start") == "yes-if-bootstrap-succeeds"
+            and diffd_reload_open.get("details", {}).get("state writes") == "launchctl reload only"
+            and "bootout gui/" in diffd_reload_launchctl_log
+            and "bootstrap gui/" in diffd_reload_launchctl_log
+        ):
+            checks.append(CheckResult("diffd launchd reload fake launchctl state", "ok", "fake launchctl recorded"))
+        else:
+            checks.append(CheckResult("diffd launchd reload fake launchctl state", "error", "reload mismatch"))
+        register_report_path = root / "launchd-register-shadow-report.json"
+        register_report_path.write_text(
+            json.dumps(
+                {
+                    "status": "ok",
+                    "workspace": str(workspace),
+                    "state_dir": str(state_dir),
+                    "checks": [
+                        {"name": "temporary workspace guard", "status": "ok"},
+                        {"name": "temporary state dir guard", "status": "ok"},
+                        {"name": "unsafe state dir guard", "status": "ok"},
+                        {"name": "launchd register shadow", "status": "ok"},
+                    ],
+                }
+            )
+        )
+        register_preview = _check_json_command(
+            checks,
+            public_env,
+            "pushd launchd register preview",
+            ("pushd", "launchd", "register"),
+        )
+        preview_launchctl_log = public_launchctl_log.read_text() if public_launchctl_log.exists() else ""
+        if (
+            register_preview.get("details", {}).get("launchctl execution") == "no"
+            and register_preview.get("details", {}).get("persistent daemon start") == "no"
+            and "enable gui/" not in preview_launchctl_log
+        ):
+            checks.append(CheckResult("pushd launchd register preview read-only", "ok", "launchctl not executed"))
+        else:
+            checks.append(CheckResult("pushd launchd register preview read-only", "error", "preview ran launchctl"))
+        register_closed = _run_cli(public_env, "pushd", "launchd", "register", "--execute", "--json")
+        try:
+            register_closed_payload = _payload(register_closed)
+        except json.JSONDecodeError:
+            register_closed_payload = {}
+        closed_launchctl_log = public_launchctl_log.read_text() if public_launchctl_log.exists() else ""
+        if (
+            register_closed.returncode == 1
+            and register_closed_payload.get("status") == "error"
+            and register_closed_payload.get("details", {}).get("launchctl execution") == "no"
+            and "enable gui/" not in closed_launchctl_log
+        ):
+            checks.append(CheckResult("pushd launchd register gate closed", "ok", "launchctl refused"))
+        else:
+            checks.append(CheckResult("pushd launchd register gate closed", "error", "closed gate ran launchctl"))
+        if public_launchctl_log.exists():
+            public_launchctl_log.write_text("")
+        public_register_env = dict(public_open_env)
+        public_register_env["PCLOUD_TOOLS_PUSHD_LAUNCHD_GATE"] = "operator-approved-pushd-launchd-v1"
+        register_open = _check_json_command(
+            checks,
+            public_register_env,
+            "pushd launchd register fake launchctl",
+            (
+                "pushd",
+                "launchd",
+                "register",
+                "--report-path",
+                str(register_report_path),
+                "--operator-reviewed-daemon-command",
+                "--reviewer-approved-plist-policy",
+                "--reviewer-approved-launchctl-policy",
+                "--reviewer-approved-rollback-policy",
+                "--execute",
+            ),
+        )
+        register_launchctl_log = public_launchctl_log.read_text() if public_launchctl_log.exists() else ""
+        if (
+            register_open.get("details", {}).get("launchctl execution") == "yes"
+            and register_open.get("details", {}).get("persistent daemon start") == "yes-if-bootstrap-succeeds"
+            and register_open.get("details", {}).get("state writes") == "launchctl registration only"
+            and "enable gui/" in register_launchctl_log
+            and "bootstrap gui/" in register_launchctl_log
+        ):
+            checks.append(CheckResult("pushd launchd register fake launchctl state", "ok", "fake launchctl recorded"))
+        else:
+            checks.append(CheckResult("pushd launchd register fake launchctl state", "error", "register mismatch"))
+        pushd_launchd_status = _check_json_command(
+            checks,
+            env,
+            "pushd launchd status",
+            ("pushd", "launchd", "status"),
+        )
+        diffd_launchd_status = _check_json_command(
+            checks,
+            env,
+            "diffd launchd status",
+            ("diffd", "launchd", "status"),
+        )
+        if (
+            pushd_launchd_gate.get("details", {}).get("launchd gate status") == "closed"
+            and pushd_launchd_gate.get("details", {}).get("state writes") == "none"
+            and pushd_launchd_gate.get("details", {}).get("launchd can register") == "no"
+            and pushd_launchd_gate.get("details", {}).get("plist status") == "draft-only; not written by this command"
+        ):
+            checks.append(CheckResult("pushd launchd gate read-only", "ok", "launchd registration blocked"))
+        else:
+            checks.append(CheckResult("pushd launchd gate read-only", "error", "launchd gate mismatch"))
+        if (
+            diffd_launchd_gate.get("details", {}).get("launchd gate status") == "closed"
+            and diffd_launchd_gate.get("details", {}).get("state writes") == "none"
+            and diffd_launchd_gate.get("details", {}).get("launchd can register") == "no"
+            and diffd_launchd_gate.get("details", {}).get("plist status") == "draft-only; not written by this command"
+        ):
+            checks.append(CheckResult("diffd launchd gate read-only", "ok", "launchd registration blocked"))
+        else:
+            checks.append(CheckResult("diffd launchd gate read-only", "error", "launchd gate mismatch"))
+        if (
+            pushd_launchd_status.get("details", {}).get("state writes") == "none"
+            and pushd_launchd_status.get("details", {}).get("launchd can register") == "no"
+            and pushd_launchd_status.get("details", {}).get("launchctl execution") in {"print-only", "none"}
+        ):
+            checks.append(CheckResult("pushd launchd status read-only", "ok", "launchd status did not mutate"))
+        else:
+            checks.append(CheckResult("pushd launchd status read-only", "error", "launchd status mismatch"))
+        if (
+            diffd_launchd_status.get("details", {}).get("state writes") == "none"
+            and diffd_launchd_status.get("details", {}).get("launchd can register") == "no"
+            and diffd_launchd_status.get("details", {}).get("launchctl execution") in {"print-only", "none"}
+        ):
+            checks.append(CheckResult("diffd launchd status read-only", "ok", "launchd status did not mutate"))
+        else:
+            checks.append(CheckResult("diffd launchd status read-only", "error", "launchd status mismatch"))
 
         fswatch_fixture = workspace / "pushd-fswatch-events.txt"
         fswatch_fixture.write_text("Documents/shadow-upload.pdf\tCreated Updated\nprivate/skip.txt\tCreated\n")
@@ -427,6 +1079,42 @@ def run_validation() -> dict[str, Any]:
             env,
             "pushd fswatch resident-run cleanup",
             ("pushd", "queue", "remove", "Documents/resident-shadow.txt", "--execute"),
+        )
+        fake_fswatch.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/resident-duplicate.txt\"\n"
+            "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/resident-duplicate.txt\"\n"
+        )
+        duplicate_run = _check_json_command(
+            checks,
+            resident_run_env,
+            "pushd fswatch resident-run duplicate skip",
+            (
+                "pushd",
+                "fswatch",
+                "resident-run",
+                "--report-path",
+                str(saved_shadow_report),
+                "--operator-reviewed-probe",
+                "--reviewer-approved-queue-policy",
+                "--reviewer-approved-process-policy",
+                "--max-events",
+                "2",
+                "--execute",
+            ),
+        )
+        if (
+            duplicate_run.get("details", {}).get("queue records appended") == 1
+            and duplicate_run.get("details", {}).get("debounce events skipped") == 1
+        ):
+            checks.append(CheckResult("pushd fswatch resident-run debounce skip", "ok", "debounce skipped"))
+        else:
+            checks.append(CheckResult("pushd fswatch resident-run debounce skip", "error", "debounce was not skipped"))
+        _check_json_command(
+            checks,
+            env,
+            "pushd fswatch resident-run duplicate cleanup",
+            ("pushd", "queue", "remove", "Documents/resident-duplicate.txt", "--execute"),
         )
 
         diff_fixture = workspace / "pcloud-diff.json"
@@ -1266,6 +1954,42 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer gate closed", "ok", "download commands are preview-only"))
         else:
             checks.append(CheckResult("diffd transfer gate closed", "error", "missing closed gate status"))
+        pushd_transfer_matrix = _check_json_command(
+            checks,
+            env,
+            "pushd transfer validation matrix",
+            ("pushd", "transfer", "validation-matrix"),
+        )
+        diffd_transfer_matrix = _check_json_command(
+            checks,
+            env,
+            "diffd transfer validation matrix",
+            ("diffd", "transfer", "validation-matrix"),
+        )
+        pushd_matrix_details = pushd_transfer_matrix.get("details", {})
+        diffd_matrix_details = diffd_transfer_matrix.get("details", {})
+        if (
+            pushd_matrix_details.get("state writes") == "none"
+            and pushd_matrix_details.get("real execution can run") == "no"
+            and pushd_matrix_details.get("case count") == 5
+        ):
+            checks.append(CheckResult("pushd transfer validation matrix read-only", "ok", "5 upload cases"))
+        else:
+            checks.append(CheckResult("pushd transfer validation matrix read-only", "error", "matrix mismatch"))
+        diffd_case_ids = {
+            str(case.get("id", ""))
+            for case in diffd_matrix_details.get("cases", [])
+            if isinstance(case, dict)
+        }
+        if (
+            diffd_matrix_details.get("state writes") == "none"
+            and diffd_matrix_details.get("real execution can run") == "no"
+            and diffd_matrix_details.get("case count") == 6
+            and "remote-only-download" in diffd_case_ids
+        ):
+            checks.append(CheckResult("diffd transfer validation matrix read-only", "ok", "6 download cases"))
+        else:
+            checks.append(CheckResult("diffd transfer validation matrix read-only", "error", "matrix mismatch"))
         pushd_transfer_check = _check_json_command(
             checks,
             env,
@@ -1450,6 +2174,190 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer real-gate closed", "ok", "real execution unavailable"))
         else:
             checks.append(CheckResult("diffd transfer real-gate closed", "error", "real gate unexpectedly open"))
+        pushd_automation_gate = _check_json_command(
+            checks,
+            env | {"PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE": "operator-approved-real-transfer-automation-v1"},
+            "pushd transfer automation-gate",
+            (
+                "pushd",
+                "transfer",
+                "automation-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-upload.pdf",
+                "--confirm-direction",
+                "upload",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
+                "--operator-reviewed-real-transfer-gate",
+                "--reviewer-approved-automation-command",
+                "--reviewer-approved-launchd-policy",
+                "--reviewer-approved-rollback-policy",
+            ),
+        )
+        diffd_automation_gate = _check_json_command(
+            checks,
+            env,
+            "diffd transfer automation-gate",
+            (
+                "diffd",
+                "transfer",
+                "automation-gate",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-download.pdf",
+                "--confirm-direction",
+                "download",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
+            ),
+        )
+        if (
+            pushd_automation_gate.get("details", {}).get("automation gate status") == "closed"
+            and pushd_automation_gate.get("details", {}).get("automation command status") == "implemented-gated"
+            and pushd_automation_gate.get("details", {}).get("automation gate env provided") == "yes"
+            and pushd_automation_gate.get("details", {}).get("automation gate env honored") == "no"
+            and pushd_automation_gate.get("details", {}).get("public plist writes") == "no"
+            and pushd_automation_gate.get("details", {}).get("automatic real transfer execution") == "no"
+        ):
+            checks.append(CheckResult("pushd transfer automation gate closed", "ok", "automation gated"))
+        else:
+            checks.append(CheckResult("pushd transfer automation gate closed", "error", "automation gate mismatch"))
+        if (
+            diffd_automation_gate.get("details", {}).get("automation gate status") == "closed"
+            and diffd_automation_gate.get("details", {}).get("automation command status") == "implemented-gated"
+            and diffd_automation_gate.get("details", {}).get("automation gate env provided") == "no"
+            and diffd_automation_gate.get("details", {}).get("public plist writes") == "no"
+            and diffd_automation_gate.get("details", {}).get("automatic real transfer execution") == "no"
+        ):
+            checks.append(CheckResult("diffd transfer automation gate closed", "ok", "automation gated"))
+        else:
+            checks.append(CheckResult("diffd transfer automation gate closed", "error", "automation gate mismatch"))
+        automation_run_env = env | {
+            "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "operator-approved-real-transfer-v1",
+            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE": "operator-approved-real-transfer-automation-v1",
+        }
+        pushd_automation_run = _check_json_command(
+            checks,
+            automation_run_env,
+            "pushd transfer automation-run gate refusal",
+            ("pushd", "transfer", "automation-run", "--execute", "--consume-on-success"),
+            allowed_status={"error"},
+        )
+        diffd_automation_run = _check_json_command(
+            checks,
+            automation_run_env,
+            "diffd transfer automation-run gate refusal",
+            ("diffd", "transfer", "automation-run", "--execute", "--consume-on-success"),
+            allowed_status={"error"},
+        )
+        if (
+            pushd_automation_run.get("details", {}).get("automation command status") == "implemented-gated"
+            and pushd_automation_run.get("details", {}).get("automation can run") == "no"
+            and pushd_automation_run.get("details", {}).get("real transfer gate env honored") == "yes"
+            and pushd_automation_run.get("details", {}).get("automation gate env honored") == "yes"
+            and pushd_automation_run.get("details", {}).get("automation run gate env honored") == "no"
+            and pushd_automation_run.get("details", {}).get("state writes") == "none"
+            and pushd_automation_run.get("details", {}).get("automatic real transfer execution") == "no"
+        ):
+            checks.append(CheckResult("pushd transfer automation-run no-op", "ok", "automation-run refused"))
+        else:
+            checks.append(CheckResult("pushd transfer automation-run no-op", "error", "automation-run mismatch"))
+        if (
+            diffd_automation_run.get("details", {}).get("automation command status") == "implemented-gated"
+            and diffd_automation_run.get("details", {}).get("automation can run") == "no"
+            and diffd_automation_run.get("details", {}).get("state writes") == "none"
+            and diffd_automation_run.get("details", {}).get("automatic queue/change consumption") == "no"
+        ):
+            checks.append(CheckResult("diffd transfer automation-run no-op", "ok", "automation-run refused"))
+        else:
+            checks.append(CheckResult("diffd transfer automation-run no-op", "error", "automation-run mismatch"))
+        pushd_launchd_automation_plist = _check_json_command(
+            checks,
+            env | {"PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE": "operator-approved-real-transfer-automation-v1"},
+            "pushd launchd automation plist preview",
+            (
+                "pushd",
+                "launchd",
+                "automation-plist",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-upload.pdf",
+                "--confirm-direction",
+                "upload",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
+                "--operator-reviewed-real-transfer-gate",
+                "--reviewer-approved-automation-command",
+                "--reviewer-approved-launchd-policy",
+                "--reviewer-approved-rollback-policy",
+            ),
+        )
+        diffd_launchd_automation_reload = _check_json_command(
+            checks,
+            env,
+            "diffd launchd automation reload preview",
+            (
+                "diffd",
+                "launchd",
+                "automation-reload",
+                "--report-path",
+                str(saved_shadow_report),
+                "--confirm-path",
+                "Documents/shadow-download.pdf",
+                "--confirm-direction",
+                "download",
+                "--consume-policy",
+                "remove-on-success-retain-on-failure",
+                "--timeout-policy",
+                "reuse-fake-rclone-cleanup",
+                "--operator-reviewed-dry-run",
+                "--reviewer-approved-real-command",
+                "--reviewer-approved-consume-policy",
+                "--operator-reviewed-real-transfer-gate",
+                "--reviewer-approved-automation-command",
+                "--reviewer-approved-launchd-policy",
+                "--reviewer-approved-rollback-policy",
+                "--operator-reviewed-automation-plist",
+                "--reviewer-approved-bootout-bootstrap",
+            ),
+        )
+        if (
+            pushd_launchd_automation_plist.get("details", {}).get("automation command status") == "implemented-gated"
+            and pushd_launchd_automation_plist.get("details", {}).get("public plist writes") == "no"
+            and pushd_launchd_automation_plist.get("details", {}).get("launchctl execution") == "no"
+            and pushd_launchd_automation_plist.get("details", {}).get("automatic real transfer execution") == "no"
+        ):
+            checks.append(CheckResult("pushd launchd automation plist preview-only", "ok", "public plist blocked"))
+        else:
+            checks.append(CheckResult("pushd launchd automation plist preview-only", "error", "automation plist mismatch"))
+        if (
+            diffd_launchd_automation_reload.get("details", {}).get("automation command status") == "implemented-gated"
+            and diffd_launchd_automation_reload.get("details", {}).get("launchd can reload") == "no"
+            and diffd_launchd_automation_reload.get("details", {}).get("launchctl execution") == "no"
+            and diffd_launchd_automation_reload.get("details", {}).get("automatic real transfer execution") == "no"
+        ):
+            checks.append(CheckResult("diffd launchd automation reload preview-only", "ok", "launchctl blocked"))
+        else:
+            checks.append(CheckResult("diffd launchd automation reload preview-only", "error", "automation reload mismatch"))
         real_run_env = env | {
             "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "shadow-attempt",
             "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE": "dev-fake-rclone",
@@ -1499,7 +2407,17 @@ def run_validation() -> dict[str, Any]:
         real_bin_dir.mkdir(parents=True, exist_ok=True)
         real_log = workspace / ".dev-state" / "real-rclone-stub.log"
         real_rclone = real_bin_dir / "rclone"
-        real_rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$REAL_RCLONE_STUB_LOG\"\n")
+        real_rclone.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$REAL_RCLONE_STUB_LOG\"\n"
+            "if [ \"$1\" = \"copyto\" ]; then\n"
+            "  dest=\"$3\"\n"
+            "  case \"$dest\" in\n"
+            "    pcloud:*) ;;\n"
+            "    *) mkdir -p \"$(dirname \"$dest\")\" && printf 'real stub download\\n' > \"$dest\" ;;\n"
+            "  esac\n"
+            "fi\n"
+        )
         real_rclone.chmod(0o755)
         real_env = dict(env)
         real_env.update(
@@ -1578,12 +2496,34 @@ def run_validation() -> dict[str, Any]:
             checks.append(CheckResult("diffd transfer real-run guarded stub", "ok", "stub rclone executed"))
         else:
             checks.append(CheckResult("diffd transfer real-run guarded stub", "error", "real-run stub mismatch"))
+        _check_json_command(
+            checks,
+            env,
+            "pushd queue restore after real-run stub consume",
+            ("pushd", "queue", "add", "Documents/shadow-upload.pdf", "--execute"),
+        )
+        _check_json_command(
+            checks,
+            env,
+            "diffd remote-change restore after real-run stub consume",
+            ("diffd", "remote-change", "add", "Documents/shadow-download.pdf", "--execute"),
+        )
 
         fake_bin_dir = workspace / ".dev-state" / "bin"
         fake_bin_dir.mkdir(parents=True, exist_ok=True)
         fake_log = workspace / ".dev-state" / "fake-rclone.log"
         fake_rclone = fake_bin_dir / "fake-rclone"
-        fake_rclone.write_text("#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$FAKE_RCLONE_LOG\"\n")
+        fake_rclone.write_text(
+            "#!/bin/sh\n"
+            "printf '%s\\n' \"$*\" >> \"$FAKE_RCLONE_LOG\"\n"
+            "if [ \"$1\" = \"copyto\" ]; then\n"
+            "  dest=\"$3\"\n"
+            "  case \"$dest\" in\n"
+            "    pcloud:*) ;;\n"
+            "    *) mkdir -p \"$(dirname \"$dest\")\" && printf 'fake download\\n' > \"$dest\" ;;\n"
+            "  esac\n"
+            "fi\n"
+        )
         fake_rclone.chmod(0o755)
         fake_env = dict(env)
         fake_env.update(
@@ -1593,6 +2533,46 @@ def run_validation() -> dict[str, Any]:
                 "FAKE_RCLONE_LOG": str(fake_log),
             }
         )
+        pushd_executor_plist = _check_json_command(
+            checks,
+            fake_env,
+            "pushd launchd executor plist write",
+            ("pushd", "launchd", "executor-plist", "--execute"),
+        )
+        diffd_executor_plist = _check_json_command(
+            checks,
+            fake_env,
+            "diffd launchd executor plist write",
+            ("diffd", "launchd", "executor-plist", "--start-interval-seconds", "30", "--execute"),
+        )
+        pushd_executor_plist_path = workspace / ".dev-state" / "launchd" / "com.example.pcloud-pushd-executor.dev.plist"
+        diffd_executor_plist_path = workspace / ".dev-state" / "launchd" / "com.example.pcloud-diffd-executor.dev.plist"
+        pushd_executor_payload = (
+            plistlib.loads(pushd_executor_plist_path.read_bytes()) if pushd_executor_plist_path.exists() else {}
+        )
+        diffd_executor_payload = (
+            plistlib.loads(diffd_executor_plist_path.read_bytes()) if diffd_executor_plist_path.exists() else {}
+        )
+        if (
+            pushd_executor_plist.get("details", {}).get("state writes") == "launchd executor plist only"
+            and pushd_executor_plist.get("details", {}).get("launchctl execution") == "no"
+            and pushd_executor_payload.get("ProgramArguments", [])[1:4] == ["pushd", "transfer", "executor-run"]
+            and pushd_executor_payload.get("StartInterval") == 60
+            and pushd_executor_payload.get("EnvironmentVariables", {}).get("PCLOUD_TOOLS_RCLONE_BIN") == str(fake_rclone)
+        ):
+            checks.append(CheckResult("pushd launchd executor plist dev-only", "ok", "fake executor plist written"))
+        else:
+            checks.append(CheckResult("pushd launchd executor plist dev-only", "error", "pushd executor plist mismatch"))
+        if (
+            diffd_executor_plist.get("details", {}).get("state writes") == "launchd executor plist only"
+            and diffd_executor_plist.get("details", {}).get("launchctl execution") == "no"
+            and diffd_executor_payload.get("ProgramArguments", [])[1:4] == ["diffd", "transfer", "executor-run"]
+            and diffd_executor_payload.get("StartInterval") == 30
+            and diffd_executor_payload.get("EnvironmentVariables", {}).get("PCLOUD_TOOLS_RCLONE_BIN") == str(fake_rclone)
+        ):
+            checks.append(CheckResult("diffd launchd executor plist dev-only", "ok", "fake executor plist written"))
+        else:
+            checks.append(CheckResult("diffd launchd executor plist dev-only", "error", "diffd executor plist mismatch"))
         pushd_transfer_run = _check_json_command(
             checks,
             fake_env,
@@ -1690,6 +2670,81 @@ def run_validation() -> dict[str, Any]:
             checks,
             env,
             "diffd remote-change restore after consume",
+            ("diffd", "remote-change", "add", "Documents/shadow-download.pdf", "--execute"),
+        )
+        pushd_executor = _check_json_command(
+            checks,
+            fake_env,
+            "pushd transfer executor run",
+            ("pushd", "transfer", "executor-run", "--execute", "--consume-on-success"),
+        )
+        diffd_executor = _check_json_command(
+            checks,
+            fake_env,
+            "diffd transfer executor run",
+            ("diffd", "transfer", "executor-run", "--execute", "--consume-on-success"),
+        )
+        if (
+            pushd_executor.get("details", {}).get("records consumed") == 1
+            and pushd_executor.get("details", {}).get("real transfer automation gate status") == "closed"
+        ):
+            checks.append(CheckResult("pushd transfer executor guarded run", "ok", "fake transfer consumed queue"))
+        else:
+            checks.append(CheckResult("pushd transfer executor guarded run", "error", "executor run mismatch"))
+        if (
+            diffd_executor.get("details", {}).get("records consumed") == 1
+            and diffd_executor.get("details", {}).get("real transfer automation gate status") == "closed"
+        ):
+            checks.append(CheckResult("diffd transfer executor guarded run", "ok", "fake transfer consumed changes"))
+        else:
+            checks.append(CheckResult("diffd transfer executor guarded run", "error", "executor run mismatch"))
+        upload_origin_journal = state_dir / "pushd" / "upload-origin-journal.json"
+        upload_origin_records = _read_json(upload_origin_journal).get("records", []) if upload_origin_journal.exists() else []
+        if upload_origin_records and upload_origin_records[0].get("direction") == "upload":
+            checks.append(CheckResult("pushd upload origin journal", "ok", str(upload_origin_journal)))
+        else:
+            checks.append(CheckResult("pushd upload origin journal", "error", "missing upload-origin record"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd remote-change add upload echo",
+            (
+                "diffd",
+                "remote-change",
+                "add",
+                "Documents/shadow-upload.pdf",
+                "--reason",
+                "diff:createfile",
+                "--execute",
+            ),
+        )
+        upload_echo_preview = _check_json_command(
+            checks,
+            env,
+            "diffd upload echo suppression preview",
+            ("diffd", "preview"),
+        )
+        skipped = upload_echo_preview.get("details", {}).get("skipped download record details", [])
+        if skipped and skipped[0].get("reason") == "upload origin journal":
+            checks.append(CheckResult("diffd upload echo suppression", "ok", "upload echo skipped"))
+        else:
+            checks.append(CheckResult("diffd upload echo suppression", "error", "upload echo was not skipped"))
+        _check_json_command(
+            checks,
+            env,
+            "diffd remote-change remove upload echo",
+            ("diffd", "remote-change", "remove", "Documents/shadow-upload.pdf", "--execute"),
+        )
+        _check_json_command(
+            checks,
+            env,
+            "pushd queue restore after executor",
+            ("pushd", "queue", "add", "Documents/shadow-upload.pdf", "--execute"),
+        )
+        _check_json_command(
+            checks,
+            env,
+            "diffd remote-change restore after executor",
             ("diffd", "remote-change", "add", "Documents/shadow-download.pdf", "--execute"),
         )
 
@@ -1797,6 +2852,20 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.run.preview", "diffd run preview is ready")
         _check_action(checks, env, "pushd.gate", "pushd real-operation gate is closed")
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
+        _check_action(checks, env, "pushd.launchd.status", "pushd launchd status is")
+        _check_action(checks, env, "diffd.launchd.status", "diffd launchd status is")
+        _check_action(checks, env, "pushd.launchd.review", "pushd launchd human review is required")
+        _check_action(checks, env, "diffd.launchd.review", "diffd launchd human review is required")
+        _check_action(checks, env, "pushd.launchd.resident-plist.preview", "pushd launchd resident plist is gated")
+        _check_action(checks, env, "pushd.launchd.reload.preview", "pushd launchd reload is gated")
+        _check_action(checks, env, "diffd.launchd.resident-plist.preview", "diffd launchd resident plist is gated")
+        _check_action(checks, env, "diffd.launchd.reload.preview", "diffd launchd reload is gated")
+        _check_action(checks, env, "pushd.launchd.executor-plist.preview", "pushd launchd executor plist preview is ready")
+        _check_action(checks, env, "diffd.launchd.executor-plist.preview", "diffd launchd executor plist preview is ready")
+        _check_action(checks, env, "pushd.launchd.automation-plist.preview", "pushd launchd automation plist is gated")
+        _check_action(checks, env, "diffd.launchd.automation-reload.preview", "diffd launchd automation reload is gated")
+        _check_action(checks, env, "pushd.launchd.plist.preview", "pushd launchd plist preview is ready")
+        _check_action(checks, env, "diffd.launchd.plist.preview", "diffd launchd plist preview is ready")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-gate", "pushd fswatch resident gate is closed")
         _check_action(checks, fswatch_gate_env, "pushd.fswatch.resident-run.preview", "pushd fswatch resident execution is gated")
         _check_action(checks, env, "diffd.api-poll.long-poll-gate", "diffd pCloud API long-poll gate is closed")
@@ -1809,6 +2878,8 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "archive.old-monolith.gate", "old monolith archive gate is closed")
         _check_action(checks, env, "archive.old-monolith-run.preview", "old monolith archive execution is gated")
         _check_action(checks, env, "gates.status", "all execution gates closed")
+        _check_action(checks, env, "pushd.transfer.automation-gate", "pushd real transfer automation gate is closed")
+        _check_action(checks, env, "diffd.transfer.automation-gate", "diffd real transfer automation gate is closed")
         _check_action(checks, env, "pushd.transfer.consume.preview", "pushd transfer consume policy preview is ready")
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))

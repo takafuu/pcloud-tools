@@ -3,6 +3,7 @@
 .DS_Store
 __pycache__/
 *.pyc
+plan.md
 todo.md
 thread-status.md
 bisync_status.log

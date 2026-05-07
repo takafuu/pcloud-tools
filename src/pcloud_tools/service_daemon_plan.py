@@ -9,6 +9,8 @@ from typing import Any
 
 from .config import AppConfig, ConfigIssue
 from .daemon_state import DaemonState
+from .download_suppression import download_suppression_match, upload_origin_match
+from .manager_ignore import manager_ignore_match
 from .service_daemon_state import ServiceDaemonState
 from .sync_scope import SyncScopeInfo, sync_allowlist_info
 
@@ -53,6 +55,16 @@ class PlanUpdateResult:
     file: Path
     before_count: int
     after_count: int
+    issue: ConfigIssue | None = None
+
+
+@dataclass(frozen=True)
+class PlanAppendPolicyResult:
+    file: Path
+    before_count: int
+    after_count: int
+    appended: bool
+    skipped_reason: str
     issue: ConfigIssue | None = None
 
 
@@ -134,6 +146,19 @@ def _matches_exclude(path: str, excludes: tuple[str, ...]) -> bool:
     return False
 
 
+def _is_partial_transfer_path(path: str) -> bool:
+    return Path(path).name.endswith(".partial")
+
+
+def _is_local_upload_directory(config: AppConfig, record: PlanRecord) -> bool:
+    if record.action != "upload":
+        return False
+    try:
+        return (config.core_dir / record.path).is_dir()
+    except OSError:
+        return False
+
+
 def _record_payload(path: str, action: str, reason: str) -> dict[str, str]:
     return {"path": path, "action": action, "reason": reason}
 
@@ -150,6 +175,59 @@ def append_plan_record(path: Path, key_prefix: str, record: PlanRecord) -> PlanU
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n")
     return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
+
+
+def append_plan_record_with_policy(
+    path: Path,
+    key_prefix: str,
+    record: PlanRecord,
+    *,
+    max_records: int,
+) -> PlanAppendPolicyResult:
+    payload, issue = _read_json_list(path, key_prefix)
+    if issue:
+        return PlanAppendPolicyResult(
+            file=path,
+            before_count=0,
+            after_count=0,
+            appended=False,
+            skipped_reason="state read failed",
+            issue=issue,
+        )
+    before_count = len(payload)
+    for item in payload:
+        existing = _record_from_item(item, record.action)
+        if existing.path == record.path and existing.action == record.action:
+            return PlanAppendPolicyResult(
+                file=path,
+                before_count=before_count,
+                after_count=before_count,
+                appended=False,
+                skipped_reason="duplicate path/action",
+            )
+    if max_records >= 0 and before_count >= max_records:
+        return PlanAppendPolicyResult(
+            file=path,
+            before_count=before_count,
+            after_count=before_count,
+            appended=False,
+            skipped_reason="queue limit reached",
+            issue=ConfigIssue(
+                key=key_prefix,
+                level="warning",
+                message=f"plan state already has {before_count} records; limit is {max_records}",
+            ),
+        )
+    updated = [*payload, _record_payload(record.path, record.action, record.reason)]
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n")
+    return PlanAppendPolicyResult(
+        file=path,
+        before_count=before_count,
+        after_count=len(updated),
+        appended=True,
+        skipped_reason="",
+    )
 
 
 def clear_plan_records(path: Path, key_prefix: str) -> PlanUpdateResult:
@@ -242,6 +320,17 @@ def build_pushd_plan_from_records(
             excluded.append(PlanRecord(record.path, record.action, "outside allowlist"))
         elif _matches_exclude(record.path, config.default_excludes):
             excluded.append(PlanRecord(record.path, record.action, "default exclude"))
+        elif _is_partial_transfer_path(record.path):
+            excluded.append(PlanRecord(record.path, record.action, "partial transfer file"))
+        elif (ignore_match := manager_ignore_match(config, record.path)) and ignore_match.ignored:
+            excluded.append(PlanRecord(record.path, record.action, ignore_match.reason))
+        elif _is_local_upload_directory(config, record):
+            excluded.append(PlanRecord(record.path, record.action, "directory upload not supported"))
+        elif record.action == "upload" and (
+            suppressed_match := download_suppression_match(config, record.path)
+        )[0]:
+            _suppressed, reason, _journal_record = suppressed_match
+            excluded.append(PlanRecord(record.path, record.action, reason or "download suppression journal"))
         else:
             upload.append(record)
 
@@ -300,6 +389,15 @@ def build_diffd_plan_from_records(
             skipped_records.append(PlanRecord(record.path, record.action, "outside allowlist"))
         elif _matches_exclude(record.path, config.default_excludes):
             skipped_records.append(PlanRecord(record.path, record.action, "default exclude"))
+        elif _is_partial_transfer_path(record.path):
+            skipped_records.append(PlanRecord(record.path, record.action, "partial transfer file"))
+        elif (ignore_match := manager_ignore_match(config, record.path)) and ignore_match.ignored:
+            skipped_records.append(PlanRecord(record.path, record.action, ignore_match.reason))
+        elif record.action == "download" and record.reason == "diff:createfile" and (
+            upload_match := upload_origin_match(config, record.path)
+        )[0]:
+            _matched, reason, _journal_record = upload_match
+            skipped_records.append(PlanRecord(record.path, record.action, reason or "upload origin journal"))
         else:
             download_records.append(record)
 

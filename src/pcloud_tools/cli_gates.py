@@ -8,14 +8,57 @@ from typing import Any
 from .cli_archive import _old_monolith_gate_report
 from .cli_service_daemon import _diffd_api_long_poll_gate_report, _pushd_fswatch_resident_gate_report
 from .cli_sync import _sync_autosync_gate_report, _sync_migration_gate_report
-from .output import CommandReport, ReportIssue, render_report
-from .runtime import RuntimePaths
+from .output import CommandReport, ReportAction, ReportIssue, render_report
+from .runtime import RuntimePaths, action_entrypoint_command
 
 
 def _shell_join(value: object) -> str:
     if isinstance(value, (list, tuple)):
         return " ".join(str(part) for part in value)
     return str(value)
+
+
+def _xbar_escape(value: object) -> str:
+    return str(value).replace("\n", " ").replace("|", "/")
+
+
+def _xbar_status_label(status: str) -> str:
+    if status == "ok":
+        return "OK"
+    if status == "warning":
+        return "WARN"
+    return "ERR"
+
+
+def _xbar_action(action: ReportAction) -> str:
+    fields = [
+        f"bash={shlex.quote(action.command[0])}",
+        f"terminal={'true' if action.terminal else 'false'}",
+        f"refresh={'true' if action.refresh else 'false'}",
+    ]
+    for index, arg in enumerate(action.command[1:], start=1):
+        fields.append(f"param{index}={shlex.quote(arg)}")
+    return f"{_xbar_escape(action.label)} | {' '.join(fields)}"
+
+
+def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
+    return (action_entrypoint_command(paths), "action", action_id)
+
+
+def _gates_actions(paths: RuntimePaths) -> list[ReportAction]:
+    return [
+        ReportAction(id="gates.status", label="Refresh gates", command=_action_command(paths, "gates.status")),
+        ReportAction(id="pushd.status.refresh", label="Pushd status", command=_action_command(paths, "pushd.status.refresh")),
+        ReportAction(id="diffd.status.refresh", label="Diffd status", command=_action_command(paths, "diffd.status.refresh")),
+        ReportAction(id="sync.status.refresh", label="Sync status", command=_action_command(paths, "sync.status.refresh")),
+        ReportAction(
+            id="status.detail",
+            label="Open detailed status",
+            command=_action_command(paths, "status.detail"),
+            terminal=True,
+            refresh=False,
+        ),
+    ]
 
 
 def _command_example(env_assignment: str, parts: list[str]) -> str:
@@ -353,6 +396,7 @@ def _gates_status_report(args: argparse.Namespace, paths: RuntimePaths) -> Comma
         summary=f"{ready_read_only}/{len(reports)} gates complete-read-only; all execution gates closed",
         details=details,
         issues=issues,
+        actions=_gates_actions(paths),
     )
 
 
@@ -398,11 +442,55 @@ def _render_gates_human(report: CommandReport) -> str:
     return "\n".join(lines)
 
 
+def _render_gates_xbar(report: CommandReport) -> str:
+    details = report.details
+    lines = [
+        f"pCloud {_xbar_status_label(report.status)}",
+        "---",
+        _xbar_escape(report.summary),
+        _xbar_escape(
+            f"gates: complete={details.get('complete read-only approvals', '-')}; "
+            f"pending={details.get('pending gates', '-')}; total={details.get('gate count', '-')}"
+        ),
+        _xbar_escape(f"state writes: {details.get('state writes', '-')}"),
+        "---",
+        "gate summary:",
+    ]
+    gates = details.get("gates")
+    if isinstance(gates, list):
+        for item in gates:
+            if not isinstance(item, dict):
+                continue
+            blockers = item.get("blockers")
+            blocker_count = len(blockers) if isinstance(blockers, list) else 0
+            lines.append(
+                _xbar_escape(
+                    "- "
+                    f"{item.get('name', '-')}: "
+                    f"gate={item.get('gate status', '-')}; "
+                    f"can-run={item.get('can run', '-')}; "
+                    f"approval={item.get('approval status', '-')}; "
+                    f"blockers={blocker_count}"
+                )
+            )
+    if report.issues:
+        lines.append("---")
+        for issue in report.issues:
+            lines.append(f"{issue.level}: {_xbar_escape(issue.message)}")
+    if report.actions:
+        lines.append("---")
+        for action in report.actions:
+            lines.append(_xbar_action(action))
+    return "\n".join(lines)
+
+
 def cmd_gates_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _gates_status_report(args, paths)
     output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
     if output_format == "human":
         print(_render_gates_human(report))
+    elif output_format == "xbar":
+        print(_render_gates_xbar(report))
     else:
         print(render_report(report, output_format=output_format))
     return 0

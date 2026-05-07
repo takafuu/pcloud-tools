@@ -1,10 +1,18 @@
 from __future__ import annotations
 
 import argparse
+import sys
+from importlib import metadata
 from pathlib import Path
 
 from .autosync_runtime import read_autosync_state
-from .config import ConfigIssue, load_config, repair_allowlist_file, repair_env_file
+from .config import (
+    ConfigIssue,
+    load_config,
+    repair_allowlist_file,
+    repair_env_file,
+    repair_manager_ignore_file,
+)
 from .mount_ops import mount_layer_state, resolve_layers
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .runtime import RuntimePaths, action_entrypoint_command
@@ -20,6 +28,20 @@ from .sync_scope import scope_issues, sync_allowlist_info, sync_filter_file
 
 
 def add_status_doctor_parsers(subparsers: argparse._SubParsersAction) -> None:
+    info_parser = subparsers.add_parser("info", help="Show installed/runtime paths and scope.")
+    info_parser.add_argument(
+        "info_command",
+        nargs="?",
+        choices=("overview", "paths", "config"),
+        default="overview",
+        help="Info view to show.",
+    )
+    info_parser.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit structured JSON output.",
+    )
+
     status_parser = subparsers.add_parser("status", help="Show runtime status.")
     status_parser.add_argument(
         "--detail",
@@ -59,6 +81,7 @@ def _config_summary(paths: RuntimePaths) -> dict[str, str]:
         "state dir": str(config.state_dir),
         "log dir": str(config.log_dir),
         "allowlist": str(config.allowlist_file),
+        "manager ignore": str(config.manager_ignore_file),
         "core remote": config.core_remote,
         "vault layer": "enabled" if config.enable_vault_layer else "disabled",
         "crypt layer": "enabled" if config.enable_crypt_layer else "disabled",
@@ -130,7 +153,156 @@ def _status_actions(paths: RuntimePaths) -> list[ReportAction]:
             label="Daemon state",
             command=_action_command(paths, "daemon.status.refresh"),
         ),
+        ReportAction(
+            id="notify.chat.status",
+            label="Discord notify",
+            command=_action_command(paths, "notify.chat.status"),
+        ),
     ]
+
+
+def _package_version() -> str:
+    try:
+        return metadata.version("pcloud-tools")
+    except metadata.PackageNotFoundError:
+        return "unknown"
+
+
+def _path_entry(path: Path | str, purpose: str) -> str:
+    return f"{purpose}: {path}"
+
+
+def _redacted_state(value: str) -> str:
+    return "set (redacted)" if value else "unset"
+
+
+def _info_actions(paths: RuntimePaths) -> list[ReportAction]:
+    return [
+        ReportAction(
+            id="info.paths",
+            label="Show paths",
+            command=(_entrypoint_command(paths), "info", "paths"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id="status.detail",
+            label="Open detailed status",
+            command=_action_command(paths, "status.detail"),
+            terminal=True,
+            refresh=False,
+        ),
+        ReportAction(
+            id="doctor",
+            label="Run doctor",
+            command=_action_command(paths, "doctor"),
+            terminal=True,
+            refresh=False,
+        ),
+    ]
+
+
+def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    scope_info = sync_allowlist_info(config)
+    autosync = read_autosync_state(config)
+    issues = _sort_issues(list(load_result.issues) + scope_issues(scope_info))
+    command = f"info {args.info_command}" if args.info_command != "overview" else "info"
+    mode = "dev" if paths.dev_mode else "default"
+
+    if args.info_command == "paths":
+        details = {
+            "paths": [
+                _path_entry(_entrypoint_command(paths), "entrypoint"),
+                _path_entry(Path(__file__).resolve().parents[1], "implementation package"),
+                _path_entry(paths.workspace_root, "workspace root"),
+                _path_entry(paths.config_dir, "config directory"),
+                _path_entry(paths.env_file, "env file"),
+                _path_entry(config.core_dir, "local sync root"),
+                _path_entry(config.allowlist_file, "allowlist file"),
+                _path_entry(config.manager_ignore_file, "manager ignore file"),
+                _path_entry(config.state_dir, "runtime state directory"),
+                _path_entry(config.log_dir, "runtime log directory"),
+                _path_entry(sync_filter_file(config), "generated rclone filter file"),
+                _path_entry(config.autosync_plist, "autosync LaunchAgent plist"),
+                _path_entry(config.vault_mount_dir, "vault mount directory"),
+                _path_entry(config.crypt_mount_dir, "crypt mount directory"),
+            ],
+            "state policy": "runtime state stays local under the configured state directory",
+            "content policy": "document/media allowlist only; source/tool roots are out of scope",
+        }
+    elif args.info_command == "config":
+        details = {
+            "config source": load_result.source,
+            "env file": str(paths.env_file),
+            "core dir": str(config.core_dir),
+            "core remote": config.core_remote,
+            "remote": config.remote,
+            "vault remote": config.vault_remote,
+            "crypt remote": config.crypt_remote,
+            "allowlist file": str(config.allowlist_file),
+            "allowlist status": scope_info.allowlist_status,
+            "allowlist entries": list(scope_info.entries),
+            "manager ignore file": str(config.manager_ignore_file),
+            "default excludes": list(config.default_excludes),
+            "state dir": str(config.state_dir),
+            "log dir": str(config.log_dir),
+            "rclone bin": config.rclone_bin,
+            "autosync label": config.autosync_label,
+            "autosync plist": str(config.autosync_plist),
+            "pushd debounce seconds": config.pushd_debounce_seconds,
+            "pushd queue limit": config.pushd_queue_limit,
+            "diffd poll interval seconds": config.diffd_poll_interval_seconds,
+            "diffd batch limit": config.diffd_batch_limit,
+            "transfer exec timeout seconds": config.transfer_exec_timeout_seconds,
+            "download suppression ttl seconds": config.download_suppression_ttl_seconds,
+            "pCloud API base URL": config.pcloud_api_base_url,
+            "pCloud API auth parameter": config.pcloud_api_auth_param,
+            "pCloud API token": _redacted_state(config.pcloud_api_token),
+            "chat notify enabled": "yes" if config.chat_notify_enabled else "no",
+            "chat notify command": config.chat_notify_cmd,
+            "gate env values": "redacted from info; use gates/status commands for gate state",
+        }
+    else:
+        details = {
+            "version": _package_version(),
+            "mode": mode,
+            "python": sys.executable,
+            "entrypoint": _entrypoint_command(paths),
+            "implementation package": str(Path(__file__).resolve().parents[1]),
+            "workspace": str(paths.workspace_root),
+            "config source": load_result.source,
+            "config dir": str(paths.config_dir),
+            "env file": str(paths.env_file),
+            "state dir": str(config.state_dir),
+            "log dir": str(config.log_dir),
+            "core dir": str(config.core_dir),
+            "core remote": config.core_remote,
+            "allowlist": str(config.allowlist_file),
+            "allowlist status": scope_info.allowlist_status,
+            "allowlist entries": scope_info.allowlist_count,
+            "manager ignore": str(config.manager_ignore_file),
+            "filter file": str(sync_filter_file(config)),
+            "autosync state": autosync.state,
+            "autosync label": autosync.label,
+            "autosync plist": autosync.plist,
+            "pushd state dir": str(config.state_dir / "pushd"),
+            "diffd state dir": str(config.state_dir / "diffd"),
+            "daemon state dir": str(config.state_dir / "daemon"),
+            "log policy": "logs stay local; reports redact pCloud API tokens",
+            "sensitive data policy": "secrets are read on demand and redacted in info output",
+            "content policy": "document/media allowlist only; normal sync/resync remains separately gated",
+        }
+
+    return CommandReport(
+        command=command,
+        status=_status_from_issues(issues),
+        summary=f"pcloud-manager runtime info ({mode})",
+        details=details,
+        issues=_report_issues(issues),
+        actions=_info_actions(paths),
+    )
 
 
 def _exit_code_for_report(report: CommandReport) -> int:
@@ -324,6 +496,12 @@ def cmd_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     return _exit_code_for_report(report)
 
 
+def cmd_info(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _info_report(args, paths)
+    print(render_report(report, as_json=args.json))
+    return _exit_code_for_report(report)
+
+
 def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[CommandReport, bool]:
     repaired_items: list[str] = []
     if args.repair:
@@ -338,6 +516,10 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         repair_allowlist_file(load_result.config, paths)
         if allowlist_missing and load_result.config.allowlist_file.exists():
             repaired_items.append(f"allowlist file: {load_result.config.allowlist_file}")
+        ignore_missing = not load_result.config.manager_ignore_file.exists()
+        repair_manager_ignore_file(load_result.config)
+        if ignore_missing and load_result.config.manager_ignore_file.exists():
+            repaired_items.append(f"manager ignore file: {load_result.config.manager_ignore_file}")
         load_result = load_config(paths)
 
     config = load_result.config
@@ -379,6 +561,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "config source": load_result.source,
         "core dir": str(config.core_dir),
         "allowlist": str(config.allowlist_file),
+        "manager ignore": str(config.manager_ignore_file),
         "core remote": config.core_remote,
         "vault layer": "enabled" if config.enable_vault_layer else "disabled",
         "crypt layer": "enabled" if config.enable_crypt_layer else "disabled",

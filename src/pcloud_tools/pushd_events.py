@@ -111,8 +111,14 @@ def parse_fswatch_fixture(path: Path) -> PushdFswatchParseResult:
 def fswatch_events_to_records(events: tuple[PushdFswatchEvent, ...]) -> tuple[PlanRecord, ...]:
     records: list[PlanRecord] = []
     for event in events:
+        normalized_flags = {flag.strip().lower().replace("_", "-") for flag in event.flags}
+        action = "upload"
+        if any("remove" in flag or "delete" in flag for flag in normalized_flags):
+            action = "delete"
+        elif any("rename" in flag or "move" in flag for flag in normalized_flags):
+            action = "rename"
         reason = "fswatch"
         if event.flags:
             reason = f"fswatch:{','.join(event.flags)}"
-        records.append(PlanRecord(path=event.path, action="upload", reason=reason))
+        records.append(PlanRecord(path=event.path, action=action, reason=reason))
     return tuple(records)

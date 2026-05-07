@@ -48,9 +48,11 @@ def _metadata_path(item: dict[str, Any], folder_paths: dict[str, str]) -> str:
     parent_id = _string(metadata.get("parentfolderid"), "0")
     if parent_id == "0":
         return normalize_plan_path(name)
-    parent_path = folder_paths.get(parent_id)
-    if not parent_path:
+    if parent_id not in folder_paths:
         return ""
+    parent_path = folder_paths[parent_id]
+    if not parent_path:
+        return normalize_plan_path(name)
     return normalize_plan_path(f"{parent_path}/{name}")
 
 

@@ -50,11 +50,14 @@ class AppConfig:
     state_dir: Path
     log_dir: Path
     allowlist_file: Path
+    manager_ignore_file: Path
     default_excludes: tuple[str, ...]
     autosync_label: str
     autosync_plist: Path
     indexer_bin: Path
     notify_bin: Path
+    chat_notify_enabled: bool
+    chat_notify_cmd: str
     rclone_bin: str
     transfer_execution_gate: str
     pushd_fswatch_resident_gate: str
@@ -62,6 +65,7 @@ class AppConfig:
     autosync_launchd_gate: str
     sync_migration_gate: str
     transfer_exec_timeout_seconds: int
+    download_suppression_ttl_seconds: int
     pushd_debounce_seconds: int
     pushd_queue_limit: int
     diffd_poll_interval_seconds: int
@@ -159,6 +163,7 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         "PCLOUD_TOOLS_STATE_DIR": str(base_state_dir),
         "PCLOUD_TOOLS_LOG_DIR": str(base_log_dir),
         "PCLOUD_TOOLS_ALLOWLIST_FILE": str(home / "p-core" / ".pcloud-sync-allowlist"),
+        "PCLOUD_TOOLS_MANAGER_IGNORE_FILE": str(home / "p-core" / ".pcloudmanagerignore"),
         "PCLOUD_TOOLS_DEFAULT_EXCLUDES": "config/dotfiles/.ssh/agent/**,.DS_Store,**/.DS_Store",
         "PCLOUD_TOOLS_AUTOSYNC_LABEL": "com.takafumi.pcloud-bisync",
         "PCLOUD_TOOLS_AUTOSYNC_PLIST": str(
@@ -166,6 +171,8 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         ),
         "PCLOUD_TOOLS_INDEXER_BIN": str(home / ".zsh/functions/pcloud-indexer.py"),
         "PCLOUD_TOOLS_NOTIFY_BIN": str(home / "bin/notify"),
+        "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED": "0",
+        "PCLOUD_TOOLS_CHAT_NOTIFY_CMD": str(home / "bin/notify") + " send --to discord {message}",
         "PCLOUD_TOOLS_RCLONE_BIN": "rclone",
         "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE": "",
         "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "",
@@ -173,6 +180,7 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE": "",
         "PCLOUD_TOOLS_SYNC_MIGRATION_GATE": "",
         "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS": "5",
+        "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS": "86400",
         "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS": "3",
         "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT": "1000",
         "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS": "60",
@@ -186,6 +194,7 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
     if paths.dev_mode:
         defaults["PCLOUD_TOOLS_CORE_DIR"] = str(paths.workspace_root)
         defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"] = str(paths.workspace_root / ".pcloud-sync-allowlist")
+        defaults["PCLOUD_TOOLS_MANAGER_IGNORE_FILE"] = str(paths.workspace_root / ".pcloudmanagerignore")
         defaults["PCLOUD_TOOLS_VAULT_DIR"] = str(paths.workspace_root / ".dev-state/links/vault")
         defaults["PCLOUD_TOOLS_CRYPT_DIR"] = str(paths.workspace_root / ".dev-state/links/crypt")
         defaults["PCLOUD_TOOLS_AUTOSYNC_LABEL"] = "com.example.pcloud-bisync.dev"
@@ -194,6 +203,9 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
         )
         defaults["PCLOUD_TOOLS_INDEXER_BIN"] = str(paths.workspace_root / "scripts/pcloud-indexer.py")
         defaults["PCLOUD_TOOLS_NOTIFY_BIN"] = str(paths.workspace_root / "scripts/notify")
+        defaults["PCLOUD_TOOLS_CHAT_NOTIFY_CMD"] = (
+            str(paths.workspace_root / "scripts/notify") + " send --to discord {message}"
+        )
 
     return defaults
 
@@ -259,6 +271,11 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
             allowlist_file=_path_value(
                 "PCLOUD_TOOLS_ALLOWLIST_FILE", values, defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"]
             ),
+            manager_ignore_file=_path_value(
+                "PCLOUD_TOOLS_MANAGER_IGNORE_FILE",
+                values,
+                defaults["PCLOUD_TOOLS_MANAGER_IGNORE_FILE"],
+            ),
             default_excludes=_csv_value(
                 "PCLOUD_TOOLS_DEFAULT_EXCLUDES",
                 values,
@@ -275,6 +292,15 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
             ),
             notify_bin=_path_value(
                 "PCLOUD_TOOLS_NOTIFY_BIN", values, defaults["PCLOUD_TOOLS_NOTIFY_BIN"]
+            ),
+            chat_notify_enabled=_bool_from_value(
+                "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED",
+                values["PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED"],
+            ),
+            chat_notify_cmd=_string_value(
+                "PCLOUD_TOOLS_CHAT_NOTIFY_CMD",
+                values,
+                defaults["PCLOUD_TOOLS_CHAT_NOTIFY_CMD"],
             ),
             rclone_bin=_string_value("PCLOUD_TOOLS_RCLONE_BIN", values, defaults["PCLOUD_TOOLS_RCLONE_BIN"]),
             transfer_execution_gate=_string_value(
@@ -305,6 +331,10 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
             transfer_exec_timeout_seconds=_int_from_value(
                 "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
                 values["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"],
+            ),
+            download_suppression_ttl_seconds=_int_from_value(
+                "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS",
+                values["PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS"],
             ),
             pushd_debounce_seconds=_int_from_value(
                 "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS",
@@ -374,11 +404,14 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
         state_dir=Path(defaults["PCLOUD_TOOLS_STATE_DIR"]).expanduser(),
         log_dir=Path(defaults["PCLOUD_TOOLS_LOG_DIR"]).expanduser(),
         allowlist_file=Path(defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"]).expanduser(),
+        manager_ignore_file=Path(defaults["PCLOUD_TOOLS_MANAGER_IGNORE_FILE"]).expanduser(),
         default_excludes=tuple(defaults["PCLOUD_TOOLS_DEFAULT_EXCLUDES"].split(",")),
         autosync_label=defaults["PCLOUD_TOOLS_AUTOSYNC_LABEL"],
         autosync_plist=Path(defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"]).expanduser(),
         indexer_bin=Path(defaults["PCLOUD_TOOLS_INDEXER_BIN"]).expanduser(),
         notify_bin=Path(defaults["PCLOUD_TOOLS_NOTIFY_BIN"]).expanduser(),
+        chat_notify_enabled=False,
+        chat_notify_cmd=defaults["PCLOUD_TOOLS_CHAT_NOTIFY_CMD"],
         rclone_bin=defaults["PCLOUD_TOOLS_RCLONE_BIN"],
         transfer_execution_gate=defaults["PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"],
         pushd_fswatch_resident_gate=defaults["PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"],
@@ -386,6 +419,7 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
         autosync_launchd_gate=defaults["PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"],
         sync_migration_gate=defaults["PCLOUD_TOOLS_SYNC_MIGRATION_GATE"],
         transfer_exec_timeout_seconds=int(defaults["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"]),
+        download_suppression_ttl_seconds=int(defaults["PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS"]),
         pushd_debounce_seconds=int(defaults["PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS"]),
         pushd_queue_limit=int(defaults["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"]),
         diffd_poll_interval_seconds=int(defaults["PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS"]),
@@ -437,6 +471,7 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
 
     for key, value in (
         ("PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", config.transfer_exec_timeout_seconds),
+        ("PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS", config.download_suppression_ttl_seconds),
         ("PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", config.pushd_debounce_seconds),
         ("PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", config.diffd_poll_interval_seconds),
         ("PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS", config.pcloud_api_timeout_seconds),
@@ -481,6 +516,15 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
                 key="PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM",
                 level="error",
                 message="pCloud API auth parameter must be auth or access_token",
+            )
+        )
+
+    if config.chat_notify_enabled and "{message}" not in config.chat_notify_cmd:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_CHAT_NOTIFY_CMD",
+                level="error",
+                message="chat notify command must include {message} placeholder when enabled",
             )
         )
 
@@ -551,6 +595,14 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
                 message=f"allowlist path is not a file: {config.allowlist_file}",
             )
         )
+    if config.manager_ignore_file.exists() and not config.manager_ignore_file.is_file():
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_MANAGER_IGNORE_FILE",
+                level="error",
+                message=f"manager ignore path is not a file: {config.manager_ignore_file}",
+            )
+        )
 
     return issues
 
@@ -582,12 +634,16 @@ def render_env_template(paths: RuntimePaths) -> str:
         "PCLOUD_TOOLS_AUTOSYNC_LABEL",
         "PCLOUD_TOOLS_AUTOSYNC_PLIST",
         "PCLOUD_TOOLS_ALLOWLIST_FILE",
+        "PCLOUD_TOOLS_MANAGER_IGNORE_FILE",
         "PCLOUD_TOOLS_DEFAULT_EXCLUDES",
         "PCLOUD_TOOLS_INDEXER_BIN",
         "PCLOUD_TOOLS_NOTIFY_BIN",
+        "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED",
+        "PCLOUD_TOOLS_CHAT_NOTIFY_CMD",
         "PCLOUD_TOOLS_RCLONE_BIN",
         "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",
         "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
+        "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS",
         "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS",
         "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT",
         "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS",
@@ -625,3 +681,50 @@ def repair_allowlist_file(config: AppConfig, paths: RuntimePaths) -> Path:
         return allowlist_file
     allowlist_file.write_text(render_allowlist_template(paths))
     return allowlist_file
+
+
+def render_manager_ignore_template() -> str:
+    return (
+        "# pcloud-manager ignore rules.\n"
+        "# Syntax is gitignore-like. Lines beginning with ! are exception allow rules.\n"
+        "# Example: .env is ignored, but !.env.sample allows .env.sample to sync.\n"
+        "\n"
+        "# macOS and hidden temporary files\n"
+        ".DS_Store\n"
+        "**/.DS_Store\n"
+        "._*\n"
+        "**/._*\n"
+        ".*\n"
+        "**/.*\n"
+        "\n"
+        "# Secrets/state stay local by default\n"
+        ".env\n"
+        "**/.env\n"
+        "\n"
+        "# Transfer and editor temporary files\n"
+        "*.download\n"
+        "*.tmp\n"
+        "*.part\n"
+        "*.swp\n"
+        "\n"
+        "# Hidden/system directories\n"
+        "**/.Trashes/**\n"
+        "**/.Spotlight-V100/**\n"
+        "\n"
+        "# Exception allow rules for shareable dot samples/configs\n"
+        "!.env.sample\n"
+        "!**/.env.sample\n"
+        "!.editorconfig\n"
+        "!**/.editorconfig\n"
+        "!.keep\n"
+        "!**/.keep\n"
+    )
+
+
+def repair_manager_ignore_file(config: AppConfig) -> Path:
+    ignore_file = config.manager_ignore_file
+    ignore_file.parent.mkdir(parents=True, exist_ok=True)
+    if ignore_file.exists():
+        return ignore_file
+    ignore_file.write_text(render_manager_ignore_template())
+    return ignore_file
