@@ -21,6 +21,7 @@ pcloud-manager diffd status --json
 pcloud-manager diffd preview --json
 pcloud-manager daemon status --json
 pcloud-manager gates status --json
+pcloud-manager mode status --json
 ```
 
 追加で読むとよいもの:
@@ -31,7 +32,119 @@ pcloud-manager notify status --json
 
 `notify status --json` は read-only なので、30 秒 interval で読んでよい。現行 `COMMANDS` にはまだ `notify` がない。
 
+`mode status --json` も read-only なので、xbar plugin は最初にこれを読む。`current mode` を global UI 分岐の正本にする。
+
 互換用に `pushd status --xbar` / `diffd status --xbar` / `notify status --xbar` / `gates status --xbar` もあるが、統合 plugin 本体では JSON のままでよい。
+
+## Mode 別の xbar 表示
+
+`pcloud-manager mode status --json` の `details.current mode` で menu bar title と menu body を切り替える。
+
+推奨分岐:
+
+- `daemon`: 通常表示。pushd/diffd 中心の現行表示を使う。
+- `pause-or-maintenance`: maintenance/bisync 準備表示。daemon 操作を隠す。
+- `bisync-active-unmanaged`: bisync が実際に loaded に見えている状態。bisync 表示に寄せる。
+- `mixed-unsafe`: daemon と bisync が同時に見えている危険状態。通常操作をほぼ隠す。
+
+menu bar title は非 daemon で反転表示する。xbar 側で ANSI escape が通るならこれでよい。
+
+```sh
+reverse_on="$(printf '\033[7m')"
+reverse_off="$(printf '\033[0m')"
+
+case "$current_mode" in
+  daemon)
+    title="pCloud OK"
+    ;;
+  pause-or-maintenance)
+    title="${reverse_on}pCloud MAINT${reverse_off}"
+    ;;
+  bisync-active-unmanaged)
+    title="${reverse_on}pCloud BISYNC${reverse_off}"
+    ;;
+  mixed-unsafe)
+    title="${reverse_on}pCloud UNSAFE${reverse_off}"
+    ;;
+  *)
+    title="${reverse_on}pCloud MODE?${reverse_off}"
+    ;;
+esac
+```
+
+もし xbar の menu bar title で ANSI escape が効かない環境だった場合は、fallback として `pCloud MAINT`, `pCloud BISYNC`, `pCloud UNSAFE` のように大文字 label を強く出す。
+
+### daemon mode
+
+現行通り。
+
+- global status
+- pushd activity / queue / stale
+- diffd activity / remote changes
+- gates
+- notify
+- mount / umount
+
+### pause-or-maintenance / bisync-active-unmanaged
+
+daemon 前提の操作は menu から消す。表示するのは maintenance 中に必要な最小限だけにする。
+
+出すもの:
+
+- `mode status`
+- `sync status`
+- `sync progress`
+- vault mount / umount
+- crypt mount / umount
+- `mode plan daemon`
+- `mode switch daemon` は `terminal=true`
+- `mode plan pause`
+
+消すもの:
+
+- pushd preview / transfer / launchd
+- diffd preview / transfer / launchd
+- queue cleanup
+- daemon executor 系
+- daemon 前提の gated action
+
+`maintenance` は内部 mode 名ではなく、実装上は `pause-or-maintenance` として見える可能性がある。xbar 表示上は `MAINT` または `BISYNC` として扱ってよい。ただし `maintenance` は「bisync を使う準備状態」であって、bisync 自体を自動起動している意味ではない。
+
+### mixed-unsafe
+
+危険状態なので、menu body はさらに絞る。
+
+出すもの:
+
+- `mode status`
+- `mode plan pause`
+- `sync status`
+- pushd/diffd/sync の read-only status だけ必要なら deep menu に置く
+
+出さないもの:
+
+- transfer 系
+- launchd reload/register/switch 実行系
+- queue cleanup
+- notify test 以外の操作系
+
+`mixed-unsafe` ではユーザーを `pause` へ誘導する。xbar 側で自動実行はしない。
+
+## Mode 用 COMMANDS 追加
+
+現行 plugin の JSON command map に `mode` を足す。
+
+```py
+"mode": [PCLOUD_MANAGER, "mode", "status", "--json"],
+```
+
+`first_failure()` の対象にも入れる。
+
+```py
+for name in ("status", "mode", "sync", "pushd", "diffd", "daemon", "gates", "notify"):
+```
+
+ただし `mode` が daemon 以外を返すこと自体は failure ではない。`mixed-unsafe` だけは top line warning/error として強く表示する。
 
 ## Menu への足し方
 

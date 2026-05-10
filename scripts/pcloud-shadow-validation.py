@@ -2850,6 +2850,10 @@ def run_validation() -> dict[str, Any]:
 
         _check_action(checks, env, "pushd.run.preview", "pushd run preview is ready")
         _check_action(checks, env, "diffd.run.preview", "diffd run preview is ready")
+        _check_action(checks, env, "mode.status.refresh", "pcloud-manager mode is")
+        _check_action(checks, env, "mode.plan.daemon", "mode switch to daemon is")
+        _check_action(checks, env, "mode.plan.maintenance", "mode switch to maintenance is")
+        _check_action(checks, env, "mode.plan.pause", "mode switch to pause is")
         _check_action(checks, env, "pushd.gate", "pushd real-operation gate is closed")
         _check_action(checks, env, "diffd.gate", "diffd real-operation gate is closed")
         _check_action(checks, env, "pushd.launchd.status", "pushd launchd status is")
@@ -2884,6 +2888,8 @@ def run_validation() -> dict[str, Any]:
         _check_action(checks, env, "diffd.transfer.consume.preview", "diffd transfer consume policy preview is ready")
         _check_json_command(checks, env, "status", ("status",))
         _check_json_command(checks, env, "doctor", ("doctor",))
+        _check_json_command(checks, env, "mode status", ("mode", "status"))
+        _check_json_command(checks, env, "mode plan maintenance", ("mode", "plan", "maintenance"))
         _check_json_command(checks, env, "daemon status", ("daemon", "status"))
 
         failed = [check for check in checks if check.status != "ok"]

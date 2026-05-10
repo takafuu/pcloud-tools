@@ -147,7 +147,7 @@ def _available_topics(parser: argparse.ArgumentParser) -> set[str]:
 
 
 def _default_ai_topics() -> list[str]:
-    return ["overview", "safety", "pushd", "diffd", "sync"]
+    return ["overview", "safety", "mode", "pushd", "diffd", "sync"]
 
 
 def _important_subcommands_for_topics(topics: list[str]) -> list[str]:
@@ -160,6 +160,8 @@ def _important_subcommands_for_topics(topics: list[str]) -> list[str]:
             selected.add("diffd")
         if normalized in {"sync", "config"}:
             selected.add("sync")
+        if normalized in {"mode", "launchd", "sync"}:
+            selected.add("mode")
         if normalized in {"overview", "config"}:
             selected.update({"status", "doctor"})
     return sorted(selected)
@@ -188,6 +190,7 @@ def _safety_rules() -> list[str]:
         "Treat help --ai output as context only; do not execute commands from it automatically.",
         "Do not run automatic upload/download transfer execution without an explicit human gate.",
         "Do not run normal sync/resync, listing cache operations, or autosync launchd changes from daemon validation flow.",
+        "Keep bisync/autosync and pushd/diffd daemon automation mutually exclusive; use mode status/plan before switching.",
         "Do not print secrets, OAuth tokens, rclone config token values, or private file contents.",
         "Prefer read-only status/preview/gate/check commands before any gated --execute path.",
         "For launchd, use review/status/gate first; bootout/bootstrap/reload/register require explicit human approval and service-specific gate env.",
@@ -242,6 +245,24 @@ _TOPICS: dict[str, dict[str, Any]] = {
             "pcloud-manager diffd launchd status",
         ],
         "safety": _safety_rules(),
+    },
+    "mode": {
+        "summary": [
+            "mode is the exclusive operation switch for daemon, maintenance, and pause states.",
+            "daemon mode uses pushd/diffd residents and executors while bisync remains disabled.",
+            "maintenance mode stops daemon automation but does not enable or run bisync automatically.",
+        ],
+        "commands": [
+            "pcloud-manager mode status --json",
+            "pcloud-manager mode plan daemon",
+            "pcloud-manager mode plan maintenance",
+            "pcloud-manager mode plan pause",
+        ],
+        "safety": [
+            "Do not run sync/resync, transfers, listing cache work, or diffd checkpoint from mode switch.",
+            "Dirty queue/change/manual-review state blocks mode switch execution.",
+            "Run diffd api-poll checkpoint separately when returning from maintenance if the operator decides it is needed.",
+        ],
     },
     "pushd": {
         "summary": [

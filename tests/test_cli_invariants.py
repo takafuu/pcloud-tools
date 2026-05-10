@@ -141,6 +141,32 @@ def _install_fake_rclone(env: dict[str, str]) -> Path:
     return fake_log
 
 
+def _install_fake_mode_launchctl(tmp_path: Path, extra_script: str = "") -> tuple[Path, Path, dict[str, str]]:
+    bin_dir = tmp_path / "mode-bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    log = tmp_path / "mode-launchctl.log"
+    fake_launchctl = bin_dir / "launchctl"
+    fake_launchctl.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(log))}\n"
+        f"{extra_script}\n"
+        "if [ \"$1\" = \"print\" ]; then\n"
+        "  case \"$2\" in\n"
+        "    *pcloud-bisync*) exit 113 ;;\n"
+        "    *) printf 'state = not running\\nruns = 3\\n'; exit 0 ;;\n"
+        "  esac\n"
+        "fi\n"
+        "if [ \"$1\" = \"bootout\" ]; then\n"
+        "  case \"$2\" in\n"
+        "    *pcloud-bisync*) printf 'Boot-out failed: 3: No such process\\n' >&2; exit 3 ;;\n"
+        "  esac\n"
+        "fi\n"
+        "exit 0\n"
+    )
+    fake_launchctl.chmod(0o755)
+    return fake_launchctl, log, {"PATH": f"{bin_dir}:{os.environ.get('PATH', '')}"}
+
+
 def _install_real_rclone_stub(env: dict[str, str]) -> Path:
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     bin_dir = workspace / ".dev-state" / "real-bin"
@@ -181,6 +207,163 @@ def _xbar_bash_values(output: str) -> list[str]:
             if field.startswith("bash="):
                 values.append(field.removeprefix("bash="))
     return values
+
+
+def test_mode_status_infers_daemon_with_bisync_unloaded(tmp_path: Path) -> None:
+    _fake_launchctl, log, extra_env = _install_fake_mode_launchctl(tmp_path)
+    result = _run_cli(tmp_path, "mode", "status", "--json", extra_env=extra_env)
+
+    assert result.returncode == 0, result.stderr
+    payload = _payload(result)
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["summary"] == "pcloud-manager mode is daemon"
+    details = payload["details"]
+    assert details["current mode"] == "daemon"
+    assert details["bisync loaded"] == "no"
+    assert details["daemon services loaded"] == "yes"
+    assert details["state writes"] == "none"
+    assert "print gui/" in log.read_text()
+
+
+def test_mode_switch_refuses_dirty_pushd_queue(tmp_path: Path) -> None:
+    _fake_launchctl, log, extra_env = _install_fake_mode_launchctl(tmp_path)
+    env = _base_env(tmp_path, extra_env)
+    queue = _state_dir(env) / "pushd" / "queue.json"
+    queue.parent.mkdir(parents=True, exist_ok=True)
+    queue.write_text(json.dumps([{"path": "Documents/dirty.txt", "action": "upload"}]))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "mode",
+            "switch",
+            "maintenance",
+            "--execute",
+            "--operator-reviewed-mode-plan",
+            "--reviewer-approved-exclusive-policy",
+            "--reviewer-approved-launchd-policy",
+            "--reviewer-approved-rollback-policy",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**env, "PCLOUD_TOOLS_MODE_SWITCH_GATE": "operator-approved-mode-switch-v1"},
+    )
+
+    assert result.returncode == 1
+    payload = _payload(result)
+    assert payload["status"] == "error"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["launchctl execution"] == "no"
+    assert any(issue["key"] == "PCLOUD_TOOLS_MODE_DIRTY_STATE" for issue in payload["issues"])
+    assert "disable gui/" not in log.read_text()
+
+
+def test_mode_switch_refuses_active_rclone_bisync_lock(tmp_path: Path) -> None:
+    _fake_launchctl, log, extra_env = _install_fake_mode_launchctl(tmp_path)
+    env = _base_env(tmp_path, extra_env)
+
+    def encode(value: str) -> str:
+        return value.replace("/", "_").replace(":", "_")
+
+    lock_dir = Path(env["XDG_CACHE_HOME"]) / "rclone" / "bisync"
+    lock_dir.mkdir(parents=True, exist_ok=True)
+    lock = lock_dir / f"local_{encode(env['PCLOUD_TOOLS_WORKSPACE_ROOT'])}..{encode('pcloud:core')}.lck"
+    lock.write_text(json.dumps({"PID": os.getpid()}))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "mode",
+            "switch",
+            "maintenance",
+            "--execute",
+            "--operator-reviewed-mode-plan",
+            "--reviewer-approved-exclusive-policy",
+            "--reviewer-approved-launchd-policy",
+            "--reviewer-approved-rollback-policy",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env={**env, "PCLOUD_TOOLS_MODE_SWITCH_GATE": "operator-approved-mode-switch-v1"},
+    )
+
+    assert result.returncode == 1
+    payload = _payload(result)
+    dirty = payload["details"]["dirty state"]
+    assert dirty["rclone bisync lock status"] == "present"
+    assert dirty["rclone bisync lock process active"] == "yes"
+    assert any(issue["key"] == "PCLOUD_TOOLS_MODE_DIRTY_STATE" for issue in payload["issues"])
+    assert "disable gui/" not in log.read_text()
+
+
+def test_mode_switch_refuses_closed_gate(tmp_path: Path) -> None:
+    _fake_launchctl, log, extra_env = _install_fake_mode_launchctl(tmp_path)
+    result = _run_cli(
+        tmp_path,
+        "mode",
+        "switch",
+        "maintenance",
+        "--execute",
+        "--operator-reviewed-mode-plan",
+        "--reviewer-approved-exclusive-policy",
+        "--reviewer-approved-launchd-policy",
+        "--reviewer-approved-rollback-policy",
+        "--json",
+        extra_env=extra_env,
+    )
+
+    assert result.returncode == 1
+    payload = _payload(result)
+    assert payload["status"] == "error"
+    assert payload["details"]["state writes"] == "none"
+    assert payload["details"]["launchctl execution"] == "no"
+    assert any(issue["key"] == "PCLOUD_TOOLS_MODE_SWITCH_APPROVAL" for issue in payload["issues"])
+    assert "print gui/" in log.read_text()
+    assert "disable gui/" not in log.read_text()
+
+
+def test_mode_switch_executes_fake_launchctl_and_records_state(tmp_path: Path) -> None:
+    _fake_launchctl, log, extra_env = _install_fake_mode_launchctl(tmp_path)
+    result = _run_cli(
+        tmp_path,
+        "mode",
+        "switch",
+        "maintenance",
+        "--execute",
+        "--operator-reviewed-mode-plan",
+        "--reviewer-approved-exclusive-policy",
+        "--reviewer-approved-launchd-policy",
+        "--reviewer-approved-rollback-policy",
+        "--json",
+        extra_env={
+            **extra_env,
+            "PCLOUD_TOOLS_MODE_SWITCH_GATE": "operator-approved-mode-switch-v1",
+        },
+    )
+
+    assert result.returncode == 0, result.stderr
+    payload = _payload(result)
+    assert payload["status"] in {"ok", "warning"}
+    assert payload["summary"] == "mode switch to maintenance completed"
+    details = payload["details"]
+    assert details["state writes"] == "mode switch state only"
+    assert details["launchctl execution"] == "yes"
+    assert any(result["tolerated"] for result in details["launchctl results"])
+    launchctl_log = log.read_text()
+    assert "disable gui/" in launchctl_log
+    assert "bootstrap gui/" not in launchctl_log
+    state_file = tmp_path / "state" / "mode" / "last-switch.json"
+    assert json.loads(state_file.read_text())["mode"] == "maintenance"
 
 
 def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Path) -> None:

@@ -9,11 +9,13 @@ Current focus:
 - preserve space for compatibility with the existing `pcloud-manager` workflow
 - move machine configuration into `.env` plus a central Python config module
 - operate `pcloud-pushd` / `pcloud-diffd` through preview-first, human-gated launchd surfaces while keeping each live transfer/polling scope explicit
+- keep legacy bisync/autosync and the pushd/diffd daemon loop mutually exclusive through a top-level `mode` surface
 
 Current live daemon state:
 
 - public wrapper: `/Users/takafumi/bin/pcloud-manager` -> `/Users/takafumi/.zsh/functions/pcloud-manager` -> Python implementation in `/Users/takafumi/p-core/dev/pcloud-tools`
 - public help uses the public program name: `pcloud-manager` prints `usage: pcloud-manager ...` and the public CLI description; `./pcloud-manager-dev` keeps the dev-only name and description
+- `pcloud-manager mode status|plan|switch` is the exclusive operation switch. `daemon` mode keeps pushd/diffd residents and executors active while bisync stays disabled. `maintenance` and `pause` stop daemon automation; they do not run or enable bisync automatically
 - `pcloud-pushd`: `com.takafumi.pcloud-pushd` is loaded and running as a launchd fswatch resident; validation confirmed one allowlisted queue append and cleanup back to `queued=0`
 - `pcloud-diffd`: `com.takafumi.pcloud-diffd` is loaded with a gated bounded live API one-shot payload on launchd `StartInterval=60`; observed periodic runs advance `diffid`, skip records outside the current plan, and have appended 0 download records so far
 - `diffd launchd resident-plist --start-interval-seconds N` can preview/write the gated `StartInterval` plist for bounded one-shot API polling; the current public plist has already been terminal-reviewed, written, and reloaded for 60-second polling
@@ -42,6 +44,8 @@ pcloud-manager info
 pcloud-manager info paths
 pcloud-manager status --json
 pcloud-manager doctor --json
+pcloud-manager mode status
+pcloud-manager mode plan maintenance
 pcloud-manager pushd status --xbar
 pcloud-manager diffd status --xbar
 pcloud-manager notify status --xbar
@@ -58,6 +62,10 @@ Development entrypoint:
 ./pcloud-manager-dev status --xbar
 ./pcloud-manager-dev doctor
 ./pcloud-manager-dev doctor --repair
+./pcloud-manager-dev mode status --json
+./pcloud-manager-dev mode plan daemon
+./pcloud-manager-dev mode plan maintenance
+./pcloud-manager-dev mode plan pause
 ./pcloud-manager-dev sync status --json
 ./pcloud-manager-dev sync status --xbar
 ./pcloud-manager-dev action sync.status.refresh

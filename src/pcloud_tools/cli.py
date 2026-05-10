@@ -10,6 +10,7 @@ from .cli_gates import add_gates_parser, cmd_gates
 from .cli_help import add_help_parser, cmd_help
 from .cli_index import add_index_parser, cmd_index
 from .cli_mount import add_mount_parsers, cmd_mount, cmd_umount
+from .cli_mode import add_mode_parser, cmd_mode
 from .cli_notify import add_notify_parser, cmd_notify
 from .cli_service_daemon import add_service_daemon_parsers, cmd_service_daemon
 from .cli_status import add_status_doctor_parsers, cmd_doctor, cmd_info, cmd_status
@@ -42,6 +43,8 @@ def build_parser(
     add_help_parser(subparsers)
 
     add_status_doctor_parsers(subparsers)
+
+    add_mode_parser(subparsers)
 
     add_sync_parser(subparsers)
 
@@ -78,6 +81,12 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_status(args, paths)
     if args.command == "doctor":
         return cmd_doctor(args, paths)
+    if args.command == "mode":
+        result = cmd_mode(args, paths)
+        if result is not None:
+            return result
+        parser.print_help()
+        return 1
     if args.command == "sync":
         result = cmd_sync(args, paths)
         if result is not None:
