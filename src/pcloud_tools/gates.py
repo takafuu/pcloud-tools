@@ -125,6 +125,24 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="fswatch resident watcher",
     ),
+    "pushd.queue.remove": GateSpec(
+        name="pushd.queue.remove",
+        env_var="PCLOUD_TOOLS_PUSHD_QUEUE_REMOVE_GATE",
+        expected_value="operator-approved-pushd-queue-remove-v1",
+        approval_flags=(
+            "--reviewer-approved-queue-record-removal",
+        ),
+        summary="pushd queue record removal",
+    ),
+    "pushd.queue.prune-excluded": GateSpec(
+        name="pushd.queue.prune-excluded",
+        env_var="PCLOUD_TOOLS_PUSHD_QUEUE_PRUNE_EXCLUDED_GATE",
+        expected_value="operator-approved-pushd-queue-prune-excluded-v1",
+        approval_flags=(
+            "--reviewer-approved-excluded-record-cleanup",
+        ),
+        summary="pushd excluded queue record cleanup",
+    ),
     "diffd.api.long-poll": GateSpec(
         name="diffd.api.long-poll",
         env_var="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",

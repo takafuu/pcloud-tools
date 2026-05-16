@@ -95,6 +95,18 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
         "--reviewer-approved-queue-policy",
         "--reviewer-approved-process-policy",
     )
+    assert GATES["pushd.queue.remove"].env_var == "PCLOUD_TOOLS_PUSHD_QUEUE_REMOVE_GATE"
+    assert GATES["pushd.queue.remove"].expected_value == "operator-approved-pushd-queue-remove-v1"
+    assert GATES["pushd.queue.remove"].approval_flags == (
+        "--reviewer-approved-queue-record-removal",
+    )
+    assert GATES["pushd.queue.prune-excluded"].env_var == "PCLOUD_TOOLS_PUSHD_QUEUE_PRUNE_EXCLUDED_GATE"
+    assert GATES["pushd.queue.prune-excluded"].expected_value == (
+        "operator-approved-pushd-queue-prune-excluded-v1"
+    )
+    assert GATES["pushd.queue.prune-excluded"].approval_flags == (
+        "--reviewer-approved-excluded-record-cleanup",
+    )
     assert GATES["diffd.api.long-poll"].env_var == "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"
     assert GATES["diffd.api.long-poll"].expected_value == "operator-approved-api-long-poll-v1"
     assert GATES["diffd.api.long-poll"].approval_flags == (

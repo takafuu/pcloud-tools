@@ -159,8 +159,6 @@ _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
 _REAL_TRANSFER_AUTOMATION_GATE_VALUE = "operator-approved-real-transfer-automation-v1"
 _REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE = "operator-approved-real-transfer-automation-run-v1"
-_PUSHD_QUEUE_REMOVE_GATE_VALUE = "operator-approved-pushd-queue-remove-v1"
-_PUSHD_QUEUE_PRUNE_EXCLUDED_GATE_VALUE = "operator-approved-pushd-queue-prune-excluded-v1"
 
 
 def _add_transfer_automation_gate_parser(
@@ -630,7 +628,7 @@ def _add_service_parser(
             action="store_true",
             help="Remove matching queue records under the dev state dir instead of only previewing it.",
         )
-        queue_remove_parser.add_argument("--reviewer-approved-queue-record-removal", action="store_true")
+        add_gate_review_args(queue_remove_parser, GATES["pushd.queue.remove"])
         queue_remove_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         queue_prune_parser = queue_subparsers.add_parser(
             "prune-excluded",
@@ -641,7 +639,7 @@ def _add_service_parser(
             action="store_true",
             help="Remove excluded queue records under the active state dir after the relevant gate opens.",
         )
-        queue_prune_parser.add_argument("--reviewer-approved-excluded-record-cleanup", action="store_true")
+        add_gate_review_args(queue_prune_parser, GATES["pushd.queue.prune-excluded"])
         queue_prune_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         queue_prune_missing_parser = queue_subparsers.add_parser(
             "prune-missing-local",
@@ -8979,9 +8977,10 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
         record, record_issues = _plan_record_from_args(args, "upload", "PCLOUD_TOOLS_PUSHD_QUEUE_PATH")
         issues.extend(record_issues)
         planned_action = "remove pushd queue records" if execute else "preview remove pushd queue records"
-        remove_gate_env = "PCLOUD_TOOLS_PUSHD_QUEUE_REMOVE_GATE"
-        remove_gate_open = os.environ.get(remove_gate_env) == _PUSHD_QUEUE_REMOVE_GATE_VALUE
-        remove_approval = bool(getattr(args, "reviewer_approved_queue_record_removal", False))
+        remove_gate = validate_gate(GATES["pushd.queue.remove"], args, os.environ)
+        remove_gate_env = remove_gate.spec.env_var
+        remove_gate_open = remove_gate.env_ok
+        remove_approval = remove_gate.flag_ok("--reviewer-approved-queue-record-removal")
         result = (
             remove_plan_records(state.queue_file, "PCLOUD_TOOLS_PUSHD_QUEUE", record.path, write=False)
             if not record_issues
@@ -9000,7 +8999,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
             "path": record.path,
             "cleanup scope": "matching pushd queue path only",
             "queue remove gate env var": remove_gate_env,
-            "queue remove gate accepted value": _PUSHD_QUEUE_REMOVE_GATE_VALUE,
+            "queue remove gate accepted value": remove_gate.spec.expected_value,
             "queue remove gate env honored": "yes" if remove_gate_open else "no",
             "queue record removal approval": "yes" if remove_approval else "no",
             "state writes": "pushd queue only" if execute else "none",
@@ -9028,7 +9027,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                         ConfigIssue(
                             key="PCLOUD_TOOLS_PUSHD_QUEUE_REMOVE_GATE",
                             level="error",
-                            message=f"pushd queue remove requires {remove_gate_env}={_PUSHD_QUEUE_REMOVE_GATE_VALUE}",
+                            message=f"pushd queue remove requires {remove_gate_env}={remove_gate.spec.expected_value}",
                         )
                     )
             if not has_errors(issues):
@@ -9049,9 +9048,10 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
     elif args.queue_command == "prune-excluded":
         excluded_records = plan.excluded_records
         planned_action = "prune excluded pushd queue records" if execute else "preview prune excluded pushd queue records"
-        prune_gate_env = "PCLOUD_TOOLS_PUSHD_QUEUE_PRUNE_EXCLUDED_GATE"
-        prune_gate_open = os.environ.get(prune_gate_env) == _PUSHD_QUEUE_PRUNE_EXCLUDED_GATE_VALUE
-        cleanup_approved = bool(getattr(args, "reviewer_approved_excluded_record_cleanup", False))
+        prune_gate = validate_gate(GATES["pushd.queue.prune-excluded"], args, os.environ)
+        prune_gate_env = prune_gate.spec.env_var
+        prune_gate_open = prune_gate.env_ok
+        cleanup_approved = prune_gate.flag_ok("--reviewer-approved-excluded-record-cleanup")
         details = {
             "planned action": planned_action,
             "queue file": str(state.queue_file),
@@ -9062,7 +9062,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
             "excluded queue record details": _plan_records(excluded_records),
             "cleanup scope": "excluded records only; planned upload and invalid records are retained",
             "prune gate env var": prune_gate_env,
-            "prune gate accepted value": _PUSHD_QUEUE_PRUNE_EXCLUDED_GATE_VALUE,
+            "prune gate accepted value": prune_gate.spec.expected_value,
             "prune gate env honored": "yes" if prune_gate_open else "no",
             "cleanup approval": "yes" if cleanup_approved else "no",
             "state writes": "none",
@@ -9091,7 +9091,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                             level="error",
                             message=(
                                 "pushd queue prune-excluded requires "
-                                f"{prune_gate_env}={_PUSHD_QUEUE_PRUNE_EXCLUDED_GATE_VALUE}"
+                                f"{prune_gate_env}={prune_gate.spec.expected_value}"
                             ),
                         )
                     )
@@ -9532,11 +9532,11 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
         queue_remove_parser = queue_subparsers.add_parser("remove")
         queue_remove_parser.add_argument("path")
         queue_remove_parser.add_argument("--execute", action="store_true")
-        queue_remove_parser.add_argument("--reviewer-approved-queue-record-removal", action="store_true")
+        add_gate_review_args(queue_remove_parser, GATES["pushd.queue.remove"])
         queue_remove_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         queue_prune_parser = queue_subparsers.add_parser("prune-excluded")
         queue_prune_parser.add_argument("--execute", action="store_true")
-        queue_prune_parser.add_argument("--reviewer-approved-excluded-record-cleanup", action="store_true")
+        add_gate_review_args(queue_prune_parser, GATES["pushd.queue.prune-excluded"])
         queue_prune_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         queue_prune_missing_parser = queue_subparsers.add_parser("prune-missing-local")
         queue_prune_missing_parser.add_argument("--execute", action="store_true")
