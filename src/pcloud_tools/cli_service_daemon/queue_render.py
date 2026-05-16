@@ -1,3 +1,9 @@
+"""Home for queue-specific human renderers.
+
+Currently a thin pass-through to cli_common.print_report; expand when queue
+payloads grow custom formatting needs.
+"""
+
 from __future__ import annotations
 
 import argparse
