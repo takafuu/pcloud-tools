@@ -51,7 +51,7 @@ from ..download_suppression import (
     mark_upload_completed,
     suppression_status_details,
 )
-from ..gates import GATES, add_gate_review_args, validate_gate
+from ..gates import GATES, GateSpec, add_gate_review_args, validate_gate
 from ..io_utils import atomic_write_json
 from .api_poll_render import (
     print_api_long_poll_gate_report as _print_api_long_poll_gate_report,
@@ -156,8 +156,6 @@ _TIMEOUT_POLICIES = (
 )
 _DIFFD_API_CATCHUP_GATE_VALUE = "operator-approved-api-catchup-v1"
 _DIFFD_API_CHECKPOINT_GATE_VALUE = "operator-approved-api-checkpoint-v1"
-_PUSHD_LAUNCHD_GATE_VALUE = "operator-approved-pushd-launchd-v1"
-_DIFFD_LAUNCHD_GATE_VALUE = "operator-approved-diffd-launchd-v1"
 _PUSHD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-plist-v1"
 _DIFFD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-plist-v1"
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
@@ -363,10 +361,7 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction, service:
         "gate", help="Read-only checklist before any pcloud-pushd/diffd launchd registration."
     )
     launchd_gate_parser.add_argument("--report-path", type=Path)
-    launchd_gate_parser.add_argument("--operator-reviewed-daemon-command", action="store_true")
-    launchd_gate_parser.add_argument("--reviewer-approved-plist-policy", action="store_true")
-    launchd_gate_parser.add_argument("--reviewer-approved-launchctl-policy", action="store_true")
-    launchd_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(launchd_gate_parser, GATES[f"{service.name}.launchd.gate"])
     launchd_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     launchd_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
@@ -2459,12 +2454,8 @@ def _service_launchd_program_arguments(service: ServiceDefinition, *, entrypoint
     return [entrypoint, "diffd", "api-poll", "long-poll-run"]
 
 
-def _service_launchd_gate_value(service: ServiceDefinition) -> str:
-    return _PUSHD_LAUNCHD_GATE_VALUE if service.name == "pushd" else _DIFFD_LAUNCHD_GATE_VALUE
-
-
-def _service_launchd_gate_env(service: ServiceDefinition) -> str:
-    return f"PCLOUD_TOOLS_{service.name.upper()}_LAUNCHD_GATE"
+def _service_launchd_gate_spec(service: ServiceDefinition) -> GateSpec:
+    return GATES[f"{service.name}.launchd.gate"]
 
 
 def _service_launchd_plist_gate_value(service: ServiceDefinition) -> str:
@@ -3363,9 +3354,10 @@ def _service_launchd_registration_checks(
     )
     checks.append(shadow_check)
     issues.extend(shadow_issues)
-    launchd_gate_env = _service_launchd_gate_env(service)
-    launchd_gate_value = _service_launchd_gate_value(service)
-    launchd_gate_open = os.environ.get(launchd_gate_env) == launchd_gate_value
+    launchd_gate = validate_gate(_service_launchd_gate_spec(service), args, os.environ)
+    launchd_gate_env = launchd_gate.spec.env_var
+    launchd_gate_value = launchd_gate.spec.expected_value
+    launchd_gate_open = launchd_gate.env_ok
     checks.extend(
         [
             {
@@ -3380,22 +3372,22 @@ def _service_launchd_registration_checks(
             },
             {
                 "name": "daemon command review",
-                "status": "ok" if getattr(args, "operator_reviewed_daemon_command", False) else "pending",
+                "status": "ok" if launchd_gate.flag_ok("--operator-reviewed-daemon-command") else "pending",
                 "detail": "operator reviewed the foreground daemon command",
             },
             {
                 "name": "plist policy approval",
-                "status": "ok" if getattr(args, "reviewer_approved_plist_policy", False) else "pending",
+                "status": "ok" if launchd_gate.flag_ok("--reviewer-approved-plist-policy") else "pending",
                 "detail": "reviewer approved public plist label, path, logs, working directory, and ProgramArguments",
             },
             {
                 "name": "launchctl policy approval",
-                "status": "ok" if getattr(args, "reviewer_approved_launchctl_policy", False) else "pending",
+                "status": "ok" if launchd_gate.flag_ok("--reviewer-approved-launchctl-policy") else "pending",
                 "detail": "reviewer approved launchctl enable/bootstrap behavior",
             },
             {
                 "name": "rollback policy approval",
-                "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+                "status": "ok" if launchd_gate.flag_ok("--reviewer-approved-rollback-policy") else "pending",
                 "detail": "reviewer approved bootout/disable rollback order",
             },
             {
@@ -4132,6 +4124,7 @@ def _service_launchd_gate_report(
     target = f"gui/<uid>/{label}"
     launchctl = launchctl_bin or "launchctl"
     payload = _service_launchd_plist_payload(paths, service, label=label, entrypoint=entrypoint)
+    launchd_gate = validate_gate(_service_launchd_gate_spec(service), args, os.environ)
     daemon_preview = (
         [entrypoint, "pushd", "fswatch", "resident-run", "--json"]
         if service.name == "pushd"
@@ -4146,22 +4139,22 @@ def _service_launchd_gate_report(
         },
         {
             "name": "daemon command preview",
-            "status": "ok" if getattr(args, "operator_reviewed_daemon_command", False) else "pending",
+            "status": "ok" if launchd_gate.flag_ok("--operator-reviewed-daemon-command") else "pending",
             "detail": "operator reviewed the foreground daemon command before any launchd wrapper",
         },
         {
             "name": "plist policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_plist_policy", False) else "pending",
+            "status": "ok" if launchd_gate.flag_ok("--reviewer-approved-plist-policy") else "pending",
             "detail": "reviewer approved label, plist path, logs, working directory, and ProgramArguments",
         },
         {
             "name": "launchctl policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_launchctl_policy", False) else "pending",
+            "status": "ok" if launchd_gate.flag_ok("--reviewer-approved-launchctl-policy") else "pending",
             "detail": "reviewer approved bootstrap/bootout/enable/disable behavior before registration",
         },
         {
             "name": "rollback policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "status": "ok" if launchd_gate.flag_ok("--reviewer-approved-rollback-policy") else "pending",
             "detail": "reviewer approved rollback command order and stop conditions",
         },
         {
@@ -4205,8 +4198,8 @@ def _service_launchd_gate_report(
             [launchctl, "bootout", target],
             [launchctl, "disable", target],
         ],
-        "future launchd gate env var": _service_launchd_gate_env(service),
-        "future launchd gate accepted value": _service_launchd_gate_value(service),
+        "future launchd gate env var": launchd_gate.spec.env_var,
+        "future launchd gate accepted value": launchd_gate.spec.expected_value,
         "approval status": approval_status,
         "preflight checks": checks,
         "success policy": "register only after an explicit operator command and verify foreground daemon behavior first",

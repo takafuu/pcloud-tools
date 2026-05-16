@@ -48,6 +48,30 @@ class GateValidation:
 
 
 GATES: dict[str, GateSpec] = {
+    "pushd.launchd.gate": GateSpec(
+        name="pushd.launchd.gate",
+        env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_GATE",
+        expected_value="operator-approved-pushd-launchd-v1",
+        approval_flags=(
+            "--operator-reviewed-daemon-command",
+            "--reviewer-approved-plist-policy",
+            "--reviewer-approved-launchctl-policy",
+            "--reviewer-approved-rollback-policy",
+        ),
+        summary="launchd registration",
+    ),
+    "diffd.launchd.gate": GateSpec(
+        name="diffd.launchd.gate",
+        env_var="PCLOUD_TOOLS_DIFFD_LAUNCHD_GATE",
+        expected_value="operator-approved-diffd-launchd-v1",
+        approval_flags=(
+            "--operator-reviewed-daemon-command",
+            "--reviewer-approved-plist-policy",
+            "--reviewer-approved-launchctl-policy",
+            "--reviewer-approved-rollback-policy",
+        ),
+        summary="launchd registration",
+    ),
     "pushd.launchd.reload": GateSpec(
         name="pushd.launchd.reload",
         env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_RELOAD_GATE",

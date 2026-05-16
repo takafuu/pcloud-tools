@@ -51,6 +51,25 @@ def test_launchd_reload_gate_specs_cover_pushd_and_diffd() -> None:
     assert GATES["diffd.launchd.reload"].expected_value == "operator-approved-diffd-launchd-reload-v1"
 
 
+def test_launchd_gate_specs_match_existing_public_contracts() -> None:
+    assert GATES["pushd.launchd.gate"].env_var == "PCLOUD_TOOLS_PUSHD_LAUNCHD_GATE"
+    assert GATES["pushd.launchd.gate"].expected_value == "operator-approved-pushd-launchd-v1"
+    assert GATES["pushd.launchd.gate"].approval_flags == (
+        "--operator-reviewed-daemon-command",
+        "--reviewer-approved-plist-policy",
+        "--reviewer-approved-launchctl-policy",
+        "--reviewer-approved-rollback-policy",
+    )
+    assert GATES["diffd.launchd.gate"].env_var == "PCLOUD_TOOLS_DIFFD_LAUNCHD_GATE"
+    assert GATES["diffd.launchd.gate"].expected_value == "operator-approved-diffd-launchd-v1"
+    assert GATES["diffd.launchd.gate"].approval_flags == (
+        "--operator-reviewed-daemon-command",
+        "--reviewer-approved-plist-policy",
+        "--reviewer-approved-launchctl-policy",
+        "--reviewer-approved-rollback-policy",
+    )
+
+
 def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
     assert GATES["pushd.fswatch.resident"].env_var == "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"
     assert GATES["pushd.fswatch.resident"].expected_value == "operator-approved-fswatch-resident-v1"
