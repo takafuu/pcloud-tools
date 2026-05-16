@@ -883,6 +883,17 @@ def test_pushd_launchd_reload_is_gated_and_uses_fake_launchctl(tmp_path: Path) -
     assert opened_payload["details"]["state writes"] == "launchctl reload only"
     assert any(line.startswith("bootout gui/") for line in launchctl_lines)
     assert any(line.startswith("bootstrap gui/") for line in launchctl_lines)
+
+
+def test_launchd_reload_help_describes_reviewer_approval_flags(tmp_path: Path) -> None:
+    result = _run_cli(tmp_path, "pushd", "launchd", "reload", "--help")
+
+    assert result.returncode == 0
+    assert "--reviewer-approved-bootout-bootstrap" in result.stdout
+    assert "Reviewer approval for launchd bootout/bootstrap reload" in result.stdout
+    assert "--reviewer-approved-rollback-policy" in result.stdout
+
+
 def test_diffd_launchd_operational_plist_and_reload_are_gated(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])

@@ -42,6 +42,15 @@ def test_validate_gate_reports_missing_flags() -> None:
     assert result.flags_ok is False
     assert result.complete is False
     assert result.missing_flags == ("--reviewer-approved-rollback-policy",)
+
+
+def test_launchd_reload_gate_specs_cover_pushd_and_diffd() -> None:
+    assert GATES["pushd.launchd.reload"].env_var == "PCLOUD_TOOLS_PUSHD_LAUNCHD_RELOAD_GATE"
+    assert GATES["pushd.launchd.reload"].expected_value == "operator-approved-pushd-launchd-reload-v1"
+    assert GATES["diffd.launchd.reload"].env_var == "PCLOUD_TOOLS_DIFFD_LAUNCHD_RELOAD_GATE"
+    assert GATES["diffd.launchd.reload"].expected_value == "operator-approved-diffd-launchd-reload-v1"
+
+
 def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

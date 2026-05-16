@@ -147,7 +147,6 @@ _PUSHD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-plist-v1"
 _DIFFD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-plist-v1"
 _PUSHD_LAUNCHD_RESIDENT_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-resident-plist-v1"
 _DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-long-poll-plist-v1"
-_DIFFD_LAUNCHD_RELOAD_GATE_VALUE = "operator-approved-diffd-launchd-reload-v1"
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
@@ -4443,10 +4442,6 @@ def _pushd_launchd_resident_plist_report(
     )
 
 
-def _diffd_launchd_reload_gate_env() -> str:
-    return "PCLOUD_TOOLS_DIFFD_LAUNCHD_RELOAD_GATE"
-
-
 def _resident_plist_operational_status(plist_path: Path, service: ServiceDefinition) -> tuple[str, str]:
     if not plist_path.exists():
         return "missing", str(plist_path)
@@ -4559,19 +4554,12 @@ def _pushd_launchd_reload_report(
         [launchctl, "disable", target],
     ]
     operational_status, operational_detail = _resident_plist_operational_status(plist_path, service)
-    if service.name == "pushd":
-        reload_gate = validate_gate(GATES["pushd.launchd.reload"], args, os.environ)
-        reload_gate_env = reload_gate.spec.env_var
-        reload_gate_value = reload_gate.spec.expected_value
-        bootout_bootstrap_approved = reload_gate.flag_ok("--reviewer-approved-bootout-bootstrap")
-        rollback_policy_approved = reload_gate.flag_ok("--reviewer-approved-rollback-policy")
-        reload_gate_open = reload_gate.env_ok
-    else:
-        reload_gate_env = _diffd_launchd_reload_gate_env()
-        reload_gate_value = _DIFFD_LAUNCHD_RELOAD_GATE_VALUE
-        bootout_bootstrap_approved = bool(getattr(args, "reviewer_approved_bootout_bootstrap", False))
-        rollback_policy_approved = bool(getattr(args, "reviewer_approved_rollback_policy", False))
-        reload_gate_open = os.environ.get(reload_gate_env) == reload_gate_value
+    reload_gate = validate_gate(GATES[f"{service.name}.launchd.reload"], args, os.environ)
+    reload_gate_env = reload_gate.spec.env_var
+    reload_gate_value = reload_gate.spec.expected_value
+    bootout_bootstrap_approved = reload_gate.flag_ok("--reviewer-approved-bootout-bootstrap")
+    rollback_policy_approved = reload_gate.flag_ok("--reviewer-approved-rollback-policy")
+    reload_gate_open = reload_gate.env_ok
     checks = [
         shadow_check,
         {

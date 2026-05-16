@@ -56,14 +56,28 @@ GATES: dict[str, GateSpec] = {
             "--reviewer-approved-bootout-bootstrap",
             "--reviewer-approved-rollback-policy",
         ),
-        summary="pushd launchd bootout/bootstrap reload",
+        summary="launchd bootout/bootstrap reload",
+    ),
+    "diffd.launchd.reload": GateSpec(
+        name="diffd.launchd.reload",
+        env_var="PCLOUD_TOOLS_DIFFD_LAUNCHD_RELOAD_GATE",
+        expected_value="operator-approved-diffd-launchd-reload-v1",
+        approval_flags=(
+            "--reviewer-approved-bootout-bootstrap",
+            "--reviewer-approved-rollback-policy",
+        ),
+        summary="launchd bootout/bootstrap reload",
     ),
 }
 
 
 def add_gate_review_args(parser: argparse.ArgumentParser, spec: GateSpec) -> None:
     for flag in spec.approval_flags:
-        parser.add_argument(flag, action="store_true")
+        parser.add_argument(
+            flag,
+            action="store_true",
+            help=f"Reviewer approval for {spec.summary} ({flag.lstrip('-')}).",
+        )
 
 
 def validate_gate(spec: GateSpec, args: argparse.Namespace, env: Mapping[str, str]) -> GateValidation:
