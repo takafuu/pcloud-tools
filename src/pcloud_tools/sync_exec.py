@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from .config import AppConfig, ConfigIssue
+from .io_utils import atomic_write_text
 from .sync_runtime import (
     BisyncListingRecovery,
     bisync_cache_entry_path,
@@ -78,9 +79,7 @@ def sync_mode_is_resync(mode: str) -> bool:
 
 def record_sync_scope_mode(config: AppConfig, scope_mode: str) -> Path:
     scope_file = config.state_dir / "last-resync-scope"
-    scope_file.parent.mkdir(parents=True, exist_ok=True)
-    scope_file.write_text(f"{scope_mode}\n")
-    return scope_file
+    return atomic_write_text(scope_file, f"{scope_mode}\n")
 
 
 def enforce_sync_scope_guard(config: AppConfig, mode: str) -> tuple[ConfigIssue, ...]:
@@ -122,10 +121,8 @@ def _timestamp() -> str:
 
 def _write_filter_file(config: AppConfig, allowlist_entries: tuple[str, ...]) -> Path:
     filter_file = sync_filter_file(config)
-    filter_file.parent.mkdir(parents=True, exist_ok=True)
     rules = prepare_sync_filter_rules(config, allowlist_entries)
-    filter_file.write_text("".join(f"{rule}\n" for rule in rules))
-    return filter_file
+    return atomic_write_text(filter_file, "".join(f"{rule}\n" for rule in rules))
 
 
 def build_sync_plan(
@@ -187,16 +184,16 @@ def build_sync_plan(
 
 def _record_log_pointers(config: AppConfig, plan: SyncPlan) -> None:
     config.state_dir.mkdir(parents=True, exist_ok=True)
-    sync_last_rclone_log_file(config).write_text(f"{plan.rclone_log}\n")
-    sync_last_stdout_log_file(config).write_text(f"{plan.stdout_log}\n")
-    sync_last_stderr_log_file(config).write_text(f"{plan.stderr_log}\n")
+    atomic_write_text(sync_last_rclone_log_file(config), f"{plan.rclone_log}\n")
+    atomic_write_text(sync_last_stdout_log_file(config), f"{plan.stdout_log}\n")
+    atomic_write_text(sync_last_stderr_log_file(config), f"{plan.stderr_log}\n")
 
 
 def record_background_log_pointers(config: AppConfig, stdout_log: Path, stderr_log: Path) -> None:
     config.state_dir.mkdir(parents=True, exist_ok=True)
-    sync_last_rclone_log_file(config).write_text("\n")
-    sync_last_stdout_log_file(config).write_text(f"{stdout_log}\n")
-    sync_last_stderr_log_file(config).write_text(f"{stderr_log}\n")
+    atomic_write_text(sync_last_rclone_log_file(config), "\n")
+    atomic_write_text(sync_last_stdout_log_file(config), f"{stdout_log}\n")
+    atomic_write_text(sync_last_stderr_log_file(config), f"{stderr_log}\n")
 
 
 def _append_status_line(path: Path, line: str) -> None:
@@ -214,13 +211,13 @@ def _acquire_sync_lock(config: AppConfig, mode: str) -> None:
     if lock_dir.exists():
         raise SyncExecutionError("sync already running")
     lock_dir.mkdir(parents=True, exist_ok=False)
-    sync_lock_pid_file(config).write_text("pending\n")
-    sync_lock_mode_file(config).write_text(f"{mode}\n")
-    sync_lock_started_file(config).write_text(f"{_now()}\n")
+    atomic_write_text(sync_lock_pid_file(config), "pending\n")
+    atomic_write_text(sync_lock_mode_file(config), f"{mode}\n")
+    atomic_write_text(sync_lock_started_file(config), f"{_now()}\n")
 
 
 def _record_sync_child_pid(config: AppConfig, pid: int) -> None:
-    sync_lock_pid_file(config).write_text(f"{pid}\n")
+    atomic_write_text(sync_lock_pid_file(config), f"{pid}\n")
 
 
 def _release_sync_lock(config: AppConfig) -> None:
