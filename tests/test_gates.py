@@ -69,6 +69,29 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
     )
 
 
+def test_operational_launchd_plist_gate_specs_match_existing_public_contracts() -> None:
+    assert GATES["pushd.launchd.resident-plist"].env_var == "PCLOUD_TOOLS_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE"
+    assert GATES["pushd.launchd.resident-plist"].expected_value == (
+        "operator-approved-pushd-launchd-resident-plist-v1"
+    )
+    assert GATES["pushd.launchd.resident-plist"].approval_flags == (
+        "--operator-reviewed-resident-command",
+        "--reviewer-approved-resident-environment",
+        "--reviewer-approved-no-bootstrap",
+    )
+    assert GATES["diffd.launchd.long-poll-plist"].env_var == (
+        "PCLOUD_TOOLS_DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE"
+    )
+    assert GATES["diffd.launchd.long-poll-plist"].expected_value == (
+        "operator-approved-diffd-launchd-long-poll-plist-v1"
+    )
+    assert GATES["diffd.launchd.long-poll-plist"].approval_flags == (
+        "--operator-reviewed-resident-command",
+        "--reviewer-approved-resident-environment",
+        "--reviewer-approved-no-bootstrap",
+    )
+
+
 def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

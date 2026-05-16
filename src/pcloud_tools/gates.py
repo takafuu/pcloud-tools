@@ -91,6 +91,28 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="diffd live API long-poll",
     ),
+    "pushd.launchd.resident-plist": GateSpec(
+        name="pushd.launchd.resident-plist",
+        env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE",
+        expected_value="operator-approved-pushd-launchd-resident-plist-v1",
+        approval_flags=(
+            "--operator-reviewed-resident-command",
+            "--reviewer-approved-resident-environment",
+            "--reviewer-approved-no-bootstrap",
+        ),
+        summary="launchd resident plist write",
+    ),
+    "diffd.launchd.long-poll-plist": GateSpec(
+        name="diffd.launchd.long-poll-plist",
+        env_var="PCLOUD_TOOLS_DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE",
+        expected_value="operator-approved-diffd-launchd-long-poll-plist-v1",
+        approval_flags=(
+            "--operator-reviewed-resident-command",
+            "--reviewer-approved-resident-environment",
+            "--reviewer-approved-no-bootstrap",
+        ),
+        summary="launchd long-poll plist write",
+    ),
 }
 
 

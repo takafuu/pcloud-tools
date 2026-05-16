@@ -160,8 +160,6 @@ _PUSHD_LAUNCHD_GATE_VALUE = "operator-approved-pushd-launchd-v1"
 _DIFFD_LAUNCHD_GATE_VALUE = "operator-approved-diffd-launchd-v1"
 _PUSHD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-plist-v1"
 _DIFFD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-plist-v1"
-_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-resident-plist-v1"
-_DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-long-poll-plist-v1"
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
@@ -255,7 +253,7 @@ def _add_automation_review_args(parser: argparse.ArgumentParser) -> None:
     )
 
 
-def _add_service_launchd_parser(subparsers: argparse._SubParsersAction) -> None:
+def _add_service_launchd_parser(subparsers: argparse._SubParsersAction, service: ServiceDefinition) -> None:
     launchd_parser = subparsers.add_parser(
         "launchd", help="Review the read-only launchd gate before persistent daemon registration."
     )
@@ -286,7 +284,7 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     launchd_reload_parser.add_argument("--report-path", type=Path)
     launchd_reload_parser.add_argument("--operator-reviewed-resident-plist", action="store_true")
-    add_gate_review_args(launchd_reload_parser, GATES["pushd.launchd.reload"])
+    add_gate_review_args(launchd_reload_parser, GATES[f"{service.name}.launchd.reload"])
     launchd_reload_parser.add_argument("--execute", action="store_true")
     launchd_reload_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     launchd_reload_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -295,9 +293,12 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Preview or write the guarded operational LaunchAgent plist without launchctl.",
     )
     launchd_resident_plist_parser.add_argument("--report-path", type=Path)
-    launchd_resident_plist_parser.add_argument("--operator-reviewed-resident-command", action="store_true")
-    launchd_resident_plist_parser.add_argument("--reviewer-approved-resident-environment", action="store_true")
-    launchd_resident_plist_parser.add_argument("--reviewer-approved-no-bootstrap", action="store_true")
+    launchd_resident_plist_gate_name = (
+        "pushd.launchd.resident-plist"
+        if service.name == "pushd"
+        else "diffd.launchd.long-poll-plist"
+    )
+    add_gate_review_args(launchd_resident_plist_parser, GATES[launchd_resident_plist_gate_name])
     launchd_resident_plist_parser.add_argument(
         "--start-interval-seconds",
         type=int,
@@ -411,7 +412,7 @@ def _add_service_parser(
     gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
-    _add_service_launchd_parser(service_subparsers)
+    _add_service_launchd_parser(service_subparsers, service)
 
     if service.name == "pushd":
         fswatch_parser = service_subparsers.add_parser(
@@ -3589,14 +3590,6 @@ def _service_launchd_register_report(
     )
 
 
-def _pushd_launchd_resident_plist_gate_env() -> str:
-    return "PCLOUD_TOOLS_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE"
-
-
-def _diffd_launchd_long_poll_plist_gate_env() -> str:
-    return "PCLOUD_TOOLS_DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE"
-
-
 def _pushd_launchd_resident_program_arguments(entrypoint: str, report_path: Path | None) -> list[str]:
     args = [
         entrypoint,
@@ -3690,13 +3683,15 @@ def _pushd_launchd_resident_plist_report(
     label = _service_public_launchd_label(service)
     plist_path = _service_public_launchd_plist_path(label)
     expected_root = Path.home() / "Library" / "LaunchAgents"
-    if service.name == "pushd":
-        resident_gate_env = _pushd_launchd_resident_plist_gate_env()
-        resident_gate_value = _PUSHD_LAUNCHD_RESIDENT_PLIST_GATE_VALUE
-    else:
-        resident_gate_env = _diffd_launchd_long_poll_plist_gate_env()
-        resident_gate_value = _DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE_VALUE
-    resident_gate_open = os.environ.get(resident_gate_env) == resident_gate_value
+    resident_plist_gate_name = (
+        "pushd.launchd.resident-plist"
+        if service.name == "pushd"
+        else "diffd.launchd.long-poll-plist"
+    )
+    resident_gate = validate_gate(GATES[resident_plist_gate_name], args, os.environ)
+    resident_gate_env = resident_gate.spec.env_var
+    resident_gate_value = resident_gate.spec.expected_value
+    resident_gate_open = resident_gate.env_ok
     start_interval_seconds = getattr(args, "start_interval_seconds", None)
     if start_interval_seconds is not None and start_interval_seconds <= 0:
         issues.append(
@@ -3736,12 +3731,12 @@ def _pushd_launchd_resident_plist_report(
             },
             {
                 "name": "resident command review",
-                "status": "ok" if getattr(args, "operator_reviewed_resident_command", False) else "pending",
+                "status": "ok" if resident_gate.flag_ok("--operator-reviewed-resident-command") else "pending",
                 "detail": "operator reviewed resident ProgramArguments with --execute and approval flags",
             },
             {
                 "name": "resident environment approval",
-                "status": "ok" if getattr(args, "reviewer_approved_resident_environment", False) else "pending",
+                "status": "ok" if resident_gate.flag_ok("--reviewer-approved-resident-environment") else "pending",
                 "detail": "reviewer approved PATH and PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE in plist EnvironmentVariables",
             },
         ]
@@ -3754,12 +3749,12 @@ def _pushd_launchd_resident_plist_report(
             },
             {
                 "name": "long-poll command review",
-                "status": "ok" if getattr(args, "operator_reviewed_resident_command", False) else "pending",
+                "status": "ok" if resident_gate.flag_ok("--operator-reviewed-resident-command") else "pending",
                 "detail": "operator reviewed one-shot live API ProgramArguments with --live-api --max-iterations 1 --execute",
             },
             {
                 "name": "long-poll environment approval",
-                "status": "ok" if getattr(args, "reviewer_approved_resident_environment", False) else "pending",
+                "status": "ok" if resident_gate.flag_ok("--reviewer-approved-resident-environment") else "pending",
                 "detail": "reviewer approved PATH and PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE in plist EnvironmentVariables",
             },
         ]
@@ -3774,7 +3769,7 @@ def _pushd_launchd_resident_plist_report(
         *service_specific_checks,
         {
             "name": "no-bootstrap approval",
-            "status": "ok" if getattr(args, "reviewer_approved_no_bootstrap", False) else "pending",
+            "status": "ok" if resident_gate.flag_ok("--reviewer-approved-no-bootstrap") else "pending",
             "detail": "reviewer approved writing plist only; no bootout/bootstrap in this gate",
         },
         {
@@ -9409,7 +9404,7 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
     gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
-    _add_service_launchd_parser(subparsers)
+    _add_service_launchd_parser(subparsers, service)
 
     if service.name == "pushd":
         fswatch_parser = subparsers.add_parser(
