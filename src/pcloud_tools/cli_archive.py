@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import argparse
-import json
 import shutil
 import shlex
 import subprocess
@@ -17,6 +16,7 @@ from .cli_common import (
     status_from_issues as _status_from_issues,
 )
 from .config import ConfigIssue
+from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
 
@@ -466,7 +466,7 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
         "sync_executed": False,
         "source_backup_retained": legacy_backup.exists(),
     }
-    manifest_path.write_text(json.dumps(manifest, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_json(manifest_path, manifest, sort_keys=True)
     details.update(
         {
             "archived legacy backup": str(archived_legacy),

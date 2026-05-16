@@ -22,6 +22,7 @@ from .cli_common import (
 )
 from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import read_daemon_state
+from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
 from .service_daemon_plan import build_diffd_plan, build_pushd_plan
@@ -581,7 +582,7 @@ def _mode_plan_report(
             "results": results,
         }
         state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+        atomic_write_json(state_file, payload, sort_keys=True)
         details["process result"] = payload
     else:
         details["state writes"] = "none"

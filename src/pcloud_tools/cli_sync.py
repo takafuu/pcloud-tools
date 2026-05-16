@@ -24,6 +24,7 @@ from .cli_common import (
     status_from_issues as _status_from_issues,
 )
 from .config import AppConfig, ConfigIssue, load_config
+from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
 from .sync_exec import (
@@ -1849,7 +1850,7 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
     )
     if not _has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+        atomic_write_json(state_file, run_state, sort_keys=True)
 
     details.update(
         {
@@ -2489,7 +2490,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
         )
     if not _has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+        atomic_write_json(state_file, run_state, sort_keys=True)
 
     details.update(
         {
