@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from conftest import *
+from pcloud_tools.io_utils import atomic_write_text
 
 
 def test_suppression_journal_wrappers_round_trip_records(tmp_path: Path) -> None:
@@ -91,6 +92,35 @@ def test_atomic_write_json_preserves_format_and_original_on_replace_failure(
 
     assert path.read_text() == original
     assert list(tmp_path.glob(".state.json.*.tmp"))
+
+
+def test_atomic_write_text_preserves_content_and_original_on_replace_failure(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    path = tmp_path / "diffid"
+
+    atomic_write_text(path, "123\n")
+
+    assert path.read_text() == "123\n"
+
+    real_replace = os.replace
+
+    def fail_replace(src: object, dst: object) -> None:
+        if Path(dst) == path:
+            raise OSError("simulated replace failure")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    try:
+        atomic_write_text(path, "456\n")
+    except OSError as exc:
+        assert str(exc) == "simulated replace failure"
+    else:
+        raise AssertionError("atomic_write_text should raise when os.replace fails")
+
+    assert path.read_text() == "123\n"
+    assert list(tmp_path.glob(".diffid.*.tmp"))
 def test_launchctl_command_runner_retries_bootstrap_input_output_error(tmp_path: Path) -> None:
     from pcloud_tools.cli_service_daemon import _run_launchctl_commands
 

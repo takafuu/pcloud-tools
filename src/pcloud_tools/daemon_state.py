@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, ConfigIssue
-from .io_utils import atomic_write_json
+from .io_utils import atomic_write_json, atomic_write_text
 
 
 @dataclass(frozen=True)
@@ -173,15 +173,13 @@ def read_daemon_state(config: AppConfig) -> DaemonState:
 def write_diffid(config: AppConfig, diffid: str) -> str:
     normalized = normalize_diffid(diffid)
     files = _state_files(config)
-    files["diffid"].parent.mkdir(parents=True, exist_ok=True)
-    files["diffid"].write_text(f"{normalized}\n")
+    atomic_write_text(files["diffid"], f"{normalized}\n")
     return normalized
 
 
 def set_auto_download(config: AppConfig, enabled: bool) -> None:
     files = _state_files(config)
-    files["auto_download"].parent.mkdir(parents=True, exist_ok=True)
-    files["auto_download"].write_text("on\n" if enabled else "off\n")
+    atomic_write_text(files["auto_download"], "on\n" if enabled else "off\n")
 
 
 def add_pending_download(
