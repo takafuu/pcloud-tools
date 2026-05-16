@@ -5,6 +5,7 @@ import json
 import os
 import shlex
 import subprocess
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -972,4 +973,3 @@ def _saved_shadow_report_check(
             )
         ],
     )
-
