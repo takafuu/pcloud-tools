@@ -107,6 +107,16 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
     assert GATES["pushd.queue.prune-excluded"].approval_flags == (
         "--reviewer-approved-excluded-record-cleanup",
     )
+    assert GATES["transfer.execution"].env_var == "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"
+    assert GATES["transfer.execution"].expected_value == "dev-fake-rclone"
+    assert GATES["transfer.execution"].approval_flags == ()
+    assert GATES["real_transfer.execution"].env_var == "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE"
+    assert GATES["real_transfer.execution"].expected_value == "operator-approved-real-transfer-v1"
+    assert GATES["real_transfer.execution"].approval_flags == (
+        "--operator-reviewed-dry-run",
+        "--reviewer-approved-real-command",
+        "--reviewer-approved-consume-policy",
+    )
     assert GATES["diffd.api.long-poll"].env_var == "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"
     assert GATES["diffd.api.long-poll"].expected_value == "operator-approved-api-long-poll-v1"
     assert GATES["diffd.api.long-poll"].approval_flags == (

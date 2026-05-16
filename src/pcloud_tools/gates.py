@@ -143,6 +143,24 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="pushd excluded queue record cleanup",
     ),
+    "transfer.execution": GateSpec(
+        name="transfer.execution",
+        env_var="PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",
+        expected_value="dev-fake-rclone",
+        approval_flags=(),
+        summary="dev fake-rclone transfer execution",
+    ),
+    "real_transfer.execution": GateSpec(
+        name="real_transfer.execution",
+        env_var="PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE",
+        expected_value="operator-approved-real-transfer-v1",
+        approval_flags=(
+            "--operator-reviewed-dry-run",
+            "--reviewer-approved-real-command",
+            "--reviewer-approved-consume-policy",
+        ),
+        summary="real transfer execution",
+    ),
     "diffd.api.long-poll": GateSpec(
         name="diffd.api.long-poll",
         env_var="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",
