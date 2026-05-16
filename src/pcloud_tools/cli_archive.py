@@ -8,12 +8,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .cli_common import (
-    action_command as _action_command,
-    entrypoint_command as _entrypoint_command,
-    has_errors as _has_errors,
-    report_issues as _report_issues,
-    sort_issues as _sort_issues,
-    status_from_issues as _status_from_issues,
+    action_command,
+    entrypoint_command,
+    has_errors,
+    report_issues,
+    sort_issues,
+    status_from_issues,
 )
 from .config import ConfigIssue
 from .io_utils import atomic_write_json
@@ -302,22 +302,22 @@ def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> 
     }
     return CommandReport(
         command="archive old-monolith-gate",
-        status=_status_from_issues(_sort_issues(issues)),
+        status=status_from_issues(sort_issues(issues)),
         summary="old monolith archive gate is closed",
         details=details,
-        issues=_report_issues(_sort_issues(issues)),
+        issues=report_issues(sort_issues(issues)),
         actions=[
             ReportAction(
                 id="archive.old-monolith.gate",
                 label="Check old monolith archive gate",
-                command=_action_command(paths, "archive.old-monolith.gate"),
+                command=action_command(paths, "archive.old-monolith.gate"),
                 terminal=True,
                 refresh=False,
             ),
             ReportAction(
                 id="archive.old-monolith-run.preview",
                 label="Preview old monolith archive run",
-                command=_action_command(paths, "archive.old-monolith-run.preview"),
+                command=action_command(paths, "archive.old-monolith-run.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -432,20 +432,20 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
             )
         )
 
-    if not execute or _has_errors(issues):
-        if _has_errors(issues):
+    if not execute or has_errors(issues):
+        if has_errors(issues):
             details["state writes"] = "none"
-        sorted_issues = _sort_issues(issues)
+        sorted_issues = sort_issues(issues)
         return CommandReport(
             command="archive old-monolith-run",
-            status=_status_from_issues(sorted_issues),
+            status=status_from_issues(sorted_issues),
             summary=(
                 "old monolith archive execution is gated"
-                if _has_errors(sorted_issues) or not gate_open
+                if has_errors(sorted_issues) or not gate_open
                 else "old monolith archive run is ready"
             ),
             details=details,
-            issues=_report_issues(sorted_issues),
+            issues=report_issues(sorted_issues),
             actions=gate_report.actions,
         )
 
@@ -476,13 +476,13 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
             "state writes": "archive target copy and manifest",
         }
     )
-    sorted_issues = _sort_issues(issues)
+    sorted_issues = sort_issues(issues)
     return CommandReport(
         command="archive old-monolith-run",
-        status=_status_from_issues(sorted_issues),
+        status=status_from_issues(sorted_issues),
         summary="old monolith archive run completed",
         details=details,
-        issues=_report_issues(sorted_issues),
+        issues=report_issues(sorted_issues),
         actions=gate_report.actions,
     )
 

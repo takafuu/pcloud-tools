@@ -5,11 +5,11 @@ import shlex
 import subprocess
 
 from .cli_common import (
-    exit_code_for_report as _exit_code_for_report,
-    has_errors as _has_errors,
-    issue_sort_key as _issue_sort_key,
-    report_issues as _report_issues,
-    sort_issues as _sort_issues,
+    exit_code_for_report,
+    has_errors,
+    issue_sort_key,
+    report_issues,
+    sort_issues,
 )
 from .config import ConfigIssue, load_config
 from .mount_ops import (
@@ -141,7 +141,7 @@ def _override_mount_spec(spec, args: argparse.Namespace, target: str):
 
 def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) -> CommandReport:
     load_result = load_config(paths)
-    issues = _sort_issues(list(load_result.issues) + _mount_option_issues(args, args.target))
+    issues = sort_issues(list(load_result.issues) + _mount_option_issues(args, args.target))
     try:
         specs = [
             _override_mount_spec(spec, args, args.target)
@@ -154,7 +154,7 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
             status="error",
             summary=f"{action} target is invalid",
             details={"target": args.target},
-            issues=_report_issues(_sort_issues(issues)),
+            issues=report_issues(sort_issues(issues)),
         )
 
     if any(spec.engine not in {"webdav", "nfs"} for spec in specs):
@@ -179,7 +179,7 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
                     )
                 )
 
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "target": args.target,
         "execute": "yes" if args.execute else "no",
@@ -194,13 +194,13 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
         )
         details.update(_mount_details(spec.name, spec, state, operations))
 
-    if issues and _has_errors(issues):
+    if issues and has_errors(issues):
         return CommandReport(
             command=action,
             status="error",
             summary=f"{action} command cannot run until configuration issues are resolved",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if not args.execute:
@@ -209,11 +209,11 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
             status="ok",
             summary=f"{action} preview is ready",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if paths.dev_mode:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -229,7 +229,7 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
             status="error",
             summary=f"dev mode refuses to execute {action}",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     try:
@@ -243,7 +243,7 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
             for spec in specs:
                 execute_umount(spec)
     except MountExecutionError as exc:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues + [ConfigIssue(key="PCLOUD_TOOLS_MOUNT_EXEC", level="error", message=str(exc))]
         )
         return CommandReport(
@@ -251,7 +251,7 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
             status="error",
             summary=f"{action} command failed",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     refreshed_details: dict[str, object] = {
@@ -267,17 +267,17 @@ def _mount_report(args: argparse.Namespace, paths: RuntimePaths, action: str) ->
         status="ok",
         summary=f"{action} command executed",
         details=refreshed_details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_mount(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _mount_report(args, paths, "mount")
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def cmd_umount(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _mount_report(args, paths, "umount")
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)

@@ -4,7 +4,7 @@ import argparse
 import shlex
 
 from .chat_notify import chat_notify_status, send_chat_notification, set_chat_notify_enabled
-from .cli_common import action_command as _action_command, report_issues as _report_issues
+from .cli_common import action_command, report_issues
 from .config import ConfigIssue, load_config
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
@@ -31,28 +31,28 @@ def _actions(paths: RuntimePaths) -> list[ReportAction]:
         ReportAction(
             id="notify.chat.status",
             label="Refresh Discord notify status",
-            command=tuple(_action_command(paths, "notify.chat.status")),
+            command=tuple(action_command(paths, "notify.chat.status")),
             terminal=False,
             refresh=True,
         ),
         ReportAction(
             id="notify.chat.enable",
             label="Discord notify ON",
-            command=tuple(_action_command(paths, "notify.chat.enable")),
+            command=tuple(action_command(paths, "notify.chat.enable")),
             terminal=False,
             refresh=True,
         ),
         ReportAction(
             id="notify.chat.disable",
             label="Discord notify OFF",
-            command=tuple(_action_command(paths, "notify.chat.disable")),
+            command=tuple(action_command(paths, "notify.chat.disable")),
             terminal=False,
             refresh=True,
         ),
         ReportAction(
             id="notify.chat.test",
             label="Send Discord notify test",
-            command=tuple(_action_command(paths, "notify.chat.test")),
+            command=tuple(action_command(paths, "notify.chat.test")),
             terminal=False,
             refresh=False,
         ),
@@ -105,7 +105,7 @@ def _report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
         status="error" if any(issue.level == "error" for issue in issues) else "ok",
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_actions(paths),
     )
 

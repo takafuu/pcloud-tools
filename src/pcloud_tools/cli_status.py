@@ -8,17 +8,17 @@ from pathlib import Path
 
 from .autosync_runtime import read_autosync_state
 from .cli_common import (
-    action_command as _action_command,
-    entrypoint_command as _entrypoint_command,
-    exit_code_for_report as _exit_code_for_report,
-    has_errors as _has_errors,
-    has_warnings as _has_warnings,
-    issue_sort_key as _issue_sort_key,
-    output_format as _output_format,
-    print_report as _print_report,
-    report_issues as _report_issues,
-    sort_issues as _sort_issues,
-    status_from_issues as _status_from_issues,
+    action_command,
+    entrypoint_command,
+    exit_code_for_report,
+    has_errors,
+    has_warnings,
+    issue_sort_key,
+    output_format,
+    print_report,
+    report_issues,
+    sort_issues,
+    status_from_issues,
 )
 from .config import (
     AppConfig,
@@ -118,52 +118,52 @@ def _config_summary(paths: RuntimePaths) -> dict[str, str]:
 
 def _status_actions(paths: RuntimePaths) -> list[ReportAction]:
     return [
-        ReportAction(id="status.refresh", label="Refresh status", command=_action_command(paths, "status.refresh")),
+        ReportAction(id="status.refresh", label="Refresh status", command=action_command(paths, "status.refresh")),
         ReportAction(
             id="status.detail",
             label="Open detailed status",
-            command=_action_command(paths, "status.detail"),
+            command=action_command(paths, "status.detail"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.status.refresh",
             label="Sync status",
-            command=_action_command(paths, "sync.status.refresh"),
+            command=action_command(paths, "sync.status.refresh"),
         ),
         ReportAction(
             id="doctor",
             label="Run doctor",
-            command=_action_command(paths, "doctor"),
+            command=action_command(paths, "doctor"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="daemon.status.refresh",
             label="Daemon state",
-            command=_action_command(paths, "daemon.status.refresh"),
+            command=action_command(paths, "daemon.status.refresh"),
         ),
         ReportAction(
             id="pushd.status.refresh",
             label="Push queue status",
-            command=_action_command(paths, "pushd.status.refresh"),
+            command=action_command(paths, "pushd.status.refresh"),
         ),
         ReportAction(
             id="diffd.status.refresh",
             label="Pull queue status",
-            command=_action_command(paths, "diffd.status.refresh"),
+            command=action_command(paths, "diffd.status.refresh"),
         ),
         ReportAction(
             id="pushd.queue.prune-missing-local",
             label="Ignore missing local upload records",
-            command=_action_command(paths, "pushd.queue.prune-missing-local"),
+            command=action_command(paths, "pushd.queue.prune-missing-local"),
             terminal=False,
             refresh=True,
         ),
         ReportAction(
             id="notify.chat.status",
             label="Discord notify",
-            command=_action_command(paths, "notify.chat.status"),
+            command=action_command(paths, "notify.chat.status"),
         ),
     ]
 
@@ -188,21 +188,21 @@ def _info_actions(paths: RuntimePaths) -> list[ReportAction]:
         ReportAction(
             id="info.paths",
             label="Show paths",
-            command=(_entrypoint_command(paths), "info", "paths"),
+            command=(entrypoint_command(paths), "info", "paths"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="status.detail",
             label="Open detailed status",
-            command=_action_command(paths, "status.detail"),
+            command=action_command(paths, "status.detail"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="doctor",
             label="Run doctor",
-            command=_action_command(paths, "doctor"),
+            command=action_command(paths, "doctor"),
             terminal=True,
             refresh=False,
         ),
@@ -214,14 +214,14 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
     config = load_result.config
     scope_info = sync_allowlist_info(config)
     autosync = read_autosync_state(config)
-    issues = _sort_issues(list(load_result.issues) + scope_issues(scope_info))
+    issues = sort_issues(list(load_result.issues) + scope_issues(scope_info))
     command = f"info {args.info_command}" if args.info_command != "overview" else "info"
     mode = "dev" if paths.dev_mode else "default"
 
     if args.info_command == "paths":
         details = {
             "paths": [
-                _path_entry(_entrypoint_command(paths), "entrypoint"),
+                _path_entry(entrypoint_command(paths), "entrypoint"),
                 _path_entry(Path(__file__).resolve().parents[1], "implementation package"),
                 _path_entry(paths.workspace_root, "workspace root"),
                 _path_entry(paths.config_dir, "config directory"),
@@ -276,7 +276,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "version": _package_version(),
             "mode": mode,
             "python": sys.executable,
-            "entrypoint": _entrypoint_command(paths),
+            "entrypoint": entrypoint_command(paths),
             "implementation package": str(Path(__file__).resolve().parents[1]),
             "workspace": str(paths.workspace_root),
             "config source": load_result.source,
@@ -304,10 +304,10 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
 
     return CommandReport(
         command=command,
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"pcloud-manager runtime info ({mode})",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_info_actions(paths),
     )
 
@@ -448,7 +448,7 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
                 "push cleanup": "pcloud-manager action pushd.queue.prune-missing-local",
             }
         )
-    return details, _sort_issues(issues)
+    return details, sort_issues(issues)
 
 
 def _queue_warning_summary(queue_details: dict[str, object]) -> str:
@@ -553,7 +553,7 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
         for spec in resolve_layers(config, "all")
     }
     queue_details, queue_issues = _service_queue_overview(config)
-    issues = _sort_issues(
+    issues = sort_issues(
         list(load_result.issues)
         + _sync_state_issues(sync_state)
         + scope_issues(scope_info)
@@ -613,24 +613,24 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
         summary = f"{summary}; {queue_summary}"
     return CommandReport(
         command="status",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_status_actions(paths),
     )
 
 
 def cmd_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _status_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def cmd_info(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _info_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _doctor_next_actions(report: CommandReport) -> list[tuple[str, str]]:
@@ -782,15 +782,15 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         for spec in resolve_layers(config, "all")
     }
     queue_details, queue_issues = _service_queue_overview(config)
-    issues = _sort_issues(
+    issues = sort_issues(
         list(load_result.issues)
         + _sync_state_issues(sync_state)
         + scope_issues(scope_info)
         + _mount_state_issues(layer_states)
         + queue_issues
     )
-    has_errors = _has_errors(issues)
-    status = _status_from_issues(issues)
+    has_error_issues = has_errors(issues)
+    status = status_from_issues(issues)
     doctor_summary = _doctor_operational_summary(queue_details) or _doctor_summary(sync_state, layer_states)
     suspected_cause = _doctor_suspected_cause(
         scope_info,
@@ -857,17 +857,17 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         status=status,
         summary=doctor_summary if suspected_cause == "-" else f"{doctor_summary}; suspected cause: {suspected_cause}",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_status_actions(paths),
     )
-    return report, has_errors
+    return report, has_error_issues
 
 
 def cmd_doctor(args: argparse.Namespace, paths: RuntimePaths) -> int:
     paths.ensure_directories()
-    report, has_errors = _doctor_report(args, paths)
+    report, has_error_issues = _doctor_report(args, paths)
     if args.json:
         print(render_report(report, as_json=True))
     else:
         _print_doctor_human(report, args)
-    return 1 if has_errors else 0
+    return 1 if has_error_issues else 0

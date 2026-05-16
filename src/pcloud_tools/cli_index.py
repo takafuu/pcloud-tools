@@ -6,9 +6,9 @@ import subprocess
 import sys
 
 from .cli_common import (
-    issue_sort_key as _issue_sort_key,
-    report_issues as _report_issues,
-    sort_issues as _sort_issues,
+    issue_sort_key,
+    report_issues,
+    sort_issues,
 )
 from .config import ConfigIssue, load_config
 from .output import CommandReport, render_report
@@ -23,7 +23,7 @@ def add_index_parser(subparsers: argparse._SubParsersAction) -> None:
 def cmd_index(args: argparse.Namespace, paths: RuntimePaths) -> int:
     load_result = load_config(paths)
     config = load_result.config
-    issues = _sort_issues(list(load_result.issues))
+    issues = sort_issues(list(load_result.issues))
     configured_indexer = config.indexer_bin
     indexer = configured_indexer
     details: dict[str, object] = {
@@ -33,7 +33,7 @@ def cmd_index(args: argparse.Namespace, paths: RuntimePaths) -> int:
         "args": list(args.index_args),
     }
     if not indexer.exists():
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -48,7 +48,7 @@ def cmd_index(args: argparse.Namespace, paths: RuntimePaths) -> int:
             status="error",
             summary="indexer script is missing",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
         print(render_report(report))
         return 1

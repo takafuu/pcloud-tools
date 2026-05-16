@@ -11,14 +11,14 @@ from typing import Any
 
 from .autosync_runtime import read_autosync_state
 from .cli_common import (
-    action_command as _action_command,
-    entrypoint_command as _entrypoint_command,
-    exit_code_for_report as _exit_code_for_report,
-    has_errors as _has_errors,
-    report_issues as _report_issues,
-    shell_command as _shell_command,
-    sort_issues as _sort_issues,
-    status_from_issues as _status_from_issues,
+    action_command,
+    entrypoint_command,
+    exit_code_for_report,
+    has_errors,
+    report_issues,
+    shell_command,
+    sort_issues,
+    status_from_issues,
 )
 from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import read_daemon_state
@@ -71,7 +71,7 @@ def cmd_mode(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return None
     output_format = "xbar" if getattr(args, "xbar", False) else "json" if getattr(args, "json", False) else "human"
     print(_render_mode_human(report) if output_format == "human" else render_report(report, output_format=output_format))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _command_v(command_name: str) -> str | None:
@@ -317,26 +317,26 @@ def _mode_actions(paths: RuntimePaths) -> list[ReportAction]:
         ReportAction(
             id="mode.status.refresh",
             label="Refresh mode status",
-            command=_action_command(paths, "mode.status.refresh"),
+            command=action_command(paths, "mode.status.refresh"),
         ),
         ReportAction(
             id="mode.plan.daemon",
             label="Preview daemon mode switch",
-            command=_action_command(paths, "mode.plan.daemon"),
+            command=action_command(paths, "mode.plan.daemon"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="mode.plan.maintenance",
             label="Preview maintenance mode switch",
-            command=_action_command(paths, "mode.plan.maintenance"),
+            command=action_command(paths, "mode.plan.maintenance"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="mode.plan.pause",
             label="Preview pause mode switch",
-            command=_action_command(paths, "mode.plan.pause"),
+            command=action_command(paths, "mode.plan.pause"),
             terminal=True,
             refresh=False,
         ),
@@ -345,16 +345,16 @@ def _mode_actions(paths: RuntimePaths) -> list[ReportAction]:
 
 def _mode_status_report(paths: RuntimePaths) -> CommandReport:
     _config, snapshot, issues = _mode_snapshot(paths)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="mode status",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"pcloud-manager mode is {snapshot.get('current mode')}",
         details={
             **{key: value for key, value in snapshot.items() if key != "daemon services"},
             "state writes": "none",
         },
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_mode_actions(paths),
     )
 
@@ -455,7 +455,7 @@ def _run_launchctl_commands(commands: list[list[str]]) -> list[dict[str, object]
         tolerated = _launchctl_bootout_missing_is_tolerable(command, result)
         results.append(
             {
-                "command": _shell_command(command),
+                "command": shell_command(command),
                 "argv": command,
                 "returncode": result.returncode,
                 "stdout": result.stdout[:2000],
@@ -544,21 +544,21 @@ def _mode_plan_report(
         ],
     }
 
-    if not execute or _has_errors(issues):
-        if _has_errors(issues):
+    if not execute or has_errors(issues):
+        if has_errors(issues):
             details["state writes"] = "none"
             details["launchctl execution"] = "no"
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="mode switch" if execute else "mode plan",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary=(
                 f"mode switch to {target_mode} is gated"
                 if execute or issues
                 else f"mode switch to {target_mode} is ready for review"
             ),
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_mode_actions(paths),
         )
 
@@ -573,7 +573,7 @@ def _mode_plan_report(
                 message=f"mode switch launchctl command failed: {failed[0].get('stderr') or failed[0].get('stdout')}",
             )
         )
-    if not _has_errors(issues):
+    if not has_errors(issues):
         payload = {
             "mode": target_mode,
             "switched_at": datetime.now(timezone.utc).isoformat(),
@@ -587,17 +587,17 @@ def _mode_plan_report(
     else:
         details["state writes"] = "none"
 
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="mode switch",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"mode switch to {target_mode} completed"
-            if not _has_errors(issues)
+            if not has_errors(issues)
             else f"mode switch to {target_mode} failed"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_mode_actions(paths),
     )
 
@@ -625,7 +625,7 @@ def _render_mode_human(report: CommandReport) -> str:
     if isinstance(commands, list) and commands:
         lines.append("planned launchctl commands:")
         for command in commands:
-            lines.append(f"- {_shell_command(command)}")
+            lines.append(f"- {shell_command(command)}")
     results = details.get("launchctl results")
     if isinstance(results, list) and results:
         lines.append("launchctl results:")

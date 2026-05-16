@@ -19,18 +19,18 @@ from pathlib import Path
 
 from ..chat_notify import build_chat_notify_command, chat_notify_status, send_chat_notification
 from ..cli_common import (
-    action_command as _action_command,
-    entrypoint_command as _entrypoint_command,
-    exit_code_for_report as _exit_code_for_report,
-    has_errors as _has_errors,
-    has_warnings as _has_warnings,
-    issue_sort_key as _issue_sort_key,
-    output_format as _output_format,
-    print_report as _print_report,
-    report_issues as _report_issues,
-    shell_command as _shell_command,
-    sort_issues as _sort_issues,
-    status_from_issues as _status_from_issues,
+    action_command,
+    entrypoint_command,
+    exit_code_for_report,
+    has_errors,
+    has_warnings,
+    issue_sort_key,
+    output_format,
+    print_report,
+    report_issues,
+    shell_command,
+    sort_issues,
+    status_from_issues,
 )
 from ..config import AppConfig, ConfigIssue, load_config
 from ..daemon_state import DaemonState, read_daemon_state, write_diffid
@@ -1127,159 +1127,159 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
         ReportAction(
             id=f"{service.name}.status.refresh",
             label=f"Refresh {service.name} state",
-            command=_action_command(paths, f"{service.name}.status.refresh"),
+            command=action_command(paths, f"{service.name}.status.refresh"),
         ),
         ReportAction(
             id=f"{service.name}.preview",
             label=f"Preview {service.name} plan",
-            command=_action_command(paths, f"{service.name}.preview"),
+            command=action_command(paths, f"{service.name}.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.policy",
             label=f"Inspect {service.name} daemon policy",
-            command=_action_command(paths, f"{service.name}.policy"),
+            command=action_command(paths, f"{service.name}.policy"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.run.preview",
             label=f"Preview {service.name} dry run",
-            command=_action_command(paths, f"{service.name}.run.preview"),
+            command=action_command(paths, f"{service.name}.run.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.gate",
             label=f"Check {service.name} real gate",
-            command=_action_command(paths, f"{service.name}.gate"),
+            command=action_command(paths, f"{service.name}.gate"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.gate",
             label=f"Check {service.name} launchd gate",
-            command=_action_command(paths, f"{service.name}.launchd.gate"),
+            command=action_command(paths, f"{service.name}.launchd.gate"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.status",
             label=f"Inspect {service.name} launchd status",
-            command=_action_command(paths, f"{service.name}.launchd.status"),
+            command=action_command(paths, f"{service.name}.launchd.status"),
             terminal=True,
             refresh=True,
         ),
         ReportAction(
             id=f"{service.name}.launchd.review",
             label=f"Review {service.name} launchd plist and foreground command",
-            command=_action_command(paths, f"{service.name}.launchd.review"),
+            command=action_command(paths, f"{service.name}.launchd.review"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.register.preview",
             label=f"Preview {service.name} launchd registration",
-            command=_action_command(paths, f"{service.name}.launchd.register.preview"),
+            command=action_command(paths, f"{service.name}.launchd.register.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.reload.preview",
             label=f"Preview {service.name} launchd reload",
-            command=_action_command(paths, f"{service.name}.launchd.reload.preview"),
+            command=action_command(paths, f"{service.name}.launchd.reload.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.resident-plist.preview",
             label=f"Preview {service.name} operational launchd plist",
-            command=_action_command(paths, f"{service.name}.launchd.resident-plist.preview"),
+            command=action_command(paths, f"{service.name}.launchd.resident-plist.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.executor-plist.preview",
             label=f"Preview {service.name} queue executor launchd plist",
-            command=_action_command(paths, f"{service.name}.launchd.executor-plist.preview"),
+            command=action_command(paths, f"{service.name}.launchd.executor-plist.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.automation-plist.preview",
             label=f"Preview {service.name} real transfer automation launchd plist",
-            command=_action_command(paths, f"{service.name}.launchd.automation-plist.preview"),
+            command=action_command(paths, f"{service.name}.launchd.automation-plist.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.automation-reload.preview",
             label=f"Preview {service.name} real transfer automation launchd reload",
-            command=_action_command(paths, f"{service.name}.launchd.automation-reload.preview"),
+            command=action_command(paths, f"{service.name}.launchd.automation-reload.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.launchd.plist.preview",
             label=f"Preview {service.name} launchd plist",
-            command=_action_command(paths, f"{service.name}.launchd.plist.preview"),
+            command=action_command(paths, f"{service.name}.launchd.plist.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.preview",
             label=f"Preview {service.name} transfer commands",
-            command=_action_command(paths, f"{service.name}.transfer.preview"),
+            command=action_command(paths, f"{service.name}.transfer.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.validation-matrix",
             label=f"Review {service.name} transfer validation matrix",
-            command=_action_command(paths, f"{service.name}.transfer.validation-matrix"),
+            command=action_command(paths, f"{service.name}.transfer.validation-matrix"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.check",
             label=f"Check {service.name} transfer gate",
-            command=_action_command(paths, f"{service.name}.transfer.check"),
+            command=action_command(paths, f"{service.name}.transfer.check"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.real-gate",
             label=f"Check {service.name} real transfer gate",
-            command=_action_command(paths, f"{service.name}.transfer.real-gate"),
+            command=action_command(paths, f"{service.name}.transfer.real-gate"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.automation-gate",
             label=f"Check {service.name} transfer automation gate",
-            command=_action_command(paths, f"{service.name}.transfer.automation-gate"),
+            command=action_command(paths, f"{service.name}.transfer.automation-gate"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.real-run.preview",
             label=f"Preview {service.name} real transfer run",
-            command=_action_command(paths, f"{service.name}.transfer.real-run.preview"),
+            command=action_command(paths, f"{service.name}.transfer.real-run.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.executor-run.preview",
             label=f"Preview {service.name} transfer executor tick",
-            command=_action_command(paths, f"{service.name}.transfer.executor-run.preview"),
+            command=action_command(paths, f"{service.name}.transfer.executor-run.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id=f"{service.name}.transfer.consume.preview",
             label=f"Preview {service.name} transfer consume policy",
-            command=_action_command(paths, f"{service.name}.transfer.consume.preview"),
+            command=action_command(paths, f"{service.name}.transfer.consume.preview"),
             terminal=True,
             refresh=False,
         ),
@@ -1289,7 +1289,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="pushd.fswatch.resident-gate",
                 label="Check pushd fswatch resident gate",
-                command=_action_command(paths, "pushd.fswatch.resident-gate"),
+                command=action_command(paths, "pushd.fswatch.resident-gate"),
                 terminal=True,
                 refresh=False,
             )
@@ -1298,7 +1298,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="pushd.fswatch.resident-run.preview",
                 label="Preview pushd fswatch resident run",
-                command=_action_command(paths, "pushd.fswatch.resident-run.preview"),
+                command=action_command(paths, "pushd.fswatch.resident-run.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -1307,7 +1307,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="pushd.queue.clear.preview",
                 label="Preview clear pushd queue",
-                command=_action_command(paths, "pushd.queue.clear.preview"),
+                command=action_command(paths, "pushd.queue.clear.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -1316,7 +1316,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="pushd.queue.prune-missing-local",
                 label="Ignore missing local upload records",
-                command=_action_command(paths, "pushd.queue.prune-missing-local"),
+                command=action_command(paths, "pushd.queue.prune-missing-local"),
                 terminal=False,
                 refresh=True,
             )
@@ -1326,7 +1326,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="diffd.api-poll.long-poll-gate",
                 label="Check diffd API long-poll gate",
-                command=_action_command(paths, "diffd.api-poll.long-poll-gate"),
+                command=action_command(paths, "diffd.api-poll.long-poll-gate"),
                 terminal=True,
                 refresh=False,
             )
@@ -1335,7 +1335,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="diffd.api-poll.long-poll-run.preview",
                 label="Preview diffd API long-poll run",
-                command=_action_command(paths, "diffd.api-poll.long-poll-run.preview"),
+                command=action_command(paths, "diffd.api-poll.long-poll-run.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -1344,7 +1344,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
             ReportAction(
                 id="diffd.remote-change.clear.preview",
                 label="Preview clear diffd remote changes",
-                command=_action_command(paths, "diffd.remote-change.clear.preview"),
+                command=action_command(paths, "diffd.remote-change.clear.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -1632,14 +1632,14 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
         last_run_details, last_run_issues = _diffd_last_api_poll_run_details(load_result.config)
     plan_details, plan_issues = _status_plan_details(load_result.config, state, service)
     gate_details = _status_gate_details(paths, load_result.config, service)
-    issues = _sort_issues(
+    issues = sort_issues(
         list(load_result.issues)
         + list(state.issues)
         + last_run_issues
         + plan_issues
     )
     if service.name == "pushd" and int(plan_details.get("missing local upload records", 0) or 0) > 0:
-        issues = _sort_issues(
+        issues = sort_issues(
             [
                 *issues,
                 ConfigIssue(
@@ -1663,7 +1663,7 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
         plan_summary_fragment = f"planned: {planned_count}; manual-review: {manual_count}"
     return CommandReport(
         command=f"{service.name} status",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name}: {process_state}; {queued_label}: {queued_count}; "
             f"{plan_summary_fragment}; "
@@ -1678,7 +1678,7 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
             **suppression_status_details(load_result.config),
             **chat_notify_status(load_result.config),
         },
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -1687,11 +1687,11 @@ def cmd_service_status(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
     report = _service_status_report(paths, service)
-    if _output_format(args) == "xbar":
+    if output_format(args) == "xbar":
         print(_render_service_status_xbar(report, service))
-        return _exit_code_for_report(report)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+        return exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _plan_records(records) -> list[dict[str, str]]:
@@ -2231,7 +2231,7 @@ def _service_preview_report(paths: RuntimePaths, service: ServiceDefinition) -> 
         plan = build_diffd_plan(load_result.config, state, daemon_state)
         issues.extend(plan.issues)
         details = _diffd_preview_details(paths, load_result.config, daemon_state, plan)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details.update(
         {
             "pid file": str(state.pid_file),
@@ -2243,10 +2243,10 @@ def _service_preview_report(paths: RuntimePaths, service: ServiceDefinition) -> 
 
     return CommandReport(
         command=f"{service.name} preview",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} scaffold preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -2255,8 +2255,8 @@ def cmd_service_preview(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
     report = _service_preview_report(paths, service)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _service_policy_details(config: AppConfig, service: ServiceDefinition) -> dict[str, object]:
@@ -2326,13 +2326,13 @@ def _service_policy_details(config: AppConfig, service: ServiceDefinition) -> di
 
 def _service_policy_report(paths: RuntimePaths, service: ServiceDefinition) -> CommandReport:
     load_result = load_config(paths)
-    issues = _sort_issues(list(load_result.issues))
+    issues = sort_issues(list(load_result.issues))
     return CommandReport(
         command=f"{service.name} policy",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} daemonization policy is documented",
         details=_service_policy_details(load_result.config, service),
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -2341,8 +2341,8 @@ def cmd_service_policy(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
     report = _service_policy_report(paths, service)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefinition) -> dict[str, object]:
@@ -2410,13 +2410,13 @@ def _service_gate_report(paths: RuntimePaths, service: ServiceDefinition) -> Com
             ),
         )
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} real-operation gate is closed",
         details=_gate_details(paths, load_result.config, service),
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -2425,8 +2425,8 @@ def cmd_service_gate(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
     report = _service_gate_report(paths, service)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _service_launchd_label(paths: RuntimePaths, service: ServiceDefinition) -> str:
@@ -2743,23 +2743,23 @@ def _service_launchd_plist_report(
                 message=f"refusing to write {service.name} launchd plist outside {expected_root}: {plist_path}",
             )
         )
-    issues = _sort_issues(issues)
-    if _has_errors(issues):
+    issues = sort_issues(issues)
+    if has_errors(issues):
         details["state writes"] = "none"
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(plistlib.dumps(payload, sort_keys=True))
         details["plist status"] = "written"
     return CommandReport(
         command=f"{service.name} launchd plist",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd plist written"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd plist preview is ready"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -2852,7 +2852,7 @@ def _service_launchd_executor_plist_report(
                 message=f"refusing to write {service.name} executor plist outside {expected_root}: {plist_path}",
             )
         )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "execute": "yes" if execute else "no",
         "planned action": f"{'write' if execute else 'preview'} {service.name} dev-state queue executor LaunchAgent plist",
@@ -2872,7 +2872,7 @@ def _service_launchd_executor_plist_report(
         "keep alive": payload.get("KeepAlive", False),
         "start interval seconds": payload.get("StartInterval", "-"),
         "preflight checks": checks,
-        "state writes": "launchd executor plist only" if execute and not _has_errors(issues) else "none",
+        "state writes": "launchd executor plist only" if execute and not has_errors(issues) else "none",
         "launchctl execution": "no",
         "public launchd changes": "no",
         "persistent daemon start": "no",
@@ -2890,20 +2890,20 @@ def _service_launchd_executor_plist_report(
             "listing cache operations",
         ],
     }
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(plistlib.dumps(payload, sort_keys=True))
         details["plist status"] = "written"
     return CommandReport(
         command=f"{service.name} launchd executor-plist",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd executor plist written"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd executor plist preview is ready"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -3047,7 +3047,7 @@ def _service_launchd_automation_plist_report(
                 message=f"refusing to write {service.name} automation plist outside {expected_root}: {plist_path}",
             )
         )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "execute": "yes" if execute else "no",
         "planned action": f"{'write' if execute else 'preview'} {service.name} public real-transfer queue executor LaunchAgent plist",
@@ -3079,8 +3079,8 @@ def _service_launchd_automation_plist_report(
         "approval status": approval_status,
         "automation plist gate env var": plist_gate_env,
         "automation plist gate accepted value": plist_gate_value,
-        "state writes": "public automation LaunchAgent plist only" if execute and not _has_errors(issues) else "none",
-        "public plist writes": "yes" if execute and not _has_errors(issues) else "no",
+        "state writes": "public automation LaunchAgent plist only" if execute and not has_errors(issues) else "none",
+        "public plist writes": "yes" if execute and not has_errors(issues) else "no",
         "launchctl execution": "no",
         "automatic real transfer execution": "no",
         "normal sync/resync": "no",
@@ -3096,20 +3096,20 @@ def _service_launchd_automation_plist_report(
         ],
         "next human check trigger": "terminal review before public automation plist write or reload",
     }
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(plistlib.dumps(payload, sort_keys=True))
         details["plist status"] = "written"
     return CommandReport(
         command=f"{service.name} launchd automation-plist",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd automation plist written"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd automation plist is gated"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -3199,7 +3199,7 @@ def _service_launchd_automation_reload_report(
                 message=f"{service.name} automation reload requires operational plist, shadow report, approvals, launchctl, and {reload_gate_env}={reload_gate_value}",
             )
         )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     launchctl_results: list[dict[str, object]] = []
     details: dict[str, object] = {
         "execute": "yes" if execute else "no",
@@ -3219,10 +3219,10 @@ def _service_launchd_automation_reload_report(
         "approval status": approval_status,
         "automation reload gate env var": reload_gate_env,
         "automation reload gate accepted value": reload_gate_value,
-        "state writes": "launchctl automation reload only" if execute and not _has_errors(issues) else "none",
+        "state writes": "launchctl automation reload only" if execute and not has_errors(issues) else "none",
         "public plist writes": "no",
-        "launchctl execution": "yes" if execute and not _has_errors(issues) else "no",
-        "automatic real transfer execution": "yes-if-bootstrap-succeeds-and-queue-has-records" if execute and not _has_errors(issues) else "no",
+        "launchctl execution": "yes" if execute and not has_errors(issues) else "no",
+        "automatic real transfer execution": "yes-if-bootstrap-succeeds-and-queue-has-records" if execute and not has_errors(issues) else "no",
         "normal sync/resync": "no",
         "listing cache operations": "no",
         "blocked operations": [
@@ -3232,7 +3232,7 @@ def _service_launchd_automation_reload_report(
         ],
         "next human check trigger": "terminal review before public automation launchd reload",
     }
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         launchctl_results = _run_launchctl_commands(planned_commands, tolerate_missing_bootout=True)
         details["launchctl results"] = launchctl_results
         failed = [
@@ -3248,17 +3248,17 @@ def _service_launchd_automation_reload_report(
                     message=f"{service.name} automation launchd reload failed: {failed[0].get('stderr') or failed[0].get('stdout')}",
                 )
             )
-            issues = _sort_issues(issues)
+            issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} launchd automation-reload",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd automation reload completed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd automation reload is gated"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -3337,13 +3337,13 @@ def _service_launchd_review_report(
             message=f"{service.name} launchd plist/foreground command still requires human terminal review",
         )
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} launchd review",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} launchd human review is required",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -3444,7 +3444,7 @@ def _run_launchctl_commands(
         retryable = retry_bootstrap_io_error and _launchctl_bootstrap_io_error_is_retryable(command, result)
         results.append(
             {
-                "command": _shell_command(command),
+                "command": shell_command(command),
                 "argv": command,
                 "returncode": result.returncode,
                 "stdout": result.stdout[:2000],
@@ -3465,7 +3465,7 @@ def _run_launchctl_commands(
             retry_result = subprocess.run(command, check=False, capture_output=True, text=True)
             results.append(
                 {
-                    "command": _shell_command(command),
+                    "command": shell_command(command),
                     "argv": command,
                     "returncode": retry_result.returncode,
                     "stdout": retry_result.stdout[:2000],
@@ -3544,9 +3544,9 @@ def _service_launchd_register_report(
         "rollback command examples": rollback_commands,
         "preflight checks": checks,
         "approval status": approval_status,
-        "state writes": "launchctl registration only" if execute and not _has_errors(_sort_issues(issues)) else "none",
-        "launchctl execution": "yes" if execute and not _has_errors(_sort_issues(issues)) else "no",
-        "persistent daemon start": "yes-if-bootstrap-succeeds" if execute and not _has_errors(_sort_issues(issues)) else "no",
+        "state writes": "launchctl registration only" if execute and not has_errors(sort_issues(issues)) else "none",
+        "launchctl execution": "yes" if execute and not has_errors(sort_issues(issues)) else "no",
+        "persistent daemon start": "yes-if-bootstrap-succeeds" if execute and not has_errors(sort_issues(issues)) else "no",
         "automatic transfer execution": "no",
         "normal sync/resync": "no",
         "listing cache operations": "no",
@@ -3559,8 +3559,8 @@ def _service_launchd_register_report(
             "autosync launchd changes",
         ],
     }
-    issues = _sort_issues(issues)
-    if execute and not _has_errors(issues):
+    issues = sort_issues(issues)
+    if execute and not has_errors(issues):
         launchctl_results = _run_launchctl_commands(planned_commands, retry_bootstrap_io_error=True)
         details["launchctl results"] = launchctl_results
         failed = [
@@ -3575,17 +3575,17 @@ def _service_launchd_register_report(
                     message=f"{service.name} launchd registration failed: {failed[0].get('stderr') or failed[0].get('stdout')}",
                 )
             )
-            issues = _sort_issues(issues)
+            issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} launchd register",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd registration completed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd registration is gated"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -3808,7 +3808,7 @@ def _pushd_launchd_resident_plist_report(
                 message=f"refusing to write {service.name} operational plist outside {expected_root}: {plist_path}",
             )
         )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "execute": "yes" if execute else "no",
         "planned action": f"{'write' if execute else 'preview'} {service.name} operational LaunchAgent plist",
@@ -3829,7 +3829,7 @@ def _pushd_launchd_resident_plist_report(
         "start interval seconds": payload.get("StartInterval", "-"),
         "preflight checks": checks,
         "approval status": approval_status,
-        "state writes": "public launchd resident plist only" if execute and not _has_errors(issues) else "none",
+        "state writes": "public launchd resident plist only" if execute and not has_errors(issues) else "none",
         "launchctl execution": "no",
         "persistent daemon start": "no",
         "automatic transfer execution": "no",
@@ -3845,20 +3845,20 @@ def _pushd_launchd_resident_plist_report(
         ],
         "next human check trigger": "explicit request to reload launchd with operational plist",
     }
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(plistlib.dumps(payload, sort_keys=True))
         details["plist status"] = "written"
     return CommandReport(
         command=f"{service.name} launchd resident-plist",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd resident plist written"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd resident plist is gated"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -4038,7 +4038,7 @@ def _pushd_launchd_reload_report(
                 message=f"{service.name} launchd reload requires operational plist, shadow report, approvals, launchctl, and reload gate env",
             )
         )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     launchctl_results: list[dict[str, object]] = []
     details: dict[str, object] = {
         "execute": "yes" if execute else "no",
@@ -4059,9 +4059,9 @@ def _pushd_launchd_reload_report(
         "rollback command examples": rollback_commands,
         "preflight checks": checks,
         "approval status": approval_status,
-        "state writes": "launchctl reload only" if execute and not _has_errors(issues) else "none",
-        "launchctl execution": "yes" if execute and not _has_errors(issues) else "no",
-        "persistent daemon start": "yes-if-bootstrap-succeeds" if execute and not _has_errors(issues) else "no",
+        "state writes": "launchctl reload only" if execute and not has_errors(issues) else "none",
+        "launchctl execution": "yes" if execute and not has_errors(issues) else "no",
+        "persistent daemon start": "yes-if-bootstrap-succeeds" if execute and not has_errors(issues) else "no",
         "automatic transfer execution": "no",
         "normal sync/resync": "no",
         "listing cache operations": "no",
@@ -4074,7 +4074,7 @@ def _pushd_launchd_reload_report(
             "autosync launchd changes",
         ],
     }
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         launchctl_results = _run_launchctl_commands(planned_commands, retry_bootstrap_io_error=True)
         details["launchctl results"] = launchctl_results
         failed = [
@@ -4089,17 +4089,17 @@ def _pushd_launchd_reload_report(
                     message=f"{service.name} launchd reload failed: {failed[0].get('stderr') or failed[0].get('stdout')}",
                 )
             )
-            issues = _sort_issues(issues)
+            issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} launchd reload",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"{service.name} launchd reload completed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"{service.name} launchd reload is gated"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -4225,13 +4225,13 @@ def _service_launchd_gate_report(
         ],
         "next human check trigger": "explicit request to write plist or register launchd service",
     }
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} launchd gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} launchd gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -4324,13 +4324,13 @@ def _service_launchd_status_report(
         "next human check trigger": "explicit request to write plist or register launchd service",
     }
     details.update(print_result)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} launchd status",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} launchd status is {details['registration status']}",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -4343,43 +4343,43 @@ def cmd_service_launchd(
     if args.launchd_command == "status":
         report = _service_launchd_status_report(paths, service)
         _print_service_launchd_status_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "review":
         report = _service_launchd_review_report(paths, service)
         _print_service_launchd_review_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "register":
         report = _service_launchd_register_report(args, paths, service)
         _print_service_launchd_register_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "reload":
         report = _pushd_launchd_reload_report(args, paths, service)
         _print_service_launchd_reload_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "resident-plist":
         report = _pushd_launchd_resident_plist_report(args, paths, service)
         _print_service_launchd_resident_plist_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "executor-plist":
         report = _service_launchd_executor_plist_report(args, paths, service)
         _print_service_launchd_plist_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "automation-plist":
         report = _service_launchd_automation_plist_report(args, paths, service)
         _print_service_launchd_plist_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "automation-reload":
         report = _service_launchd_automation_reload_report(args, paths, service)
         _print_service_launchd_reload_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "plist":
         report = _service_launchd_plist_report(args, paths, service)
         _print_service_launchd_plist_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.launchd_command == "gate":
         report = _service_launchd_gate_report(args, paths, service)
         _print_service_launchd_gate_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     return None
 
 
@@ -4408,7 +4408,7 @@ def _pushd_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandR
         dev_issue = _dev_execute_issue(paths, load_result.config, "pushd run")
         if dev_issue:
             issues.append(dev_issue)
-        if not _has_errors(issues):
+        if not has_errors(issues):
             result = record_dry_run_state(
                 state=state,
                 service_name="pushd",
@@ -4426,16 +4426,16 @@ def _pushd_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandR
             )
             details["recorded cursor"] = result.cursor
 
-    summary = "pushd dry-run recorded" if execute and not _has_errors(issues) else "pushd run preview is ready"
-    if _has_errors(issues):
+    summary = "pushd dry-run recorded" if execute and not has_errors(issues) else "pushd run preview is ready"
+    if has_errors(issues):
         summary = "pushd run cannot be recorded until issues are resolved"
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="pushd run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
 
@@ -4465,7 +4465,7 @@ def _diffd_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandR
         dev_issue = _dev_execute_issue(paths, load_result.config, "diffd run")
         if dev_issue:
             issues.append(dev_issue)
-        if not _has_errors(issues):
+        if not has_errors(issues):
             result = record_dry_run_state(
                 state=state,
                 service_name="diffd",
@@ -4483,16 +4483,16 @@ def _diffd_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandR
             )
             details["recorded cursor"] = result.cursor
 
-    summary = "diffd dry-run recorded" if execute and not _has_errors(issues) else "diffd run preview is ready"
-    if _has_errors(issues):
+    summary = "diffd dry-run recorded" if execute and not has_errors(issues) else "diffd run preview is ready"
+    if has_errors(issues):
         summary = "diffd run cannot be recorded until issues are resolved"
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="diffd run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -4501,8 +4501,8 @@ def cmd_service_run(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
     report = _pushd_run_report(args, paths) if service.name == "pushd" else _diffd_run_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _invalid_fswatch_records(invalid_events) -> tuple[PlanRecord, ...]:
@@ -4543,13 +4543,13 @@ def _pushd_fswatch_report(args: argparse.Namespace, paths: RuntimePaths) -> Comm
                 message=f"cannot read fswatch fixture {fixture}: {exc}",
             )
         )
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="pushd fswatch preview",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary="pushd fswatch fixture cannot be previewed",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_service_actions(paths, _SERVICES["pushd"]),
         )
 
@@ -4562,7 +4562,7 @@ def _pushd_fswatch_report(args: argparse.Namespace, paths: RuntimePaths) -> Comm
         total=len(parsed.events) + len(invalid_records),
     )
     issues.extend(plan.issues)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details.update(
         {
             "parsed fswatch events": len(parsed.events),
@@ -4573,10 +4573,10 @@ def _pushd_fswatch_report(args: argparse.Namespace, paths: RuntimePaths) -> Comm
     )
     return CommandReport(
         command="pushd fswatch preview",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="pushd fswatch fixture preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
 
@@ -4630,13 +4630,13 @@ def _pushd_fswatch_probe_report(paths: RuntimePaths) -> CommandReport:
         "fswatch command": list(command),
         "state writes": "none",
     }
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="pushd fswatch probe",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="pushd fswatch one-shot probe preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
 
@@ -4742,13 +4742,13 @@ def _pushd_fswatch_resident_gate_report(args: argparse.Namespace, paths: Runtime
             message="pushd fswatch resident mode remains gated; this command is read-only",
         )
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="pushd fswatch resident-gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="pushd fswatch resident gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
 
@@ -4906,20 +4906,20 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
             )
         )
 
-    if not execute or _has_errors(issues):
-        if _has_errors(issues):
+    if not execute or has_errors(issues):
+        if has_errors(issues):
             details["state writes"] = "none"
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="pushd fswatch resident-run",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary=(
                 "pushd fswatch resident execution is gated"
-                if _has_errors(issues) or not gate_open
+                if has_errors(issues) or not gate_open
                 else "pushd fswatch resident run is ready"
             ),
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_service_actions(paths, _SERVICES["pushd"]),
         )
 
@@ -5052,7 +5052,7 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
         {
             "finished_at": finished_at,
             "cleanup": cleanup,
-            "status": "failed" if _has_errors(issues) else "success",
+            "status": "failed" if has_errors(issues) else "success",
             "appended_records": appended_records,
             "duplicate_records": duplicate_records,
             "debounce_records": debounce_records,
@@ -5061,7 +5061,7 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
             "invalid_records": invalid_records,
         }
     )
-    if not _has_errors(issues):
+    if not has_errors(issues):
         _write_resident_run_state(state_file, results)
 
     details.update(
@@ -5088,16 +5088,16 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
             "invalid event details": invalid_records,
             "process result": results,
             "process group cleanup": cleanup.get("process group cleanup", "-"),
-            "state writes": "pushd queue and resident run state" if not _has_errors(issues) else "none",
+            "state writes": "pushd queue and resident run state" if not has_errors(issues) else "none",
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="pushd fswatch resident-run",
-        status=_status_from_issues(issues),
-        summary="pushd fswatch resident run completed" if not _has_errors(issues) else "pushd fswatch resident run failed",
+        status=status_from_issues(issues),
+        summary="pushd fswatch resident run completed" if not has_errors(issues) else "pushd fswatch resident run failed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
 
@@ -5105,20 +5105,20 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
 def cmd_pushd_fswatch(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.fswatch_command == "preview":
         report = _pushd_fswatch_report(args, paths)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.fswatch_command == "probe":
         report = _pushd_fswatch_probe_report(paths)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.fswatch_command == "resident-gate":
         report = _pushd_fswatch_resident_gate_report(args, paths)
         _print_fswatch_resident_gate_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.fswatch_command == "resident-run":
         report = _pushd_fswatch_resident_run_report(args, paths)
         _print_fswatch_resident_run_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     return None
 
 
@@ -5154,13 +5154,13 @@ def _diffd_diff_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
                 message=f"cannot read pCloud diff fixture {fixture}: {exc}",
             )
         )
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="diffd diff preview",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary="diffd pCloud diff fixture cannot be previewed",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_service_actions(paths, _SERVICES["diffd"]),
         )
 
@@ -5173,7 +5173,7 @@ def _diffd_diff_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
         remote_records=(*remote_records, *invalid_records),
     )
     issues.extend(plan.issues)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details.update(
         {
             "fixture diffid": parsed.diffid,
@@ -5185,10 +5185,10 @@ def _diffd_diff_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
     )
     return CommandReport(
         command="diffd diff preview",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="diffd pCloud diff fixture preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -5196,15 +5196,15 @@ def _diffd_diff_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
 def cmd_diffd_diff(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.diff_command == "preview":
         report = _diffd_diff_report(args, paths)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     return None
 
 
 def _diffd_api_poll_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     daemon_state = read_daemon_state(load_result.config)
-    issues = _sort_issues(list(load_result.issues) + list(daemon_state.issues))
+    issues = sort_issues(list(load_result.issues) + list(daemon_state.issues))
     details: dict[str, object] = {
         "planned action": "preview diffd one-shot pCloud API poll",
         "implementation status": "API poll preview only; pCloud API is not called",
@@ -5228,10 +5228,10 @@ def _diffd_api_poll_report(paths: RuntimePaths) -> CommandReport:
     }
     return CommandReport(
         command="diffd api-poll preview",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="diffd pCloud API poll preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -5342,13 +5342,13 @@ def _diffd_api_long_poll_gate_report(args: argparse.Namespace, paths: RuntimePat
             message="diffd pCloud API long-poll remains gated; this command is read-only",
         )
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="diffd api-poll long-poll-gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="diffd pCloud API long-poll gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -5526,9 +5526,9 @@ def _diffd_folder_cache_report(args: argparse.Namespace, paths: RuntimePaths) ->
                     message="folder-cache add requires a safe relative folder path",
                 )
             )
-        if not _has_errors(issues):
+        if not has_errors(issues):
             after[folder_id] = path
-        summary = "diffd folder cache mapping added" if execute and not _has_errors(issues) else "diffd folder cache add preview is ready"
+        summary = "diffd folder cache mapping added" if execute and not has_errors(issues) else "diffd folder cache add preview is ready"
     elif command == "remove":
         folder_id = str(getattr(args, "folder_id", "") or "").strip()
         details.update(
@@ -5548,19 +5548,19 @@ def _diffd_folder_cache_report(args: argparse.Namespace, paths: RuntimePaths) ->
                     message="folder-cache remove requires a numeric pCloud folder id",
                 )
             )
-        if not _has_errors(issues):
+        if not has_errors(issues):
             after.pop(folder_id, None)
         details["folder cache entries removed"] = len(before) - len(after)
         summary = (
             "diffd folder cache mapping removed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "diffd folder cache remove preview is ready"
         )
     elif command == "clear":
         details["planned action"] = "clear diffd folder cache" if execute else "preview clear diffd folder cache"
         after = {}
         details["folder cache entries removed"] = len(before)
-        summary = "diffd folder cache cleared" if execute and not _has_errors(issues) else "diffd folder cache clear preview is ready"
+        summary = "diffd folder cache cleared" if execute and not has_errors(issues) else "diffd folder cache clear preview is ready"
     else:
         issues.append(
             ConfigIssue(
@@ -5579,7 +5579,7 @@ def _diffd_folder_cache_report(args: argparse.Namespace, paths: RuntimePaths) ->
         dev_issue = _dev_execute_issue(paths, config, f"diffd folder-cache {command}")
         if dev_issue:
             issues.append(dev_issue)
-        if not _has_errors(issues):
+        if not has_errors(issues):
             try:
                 _write_diffd_folder_cache(config, after)
                 state_writes = "diffd folder cache"
@@ -5591,19 +5591,19 @@ def _diffd_folder_cache_report(args: argparse.Namespace, paths: RuntimePaths) ->
                         message=f"cannot write diffd folder cache {cache_file}: {exc}",
                     )
                 )
-    if _has_errors(issues):
+    if has_errors(issues):
         state_writes = "none"
         if command != "status":
             summary = "diffd folder cache cannot be updated until issues are resolved"
     details["state writes"] = state_writes
 
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"diffd folder-cache {command}".strip(),
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -5611,7 +5611,7 @@ def _diffd_folder_cache_report(args: argparse.Namespace, paths: RuntimePaths) ->
 def cmd_diffd_folder_cache(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _diffd_folder_cache_report(args, paths)
     _print_diffd_folder_cache_report(report, args)
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 @dataclass(frozen=True)
@@ -6015,7 +6015,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 )
             )
 
-    if execute and live_api and not _has_errors(issues):
+    if execute and live_api and not has_errors(issues):
         lock_acquired, lock_status, lock_issue = _acquire_diffd_api_lock(
             lock_dir,
             issue_key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_LOCK",
@@ -6026,7 +6026,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         if lock_issue is not None:
             issues.append(lock_issue)
 
-    if execute and live_api and not _has_errors(issues):
+    if execute and live_api and not has_errors(issues):
         try:
             current_diffid = daemon_state.diffid
             folder_cache = dict(initial_folder_cache)
@@ -6142,7 +6142,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 )
             )
 
-    if not execute or _has_errors(issues):
+    if not execute or has_errors(issues):
         if lock_acquired:
             try:
                 lock_dir.rmdir()
@@ -6156,24 +6156,24 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                         message=f"cannot release diffd API long-poll lock {lock_dir}: {exc}",
                     )
                 )
-        if _has_errors(issues) and not failure_state_written:
+        if has_errors(issues) and not failure_state_written:
             details["state writes"] = "none"
         elif failure_state_written:
             details["state writes"] = "diffd long-poll failure state"
             details["failure state written"] = "yes"
             details["written diffid"] = "-"
             details["iterations processed"] = 0
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="diffd api-poll long-poll-run",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary=(
                 "diffd pCloud API long-poll execution is gated"
-                if _has_errors(issues) or not gate_open
+                if has_errors(issues) or not gate_open
                 else "diffd pCloud API long-poll run is ready"
             ),
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_service_actions(paths, _SERVICES["diffd"]),
         )
 
@@ -6190,7 +6190,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         else:
             appended_records.append({"path": record.path, "action": record.action, "reason": record.reason})
     written_diffid = "-"
-    if not _has_errors(issues):
+    if not has_errors(issues):
         try:
             written_diffid = write_diffid(config, parsed.diffid)
         except ValueError as exc:
@@ -6222,7 +6222,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         "skipped_records": skipped_records,
         "invalid_records": _invalid_diff_details(parsed.invalid),
     }
-    if not _has_errors(issues):
+    if not has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(state_file, run_state, sort_keys=True)
         _write_diffd_folder_cache(config, parsed.folder_paths)
@@ -6251,22 +6251,22 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "process result": run_state,
             "state writes": (
                 "diffd remote-change records, diff cursor, and long-poll run state"
-                if not _has_errors(issues)
+                if not has_errors(issues)
                 else "none"
             ),
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="diffd api-poll long-poll-run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             "diffd pCloud API long-poll run completed"
-            if not _has_errors(issues)
+            if not has_errors(issues)
             else "diffd pCloud API long-poll run failed"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -6369,7 +6369,7 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
         )
 
     run_state: dict[str, object] | None = None
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         lock_acquired, lock_status, lock_issue = _acquire_diffd_api_lock(
             lock_dir,
             issue_key="PCLOUD_TOOLS_DIFFD_API_CHECKPOINT_LOCK",
@@ -6380,7 +6380,7 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
         if lock_issue is not None:
             issues.append(lock_issue)
 
-    if execute and not _has_errors(issues):
+    if execute and not has_errors(issues):
         try:
             response_text, request_url = _fetch_pcloud_diff_checkpoint(config, api_credential)
             parsed = parse_diff_response_text(response_text, request_url, _read_diffd_folder_cache(config))
@@ -6431,7 +6431,7 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
                 )
             )
 
-    if _has_errors(issues):
+    if has_errors(issues):
         details["state writes"] = "none"
     details.update(
         {
@@ -6440,19 +6440,19 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
             "process result": run_state or {},
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="diffd api-poll checkpoint",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             "diffd API checkpoint completed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "diffd API checkpoint is gated"
-            if execute and _has_errors(issues)
+            if execute and has_errors(issues)
             else "diffd API checkpoint preview is ready"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
@@ -6460,20 +6460,20 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
 def cmd_diffd_api_poll(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.api_poll_command == "preview":
         report = _diffd_api_poll_report(paths)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.api_poll_command == "long-poll-gate":
         report = _diffd_api_long_poll_gate_report(args, paths)
         _print_api_long_poll_gate_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.api_poll_command == "long-poll-run":
         report = _diffd_api_long_poll_run_report(args, paths)
         _print_api_long_poll_run_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.api_poll_command == "checkpoint":
         report = _diffd_api_checkpoint_report(args, paths)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     return None
 
 
@@ -7168,13 +7168,13 @@ def _consume_preview_report(paths: RuntimePaths, service: ServiceDefinition) -> 
         "unmatched successful transfer details": unmatched_successes,
         "retained transfer result details": retained,
     }
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer consume preview",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} transfer consume policy preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -7212,7 +7212,7 @@ def _consume_run_report(
         dev_issue = _dev_execute_issue(paths, load_result.config, f"{service.name} transfer consume run")
         if dev_issue:
             issues.append(dev_issue)
-        if not _has_errors(issues):
+        if not has_errors(issues):
             before_count: int | None = None
             after_count: int | None = None
             for path in removal_paths:
@@ -7236,19 +7236,19 @@ def _consume_run_report(
     else:
         details["state writes"] = "none"
 
-    if _has_errors(issues):
+    if has_errors(issues):
         summary = f"{service.name} transfer consume cannot run until issues are resolved"
     elif execute:
         summary = f"{service.name} transfer consumed records"
     else:
         summary = f"{service.name} transfer consume run preview is ready"
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer consume run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -7374,13 +7374,13 @@ def _validation_matrix_report(paths: RuntimePaths, service: ServiceDefinition) -
             "run real transfer only with explicit operator approval",
         ],
     }
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer validation-matrix",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} real transfer validation matrix is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -7749,13 +7749,13 @@ def _real_transfer_check_report(
         **final_review,
         **counts,
     }
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer check",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} real transfer gate checklist is not open",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -7810,13 +7810,13 @@ def _real_transfer_gate_report(
         )
     ]
     issues.extend(ConfigIssue(level=issue.level, key=issue.key, message=issue.message) for issue in report.issues)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer real-gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} real transfer execution gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -7954,7 +7954,7 @@ def _transfer_automation_gate_report(
             )
         )
     issues.extend(ConfigIssue(level=issue.level, key=issue.key, message=issue.message) for issue in report.issues)
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details.update(
         {
             "planned action": f"inspect {service.name} automatic real transfer queue executor gate",
@@ -8034,10 +8034,10 @@ def _transfer_automation_gate_report(
     )
     return CommandReport(
         command=f"{service.name} transfer automation-gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=f"{service.name} real transfer automation gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -8080,11 +8080,11 @@ def _consume_successful_transfer_results(
     details: dict[str, object] = {
         "consume source file": str(source_file),
         "successful transfer paths": sorted(success_paths),
-        "records consumed": len(planned_removals) if not _has_errors(issues) else 0,
+        "records consumed": len(planned_removals) if not has_errors(issues) else 0,
         "consumed record details": _plan_records(planned_removals),
         "consume records before": before_count if before_count is not None else 0,
         "consume records after": after_count if after_count is not None else 0,
-        "consume state writes": str(source_file) if planned_removals and not _has_errors(issues) else "none",
+        "consume state writes": str(source_file) if planned_removals and not has_errors(issues) else "none",
     }
     return details, issues
 
@@ -8244,7 +8244,7 @@ def _transfer_automation_run_report(
         and not rclone_issue
         and not manual_review_records
     )
-    if execute and runnable and execution_command_count > 0 and not _has_errors(issues):
+    if execute and runnable and execution_command_count > 0 and not has_errors(issues):
         transfer_results, execution_issues = _execute_transfer_commands(
             commands,
             timeout_seconds=load_result.config.transfer_exec_timeout_seconds,
@@ -8271,7 +8271,7 @@ def _transfer_automation_run_report(
         )
         issues.extend(notify_issues)
         issues.extend(consume_issues)
-    elif execute and runnable and planned_command_count == 0 and not _has_errors(issues):
+    elif execute and runnable and planned_command_count == 0 and not has_errors(issues):
         transfer_results = []
     elif execute and manual_review_records:
         notify_result = send_chat_notification(
@@ -8287,11 +8287,11 @@ def _transfer_automation_run_report(
     consume_state_write = str(consume_details.get("consume state writes", "none"))
     if consume_state_write != "none":
         state_writes.append(consume_state_write)
-    if execute and runnable and planned_command_count == 0 and not _has_errors(issues):
+    if execute and runnable and planned_command_count == 0 and not has_errors(issues):
         summary = f"{service.name} transfer automation-run had no records"
         implementation_status = "guarded automatic real-transfer executor tick; no transfer records were pending"
         automation_can_run = "yes"
-    elif execute and runnable and not _has_errors(issues):
+    elif execute and runnable and not has_errors(issues):
         summary = f"{service.name} transfer automation-run completed"
         implementation_status = "guarded automatic real-transfer executor tick"
         automation_can_run = "yes"
@@ -8307,7 +8307,7 @@ def _transfer_automation_run_report(
         summary = f"{service.name} transfer automation-run is gated"
         implementation_status = "guarded automatic real-transfer executor tick; blocked by gate checks"
         automation_can_run = "no"
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "planned action": f"{'execute' if execute else 'preview'} {service.name} automatic real-transfer queue executor",
         "implementation status": implementation_status,
@@ -8355,10 +8355,10 @@ def _transfer_automation_run_report(
     }
     return CommandReport(
         command=f"{service.name} transfer automation-run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -8459,7 +8459,7 @@ def _real_transfer_run_report(
         "consume state writes": "none",
     }
     notify_details: list[dict[str, object]] = []
-    if execute and runnable and not _has_errors(issues):
+    if execute and runnable and not has_errors(issues):
         transfer_results, execution_issues = _execute_transfer_commands(
             real_commands,
             timeout_seconds=load_result.config.transfer_exec_timeout_seconds,
@@ -8479,7 +8479,7 @@ def _real_transfer_run_report(
             transfer_results,
             mode="real-rclone-transfer",
         )
-        if getattr(args, "consume_policy", None) == "remove-on-success-retain-on-failure" and not _has_errors(issues):
+        if getattr(args, "consume_policy", None) == "remove-on-success-retain-on-failure" and not has_errors(issues):
             consume_details, consume_issues = _consume_successful_transfer_results(
                 load_result.config,
                 state,
@@ -8495,7 +8495,7 @@ def _real_transfer_run_report(
     if consume_state_write != "none":
         state_writes.append(consume_state_write)
 
-    if execute and transfer_state_file and not _has_errors(issues):
+    if execute and transfer_state_file and not has_errors(issues):
         summary = f"{service.name} real transfer executed"
         implementation_status = "guarded real rclone transfer execution path"
         readiness = "executed"
@@ -8510,7 +8510,7 @@ def _real_transfer_run_report(
         implementation_status = "guarded real rclone transfer execution path; blocked by gate checks"
         readiness = "blocked-gate"
         can_run = "no"
-    if execute and _has_errors(issues):
+    if execute and has_errors(issues):
         summary = f"{service.name} real transfer execution refused"
     details.update(
         {
@@ -8558,13 +8558,13 @@ def _real_transfer_run_report(
             **approval_details,
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer real-run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -8642,7 +8642,7 @@ def _service_transfer_report(
             rclone_bin = str(Path(load_result.config.rclone_bin).expanduser().resolve(strict=True))
 
     commands = _transfer_command_records(load_result.config, service, records, rclone_bin=rclone_bin)
-    if execute and not execution_issue and not _has_errors(issues):
+    if execute and not execution_issue and not has_errors(issues):
         transfer_results, execution_issues = _execute_transfer_commands(
             commands,
             timeout_seconds=load_result.config.transfer_exec_timeout_seconds,
@@ -8660,7 +8660,7 @@ def _service_transfer_report(
     if transfer_command == "preview":
         implementation_status = "transfer command preview only; rclone is not executed"
         summary = preview_summary
-    elif execute and not _has_errors(issues):
+    elif execute and not has_errors(issues):
         implementation_status = (
             "dev-mode fake-rclone transfer execution only; real rclone and pCloud transfer are not permitted"
         )
@@ -8710,13 +8710,13 @@ def _service_transfer_report(
         details["gate status"] = "closed"
     if execute:
         details["transfer results"] = transfer_results
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer {transfer_command}",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -8790,7 +8790,7 @@ def _transfer_executor_run_report(
     details: dict[str, object] = {
         "planned action": f"{'execute' if execute else 'preview'} {service.name} transfer executor tick",
         "implementation status": implementation_status,
-        "executor gate status": "open: dev-fake-rclone" if execute and not _has_errors(issues) else "preview/dev-only",
+        "executor gate status": "open: dev-fake-rclone" if execute and not has_errors(issues) else "preview/dev-only",
         "real transfer automation gate status": "closed",
         "real execution can run": "no",
         "execute requested": "yes" if execute else "no",
@@ -8828,13 +8828,13 @@ def _transfer_executor_run_report(
             }
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"{service.name} transfer executor-run",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, service),
     )
 
@@ -8845,31 +8845,31 @@ def cmd_service_transfer(
     if args.transfer_command == "preview":
         report = _service_transfer_report(paths, service, transfer_command="preview")
         _print_transfer_preview_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.transfer_command == "validation-matrix":
         report = _validation_matrix_report(paths, service)
         _print_validation_matrix_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.transfer_command == "check":
         report = _real_transfer_check_report(args, paths, service)
         _print_transfer_check_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.transfer_command == "real-gate":
         report = _real_transfer_gate_report(args, paths, service)
         _print_transfer_check_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.transfer_command == "automation-gate":
         report = _transfer_automation_gate_report(args, paths, service)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.transfer_command == "automation-run":
         report = _transfer_automation_run_report(args, paths, service)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.transfer_command == "real-run":
         report = _real_transfer_run_report(args, paths, service)
         _print_real_transfer_run_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.transfer_command == "run":
         report = _service_transfer_report(
             paths,
@@ -8877,20 +8877,20 @@ def cmd_service_transfer(
             transfer_command="run",
             execute=getattr(args, "execute", False),
         )
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.transfer_command == "executor-run":
         report = _transfer_executor_run_report(args, paths, service)
-        _print_report(report, args)
-        return _exit_code_for_report(report)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.transfer_command == "consume" and getattr(args, "consume_command", None) == "preview":
         report = _consume_preview_report(paths, service)
         _print_transfer_consume_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     if args.transfer_command == "consume" and getattr(args, "consume_command", None) == "run":
         report = _consume_run_report(args, paths, service)
         _print_transfer_consume_report(report, args)
-        return _exit_code_for_report(report)
+        return exit_code_for_report(report)
     return None
 
 
@@ -8962,14 +8962,14 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
             dev_issue = _dev_execute_issue(paths, load_result.config, "pushd queue add")
             if dev_issue:
                 issues.append(dev_issue)
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 result = append_plan_record(state.queue_file, "PCLOUD_TOOLS_PUSHD_QUEUE", record)
                 update_issue = _state_update_issue(result.issue)
                 if update_issue:
                     issues.append(update_issue)
                 details["queue items before"] = result.before_count
                 details["queue items after"] = result.after_count
-        summary = "pushd queue record appended" if execute and not _has_errors(issues) else "pushd queue add preview is ready"
+        summary = "pushd queue record appended" if execute and not has_errors(issues) else "pushd queue add preview is ready"
     elif args.queue_command == "clear":
         planned_action = "clear pushd queue" if execute else "preview clear pushd queue"
         details = {
@@ -8982,14 +8982,14 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
             dev_issue = _dev_execute_issue(paths, load_result.config, "pushd queue clear")
             if dev_issue:
                 issues.append(dev_issue)
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 result = clear_plan_records(state.queue_file, "PCLOUD_TOOLS_PUSHD_QUEUE")
                 update_issue = _state_update_issue(result.issue)
                 if update_issue:
                     issues.append(update_issue)
                 details["queue items before"] = result.before_count
                 details["queue items after"] = result.after_count
-        summary = "pushd queue cleared" if execute and not _has_errors(issues) else "pushd queue clear preview is ready"
+        summary = "pushd queue cleared" if execute and not has_errors(issues) else "pushd queue clear preview is ready"
     elif args.queue_command == "remove":
         record, record_issues = _plan_record_from_args(args, "upload", "PCLOUD_TOOLS_PUSHD_QUEUE_PATH")
         issues.extend(record_issues)
@@ -9046,7 +9046,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                             message=f"pushd queue remove requires {remove_gate_env}={_PUSHD_QUEUE_REMOVE_GATE_VALUE}",
                         )
                     )
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 result = remove_plan_records(state.queue_file, "PCLOUD_TOOLS_PUSHD_QUEUE", record.path)
                 update_issue = _state_update_issue(result.issue)
                 if update_issue:
@@ -9054,11 +9054,11 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                 details["queue items before"] = result.before_count
                 details["queue items after"] = result.after_count
                 details["queue items removed"] = result.before_count - result.after_count
-        if _has_errors(issues):
+        if has_errors(issues):
             details["state writes"] = "none"
         summary = (
             "pushd queue records removed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "pushd queue remove preview is ready"
         )
     elif args.queue_command == "prune-excluded":
@@ -9110,7 +9110,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                             ),
                         )
                     )
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 before_count = plan.total
                 after_count = before_count
                 for record in excluded_records:
@@ -9127,10 +9127,10 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                 details["queue items before"] = before_count
                 details["queue items after"] = after_count
                 details["queue items removed"] = before_count - after_count
-                details["state writes"] = "pushd queue only" if not _has_errors(issues) else "none"
+                details["state writes"] = "pushd queue only" if not has_errors(issues) else "none"
         summary = (
             "pushd queue excluded records pruned"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "pushd queue prune-excluded preview is ready"
         )
     elif args.queue_command == "prune-missing-local":
@@ -9174,7 +9174,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                         ),
                     )
                 )
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 before_count = plan.total
                 after_count = before_count
                 for record in missing_local_records:
@@ -9191,10 +9191,10 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
                 details["queue items before"] = before_count
                 details["queue items after"] = after_count
                 details["queue items removed"] = before_count - after_count
-                details["state writes"] = "pushd queue only" if not _has_errors(issues) else "none"
+                details["state writes"] = "pushd queue only" if not has_errors(issues) else "none"
         summary = (
             "pushd queue missing local records pruned"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "pushd queue prune-missing-local preview is ready"
         )
     else:
@@ -9208,23 +9208,23 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
         details = {"planned action": "none", "queue file": str(state.queue_file)}
         summary = "pushd queue command is invalid"
 
-    if _has_errors(issues):
+    if has_errors(issues):
         summary = "pushd queue cannot be updated until issues are resolved"
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"pushd queue {args.queue_command or ''}".strip(),
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
 
 
 def cmd_pushd_queue(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _pushd_queue_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -9256,7 +9256,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
             dev_issue = _dev_execute_issue(paths, load_result.config, "diffd remote-change add")
             if dev_issue:
                 issues.append(dev_issue)
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 result = append_plan_record(
                     plan.remote_changes_file, "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES", record
                 )
@@ -9267,7 +9267,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
                 details["remote changes after"] = result.after_count
         summary = (
             "diffd remote-change record appended"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "diffd remote-change add preview is ready"
         )
     elif args.remote_change_command == "clear":
@@ -9282,7 +9282,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
             dev_issue = _dev_execute_issue(paths, load_result.config, "diffd remote-change clear")
             if dev_issue:
                 issues.append(dev_issue)
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 result = clear_plan_records(plan.remote_changes_file, "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES")
                 update_issue = _state_update_issue(result.issue)
                 if update_issue:
@@ -9291,7 +9291,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
                 details["remote changes after"] = result.after_count
         summary = (
             "diffd remote changes cleared"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "diffd remote-change clear preview is ready"
         )
     elif args.remote_change_command == "remove":
@@ -9330,7 +9330,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
             dev_issue = _dev_execute_issue(paths, load_result.config, "diffd remote-change remove")
             if dev_issue:
                 issues.append(dev_issue)
-            if not _has_errors(issues):
+            if not has_errors(issues):
                 result = remove_plan_records(
                     plan.remote_changes_file,
                     "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES",
@@ -9344,7 +9344,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
                 details["remote changes removed"] = result.before_count - result.after_count
         summary = (
             "diffd remote-change records removed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "diffd remote-change remove preview is ready"
         )
     else:
@@ -9358,23 +9358,23 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
         details = {"planned action": "none", "remote changes file": str(plan.remote_changes_file)}
         summary = "diffd remote-change command is invalid"
 
-    if _has_errors(issues):
+    if has_errors(issues):
         summary = "diffd remote changes cannot be updated until issues are resolved"
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command=f"diffd remote-change {args.remote_change_command or ''}".strip(),
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["diffd"]),
     )
 
 
 def cmd_diffd_remote_change(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _diffd_remote_change_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:

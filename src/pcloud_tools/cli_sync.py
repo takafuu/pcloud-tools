@@ -12,16 +12,16 @@ from pathlib import Path
 
 from .autosync_runtime import disable_autosync, enable_autosync, read_autosync_state
 from .cli_common import (
-    action_command as _action_command,
-    entrypoint_command as _entrypoint_command,
-    exit_code_for_report as _exit_code_for_report,
-    has_errors as _has_errors,
-    has_warnings as _has_warnings,
-    issue_sort_key as _issue_sort_key,
-    report_issues as _report_issues,
-    shell_command as _shell_command,
-    sort_issues as _sort_issues,
-    status_from_issues as _status_from_issues,
+    action_command,
+    entrypoint_command,
+    exit_code_for_report,
+    has_errors,
+    has_warnings,
+    issue_sort_key,
+    report_issues,
+    shell_command,
+    sort_issues,
+    status_from_issues,
 )
 from .config import AppConfig, ConfigIssue, load_config
 from .io_utils import atomic_write_json
@@ -356,61 +356,61 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
         ReportAction(
             id="sync.status.refresh",
             label="Refresh sync status",
-            command=_action_command(paths, "sync.status.refresh"),
+            command=action_command(paths, "sync.status.refresh"),
         ),
         ReportAction(
             id="sync.preview",
             label="Preview normal sync",
-            command=_action_command(paths, "sync.preview"),
+            command=action_command(paths, "sync.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.progress",
             label="Show sync progress",
-            command=_action_command(paths, "sync.progress"),
+            command=action_command(paths, "sync.progress"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.scope",
             label="Show sync scope",
-            command=_action_command(paths, "sync.scope"),
+            command=action_command(paths, "sync.scope"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.background.preview",
             label="Preview background sync",
-            command=_action_command(paths, "sync.background.preview"),
+            command=action_command(paths, "sync.background.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.autosync.gate",
             label="Check autosync launchd gate",
-            command=_action_command(paths, "sync.autosync.gate"),
+            command=action_command(paths, "sync.autosync.gate"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.autosync-run.preview",
             label="Preview autosync launchd run",
-            command=_action_command(paths, "sync.autosync-run.preview"),
+            command=action_command(paths, "sync.autosync-run.preview"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.migration.gate",
             label="Check sync migration gate",
-            command=_action_command(paths, "sync.migration.gate"),
+            command=action_command(paths, "sync.migration.gate"),
             terminal=True,
             refresh=False,
         ),
         ReportAction(
             id="sync.migration-run.preview",
             label="Preview sync migration run",
-            command=_action_command(paths, "sync.migration-run.preview"),
+            command=action_command(paths, "sync.migration-run.preview"),
             terminal=True,
             refresh=False,
         ),
@@ -420,7 +420,7 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
             ReportAction(
                 id="sync.clear-stale-lock.preview",
                 label="Preview clear stale lock",
-                command=_action_command(paths, "sync.clear-stale-lock.preview"),
+                command=action_command(paths, "sync.clear-stale-lock.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -442,7 +442,7 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     lock_state = read_sync_lock_state(load_result.config)
     log_pointers = read_latest_sync_logs(load_result.config)
     scope_info = sync_allowlist_info(load_result.config)
-    issues = _sort_issues(
+    issues = sort_issues(
         list(load_result.issues) + _sync_state_issues(sync_state) + scope_issues(scope_info)
     )
     autosync = read_autosync_state(load_result.config)
@@ -483,10 +483,10 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
     }
     return CommandReport(
         command="sync status",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="sync status is available for migration diagnostics",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_sync_status_actions(paths, lock_state.status),
     )
 
@@ -494,12 +494,12 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
 def cmd_sync_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_status_report(paths)
     print(render_report(report, output_format="xbar" if args.xbar else "json" if args.json else "human"))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_progress_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
-    issues = _sort_issues(list(load_result.issues))
+    issues = sort_issues(list(load_result.issues))
     progress = parse_sync_progress(load_result.config)
     sync_state = read_sync_state(load_result.config)
 
@@ -512,16 +512,16 @@ def _sync_progress_report(paths: RuntimePaths) -> CommandReport:
         warning_issues = issues + [
             ConfigIssue(
                 key="PCLOUD_TOOLS_SYNC_PROGRESS",
-                level="warning" if not issues else "error" if _has_errors(issues) else "warning",
+                level="warning" if not issues else "error" if has_errors(issues) else "warning",
                 message="no sync log available for progress",
             )
         ]
         return CommandReport(
             command="sync progress",
-            status=_status_from_issues(_sort_issues(warning_issues)),
+            status=status_from_issues(sort_issues(warning_issues)),
             summary="sync progress is not available yet",
             details=details,
-            issues=_report_issues(_sort_issues(warning_issues)),
+            issues=report_issues(sort_issues(warning_issues)),
         )
 
     details = {
@@ -539,17 +539,17 @@ def _sync_progress_report(paths: RuntimePaths) -> CommandReport:
     }
     return CommandReport(
         command="sync progress",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="sync progress is available",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_progress(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_progress_report(paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: str) -> CommandReport:
@@ -558,7 +558,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
     load_result = load_config(paths)
     lock_state = read_sync_lock_state(load_result.config)
     scope_info = sync_allowlist_info(load_result.config)
-    issues = _sort_issues(
+    issues = sort_issues(
         list(load_result.issues)
         + scope_issues(scope_info)
         + list(enforce_sync_scope_guard(load_result.config, mode))
@@ -571,17 +571,17 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
         "sync lock pid": lock_state.pid,
     }
 
-    if issues and _has_errors(issues):
+    if issues and has_errors(issues):
         return CommandReport(
             command=command_name,
             status="error",
             summary="sync command cannot run until configuration issues are resolved",
             details=base_details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if lock_state.status == "active":
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -596,11 +596,11 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
             status="error",
             summary="sync command cannot start while another sync is active",
             details=base_details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if lock_state.status in {"stale", "invalid"}:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -615,7 +615,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
             status="error",
             summary="sync command requires clearing the stale lock first",
             details=base_details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if args.execute and paths.dev_mode:
@@ -628,7 +628,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
                 "core remote": load_result.config.core_remote,
                 "reason": "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime",
             },
-            issues=_report_issues(
+            issues=report_issues(
                 [
                     ConfigIssue(
                         key="PCLOUD_TOOLS_DEV_EXECUTION",
@@ -657,7 +657,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
             status="error",
             summary="sync plan could not be built",
             details={"mode": mode},
-            issues=_report_issues(
+            issues=report_issues(
                 [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message=str(exc))]
             ),
         )
@@ -683,16 +683,16 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
     if not args.execute:
         return CommandReport(
             command=command_name,
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary="sync command preview is ready",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     try:
         result = execute_sync_plan(load_result.config, plan)
     except SyncExecutionError as exc:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues + [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message=str(exc))]
         )
         return CommandReport(
@@ -700,7 +700,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
             status="error",
             summary="sync command failed before launch",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
     details["exit code"] = result.exit_code
     details["scope recorded"] = "yes" if result.scope_recorded else "no"
@@ -711,21 +711,21 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
         status=status,
         summary="sync command executed" if result.exit_code == 0 else "sync command failed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_execution(args: argparse.Namespace, paths: RuntimePaths, mode: str) -> int:
     report = _sync_execution_report(args, paths, mode)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_scope_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
     info = sync_allowlist_info(config)
-    issues = _sort_issues(list(load_result.issues) + scope_issues(info))
+    issues = sort_issues(list(load_result.issues) + scope_issues(info))
     details: dict[str, object] = {
         "scope mode": "allowlist",
         "scope source": str(info.allowlist_file),
@@ -745,23 +745,23 @@ def _sync_scope_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
 
     return CommandReport(
         command="sync scope",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="allowlist scope is ready" if not issues else "allowlist scope needs attention",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_scope(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_scope_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     info = sync_allowlist_info(load_result.config)
-    issues = _sort_issues(list(load_result.issues) + scope_issues(info))
+    issues = sort_issues(list(load_result.issues) + scope_issues(info))
     details: dict[str, object] = {
         "file": str(info.allowlist_file),
         "status": info.allowlist_status,
@@ -777,22 +777,22 @@ def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) 
     )
     return CommandReport(
         command="sync check-allowlist",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=summary,
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_check_allowlist(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_check_allowlist_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_clear_stale_lock_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
-    issues = _sort_issues(list(load_result.issues))
+    issues = sort_issues(list(load_result.issues))
     lock_state = read_sync_lock_state(load_result.config)
     details: dict[str, object] = {
         "execute": "yes" if args.execute else "no",
@@ -805,7 +805,7 @@ def _sync_clear_stale_lock_report(args: argparse.Namespace, paths: RuntimePaths)
     }
 
     if lock_state.status == "active":
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -820,7 +820,7 @@ def _sync_clear_stale_lock_report(args: argparse.Namespace, paths: RuntimePaths)
             status="error",
             summary="active sync lock cannot be cleared",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     details["planned action"] = "remove lock directory" if lock_state.status in {"stale", "invalid"} else "no-op"
@@ -828,10 +828,10 @@ def _sync_clear_stale_lock_report(args: argparse.Namespace, paths: RuntimePaths)
     if not args.execute:
         return CommandReport(
             command="sync clear-stale-lock",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary="stale lock preview is ready",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     removed = False
@@ -848,17 +848,17 @@ def _sync_clear_stale_lock_report(args: argparse.Namespace, paths: RuntimePaths)
 
     return CommandReport(
         command="sync clear-stale-lock",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="stale lock cleared" if removed else "no stale lock to clear",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_clear_stale_lock(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_clear_stale_lock_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _background_mode(args: argparse.Namespace) -> tuple[str | None, list[ConfigIssue]]:
@@ -903,7 +903,7 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
     config = load_result.config
     mode, mode_issues = _background_mode(args)
     notify_on_finish, notify_issues = _background_notify(args)
-    issues = _sort_issues(list(load_result.issues) + mode_issues + notify_issues)
+    issues = sort_issues(list(load_result.issues) + mode_issues + notify_issues)
     lock_state = read_sync_lock_state(config)
 
     details: dict[str, object] = {
@@ -915,17 +915,17 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
         "sync lock pid": lock_state.pid,
     }
 
-    if issues and _has_errors(issues):
+    if issues and has_errors(issues):
         return CommandReport(
             command="sync background",
             status="error",
             summary="background sync options are invalid",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if lock_state.status == "active":
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -940,11 +940,11 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
             status="error",
             summary="background sync cannot start while another sync is active",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if lock_state.status in {"stale", "invalid"}:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -961,7 +961,7 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
             status="error",
             summary="background sync requires clearing the stale lock first",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     child_command = (
@@ -978,14 +978,14 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
     if not args.execute:
         return CommandReport(
             command="sync background",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary="background sync preview is ready",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if paths.dev_mode:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -1001,13 +1001,13 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
             status="error",
             summary="dev mode refuses to execute sync background",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     try:
         launch = launch_background_sync(config, mode, notify_on_finish, child_command)
     except SyncExecutionError as exc:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues + [ConfigIssue(key="PCLOUD_TOOLS_SYNC_BACKGROUND", level="error", message=str(exc))]
         )
         return CommandReport(
@@ -1015,7 +1015,7 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
             status="error",
             summary="background sync launch failed",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     details.update(
@@ -1027,32 +1027,32 @@ def _sync_background_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
     )
     return CommandReport(
         command="sync background",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="background sync launched",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_background(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_background_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
     load_result = load_config(paths)
     config = load_result.config
-    issues = _sort_issues(
+    issues = sort_issues(
         list(load_result.issues) + list(enforce_sync_scope_guard(config, args.mode))
     )
-    if issues and _has_errors(issues):
+    if issues and has_errors(issues):
         report = CommandReport(
             command="sync _run",
             status="error",
             summary="internal sync run cannot start until configuration issues are resolved",
             details={"mode": args.mode},
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
         print(render_report(report))
         return 1
@@ -1063,7 +1063,7 @@ def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
             status="error",
             summary="dev mode refuses internal sync execution",
             details={"mode": args.mode},
-            issues=_report_issues(
+            issues=report_issues(
                 [
                     ConfigIssue(
                         key="PCLOUD_TOOLS_DEV_SYNC_INTERNAL",
@@ -1083,7 +1083,7 @@ def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
             status="error",
             summary="rclone command not found",
             details={"mode": args.mode},
-            issues=_report_issues(
+            issues=report_issues(
                 [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message="rclone command not found")]
             ),
         )
@@ -1091,14 +1091,14 @@ def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
         return 1
 
     scope_info = sync_allowlist_info(config)
-    scope_validation = _sort_issues(scope_issues(scope_info))
-    if scope_validation and _has_errors(scope_validation):
+    scope_validation = sort_issues(scope_issues(scope_info))
+    if scope_validation and has_errors(scope_validation):
         report = CommandReport(
             command="sync _run",
             status="error",
             summary="internal sync run cannot start until scope issues are resolved",
             details={"mode": args.mode},
-            issues=_report_issues(scope_validation),
+            issues=report_issues(scope_validation),
         )
         print(render_report(report))
         return 1
@@ -1118,7 +1118,7 @@ def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
             status="error",
             summary="internal sync run failed before launch",
             details={"mode": args.mode},
-            issues=_report_issues(
+            issues=report_issues(
                 [ConfigIssue(key="PCLOUD_TOOLS_SYNC_EXEC", level="error", message=str(exc))]
             ),
         )
@@ -1133,7 +1133,7 @@ def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
 def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action: str) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
-    issues = _sort_issues(list(load_result.issues))
+    issues = sort_issues(list(load_result.issues))
     autosync = read_autosync_state(config)
     details: dict[str, object] = {
         "execute": "yes" if args.execute else "no",
@@ -1147,7 +1147,7 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
 
     plist_required = action == "enable-autosync"
     if plist_required and not config.autosync_plist.exists():
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -1158,13 +1158,13 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
             ]
         )
 
-    if issues and _has_errors(issues):
+    if issues and has_errors(issues):
         return CommandReport(
             command=f"sync {action}",
             status="error",
             summary="autosync command cannot run until configuration issues are resolved",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     details["planned action"] = (
@@ -1176,14 +1176,14 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
     if not args.execute:
         return CommandReport(
             command=f"sync {action}",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary="autosync preview is ready",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if paths.dev_mode:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -1201,11 +1201,11 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
             status="error",
             summary=f"dev mode refuses to execute sync {action}",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if action == "disable-autosync" and not args.yes:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues
             + [
                 ConfigIssue(
@@ -1220,7 +1220,7 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
             status="error",
             summary="disable-autosync requires confirmation",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     try:
@@ -1229,7 +1229,7 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
         else:
             disable_autosync(config)
     except RuntimeError as exc:
-        issues = _sort_issues(
+        issues = sort_issues(
             issues + [ConfigIssue(key="PCLOUD_TOOLS_AUTOSYNC_EXEC", level="error", message=str(exc))]
         )
         return CommandReport(
@@ -1237,7 +1237,7 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
             status="error",
             summary="autosync command failed",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     refreshed = read_autosync_state(config)
@@ -1252,7 +1252,7 @@ def _sync_autosync_report(args: argparse.Namespace, paths: RuntimePaths, action:
         status="ok",
         summary="autosync command executed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
@@ -1265,7 +1265,7 @@ def _is_relative_to(path: Path, parent: Path) -> bool:
 
 
 def _autosync_plist_payload(paths: RuntimePaths, config: AppConfig) -> dict[str, object]:
-    entrypoint = _entrypoint_command(paths)
+    entrypoint = entrypoint_command(paths)
     return {
         "Label": config.autosync_label,
         "ProgramArguments": [entrypoint, "sync", "background", "--execute"],
@@ -1310,26 +1310,26 @@ def _sync_autosync_plist_report(args: argparse.Namespace, paths: RuntimePaths) -
                 message=f"refusing to write autosync plist outside {dev_state_root}: {plist_path}",
             )
         )
-    issues = _sort_issues(issues)
-    if _has_errors(issues):
+    issues = sort_issues(issues)
+    if has_errors(issues):
         details["state writes"] = "none"
-    if args.execute and not _has_errors(issues):
+    if args.execute and not has_errors(issues):
         plist_path.parent.mkdir(parents=True, exist_ok=True)
         plist_path.write_bytes(plistlib.dumps(payload, sort_keys=True))
         details["autosync plist status"] = "written"
     return CommandReport(
         command="sync autosync-plist",
-        status=_status_from_issues(issues),
-        summary="autosync plist written" if args.execute and not _has_errors(issues) else "autosync plist preview is ready",
+        status=status_from_issues(issues),
+        summary="autosync plist written" if args.execute and not has_errors(issues) else "autosync plist preview is ready",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_sync_autosync_plist(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _sync_autosync_plist_report(args, paths)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 _REQUIRED_SHADOW_CHECKS = {
@@ -1468,7 +1468,7 @@ def _render_autosync_gate_human(report: CommandReport) -> str:
     ]
     for label, command in commands:
         if command:
-            lines.append(f"{label}: {_shell_command(command)}")
+            lines.append(f"{label}: {shell_command(command)}")
     launchctl_commands = [
         ("enable launchctl commands", details.get("enable launchctl commands")),
         ("disable launchctl commands", details.get("disable launchctl commands")),
@@ -1478,7 +1478,7 @@ def _render_autosync_gate_human(report: CommandReport) -> str:
             continue
         lines.append(f"{label}:")
         for command in command_group:
-            lines.append(f"- {_shell_command(command)}")
+            lines.append(f"- {shell_command(command)}")
     checks = details.get("preflight checks")
     if isinstance(checks, list) and checks:
         lines.append("preflight checks:")
@@ -1547,7 +1547,7 @@ def _render_autosync_run_human(report: CommandReport) -> str:
     if isinstance(commands, list) and commands:
         lines.append("planned launchctl commands:")
         for command in commands:
-            lines.append(f"- {_shell_command(command)}")
+            lines.append(f"- {shell_command(command)}")
     state_file = details.get("launchd run state file")
     if state_file:
         lines.append(f"launchd run state: {state_file}")
@@ -1605,7 +1605,7 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
             )
         )
 
-    entrypoint = _entrypoint_command(paths)
+    entrypoint = entrypoint_command(paths)
     enable_preview = [entrypoint, "sync", "enable-autosync", "--json"]
     disable_preview = [entrypoint, "sync", "disable-autosync", "--yes", "--json"]
     plist_review = ["plutil", "-p", str(config.autosync_plist)]
@@ -1661,7 +1661,7 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
             message="autosync launchd changes remain gated; this command is read-only",
         )
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "planned action": "check autosync launchd change prerequisites",
         "implementation status": "read-only checklist; launchctl is not executed",
@@ -1701,10 +1701,10 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
     }
     return CommandReport(
         command="sync autosync-gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="autosync launchd gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_sync_status_actions(paths, "missing"),
     )
 
@@ -1716,7 +1716,7 @@ def cmd_sync_autosync_gate(args: argparse.Namespace, paths: RuntimePaths) -> int
         print(_render_autosync_gate_human(report))
     else:
         print(render_report(report, output_format=output_format))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -1802,20 +1802,20 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
             )
         )
 
-    if not execute or _has_errors(issues):
-        if _has_errors(issues):
+    if not execute or has_errors(issues):
+        if has_errors(issues):
             details["state writes"] = "none"
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="sync autosync-run",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary=(
                 "autosync launchd execution is gated"
-                if _has_errors(issues) or not gate_open
+                if has_errors(issues) or not gate_open
                 else "autosync launchd run is ready"
             ),
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_sync_status_actions(paths, "missing"),
         )
 
@@ -1848,7 +1848,7 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
             "autosync_runs_after": refreshed.runs,
         }
     )
-    if not _has_errors(issues):
+    if not has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(state_file, run_state, sort_keys=True)
 
@@ -1857,16 +1857,16 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
             "autosync state after": refreshed.state,
             "autosync runs after": refreshed.runs,
             "process result": run_state,
-            "state writes": "autosync launchd run state" if not _has_errors(issues) else "none",
+            "state writes": "autosync launchd run state" if not has_errors(issues) else "none",
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="sync autosync-run",
-        status=_status_from_issues(issues),
-        summary="autosync launchd run completed" if not _has_errors(issues) else "autosync launchd run failed",
+        status=status_from_issues(issues),
+        summary="autosync launchd run completed" if not has_errors(issues) else "autosync launchd run failed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_sync_status_actions(paths, "missing"),
     )
 
@@ -1878,7 +1878,7 @@ def cmd_sync_autosync_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
         print(_render_autosync_run_human(report))
     else:
         print(render_report(report, output_format=output_format))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _render_migration_gate_human(report: CommandReport) -> str:
@@ -1918,10 +1918,10 @@ def _render_migration_gate_human(report: CommandReport) -> str:
     ]
     for label, command in commands:
         if command:
-            lines.append(f"{label}: {_shell_command(command)}")
+            lines.append(f"{label}: {shell_command(command)}")
     rclone_lock_delete = details.get("rclone bisync lock delete command")
     if details.get("rclone bisync lock status") == "present" and rclone_lock_delete:
-        lines.append(f"rclone lock cleanup candidate: {_shell_command(rclone_lock_delete)}")
+        lines.append(f"rclone lock cleanup candidate: {shell_command(rclone_lock_delete)}")
     checks = details.get("preflight checks")
     if isinstance(checks, list) and checks:
         lines.append("preflight checks:")
@@ -1980,13 +1980,13 @@ def _render_migration_run_human(report: CommandReport) -> str:
     ]
     command = details.get("planned sync command")
     if command:
-        lines.append(f"planned sync command: {_shell_command(command)}")
+        lines.append(f"planned sync command: {shell_command(command)}")
     state_file = details.get("migration run state file")
     if state_file:
         lines.append(f"migration run state: {state_file}")
     rclone_lock_delete = details.get("rclone bisync lock delete command")
     if details.get("rclone bisync lock status") == "present" and rclone_lock_delete:
-        lines.append(f"rclone lock cleanup candidate: {_shell_command(rclone_lock_delete)}")
+        lines.append(f"rclone lock cleanup candidate: {shell_command(rclone_lock_delete)}")
     checks = details.get("preflight checks")
     blocked_checks: list[str] = []
     if isinstance(checks, list):
@@ -2194,7 +2194,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         "status": "ok" if scope_ok else "pending",
         "detail": f"{scope_baseline}; entries={scope_entries}; allowlist={allowlist_path}; source={status_source}",
     }
-    entrypoint = _entrypoint_command(paths)
+    entrypoint = entrypoint_command(paths)
     status_command = [entrypoint, "sync", "status", "--json"]
     normal_preview = [entrypoint, "sync", "--json"]
     resync_preview = [entrypoint, "sync", "resync", "--resync-mode", DEFAULT_RESYNC_MODE, "--json"]
@@ -2249,7 +2249,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
             message="normal sync/resync migration validation remains gated; this command is read-only",
         )
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     details: dict[str, object] = {
         "planned action": "check normal sync/resync migration validation prerequisites",
         "implementation status": "read-only checklist; sync/resync is not executed",
@@ -2314,10 +2314,10 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
     }
     return CommandReport(
         command="sync migration-gate",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary="sync migration validation gate is closed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_sync_status_actions(paths, lock_state.status),
     )
 
@@ -2329,7 +2329,7 @@ def cmd_sync_migration_gate(args: argparse.Namespace, paths: RuntimePaths) -> in
         print(_render_migration_gate_human(report))
     else:
         print(render_report(report, output_format=output_format))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -2436,20 +2436,20 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
                 )
             )
 
-    if not execute or _has_errors(issues):
-        if _has_errors(issues):
+    if not execute or has_errors(issues):
+        if has_errors(issues):
             details["state writes"] = "none"
-        issues = _sort_issues(issues)
+        issues = sort_issues(issues)
         return CommandReport(
             command="sync migration-run",
-            status=_status_from_issues(issues),
+            status=status_from_issues(issues),
             summary=(
                 "sync migration execution is gated"
-                if _has_errors(issues) or not gate_open or approval_status != "complete-read-only"
+                if has_errors(issues) or not gate_open or approval_status != "complete-read-only"
                 else "sync migration run is ready"
             ),
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
             actions=_sync_status_actions(paths, "missing"),
         )
 
@@ -2488,7 +2488,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
                 message=f"sync migration validation failed with exit={result.exit_code}",
             )
         )
-    if not _has_errors(issues):
+    if not has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
         atomic_write_json(state_file, run_state, sort_keys=True)
 
@@ -2498,16 +2498,16 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
             "scope recorded": "yes" if run_state["scope_recorded"] else "no",
             "listings recovered": "yes" if run_state["listings_recovered"] else "no",
             "process result": run_state,
-            "state writes": "sync logs, lock, status, and migration run state" if not _has_errors(issues) else "none",
+            "state writes": "sync logs, lock, status, and migration run state" if not has_errors(issues) else "none",
         }
     )
-    issues = _sort_issues(issues)
+    issues = sort_issues(issues)
     return CommandReport(
         command="sync migration-run",
-        status=_status_from_issues(issues),
-        summary="sync migration run completed" if not _has_errors(issues) else "sync migration run failed",
+        status=status_from_issues(issues),
+        summary="sync migration run completed" if not has_errors(issues) else "sync migration run failed",
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_sync_status_actions(paths, "missing"),
     )
 
@@ -2519,10 +2519,10 @@ def cmd_sync_migration_run(args: argparse.Namespace, paths: RuntimePaths) -> int
         print(_render_migration_run_human(report))
     else:
         print(render_report(report, output_format=output_format))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)
 
 
 def cmd_sync_autosync(args: argparse.Namespace, paths: RuntimePaths, action: str) -> int:
     report = _sync_autosync_report(args, paths, action)
     print(render_report(report, as_json=args.json))
-    return _exit_code_for_report(report)
+    return exit_code_for_report(report)

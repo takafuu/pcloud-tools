@@ -3,17 +3,17 @@ from __future__ import annotations
 import argparse
 
 from .cli_common import (
-    action_command as _action_command,
-    entrypoint_command as _entrypoint_command,
-    exit_code_for_report as _exit_code_for_report,
-    has_errors as _has_errors,
-    has_warnings as _has_warnings,
-    issue_sort_key as _issue_sort_key,
-    output_format as _output_format,
-    print_report as _print_report,
-    report_issues as _report_issues,
-    sort_issues as _sort_issues,
-    status_from_issues as _status_from_issues,
+    action_command,
+    entrypoint_command,
+    exit_code_for_report,
+    has_errors,
+    has_warnings,
+    issue_sort_key,
+    output_format,
+    print_report,
+    report_issues,
+    sort_issues,
+    status_from_issues,
 )
 from .config import ConfigIssue, load_config
 from .daemon_state import (
@@ -116,12 +116,12 @@ def _daemon_actions(paths: RuntimePaths, auto_download_enabled: bool) -> list[Re
         ReportAction(
             id="daemon.status.refresh",
             label="Refresh daemon state",
-            command=_action_command(paths, "daemon.status.refresh"),
+            command=action_command(paths, "daemon.status.refresh"),
         ),
         ReportAction(
             id=toggle_id,
             label=toggle_label,
-            command=_action_command(paths, toggle_id),
+            command=action_command(paths, toggle_id),
             terminal=True,
             refresh=False,
         ),
@@ -157,25 +157,25 @@ def _daemon_state_details(state) -> dict[str, object]:
 def _daemon_status_report(paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     state = read_daemon_state(load_result.config)
-    issues = _sort_issues(list(load_result.issues) + list(state.issues))
+    issues = sort_issues(list(load_result.issues) + list(state.issues))
     return CommandReport(
         command="daemon status",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             f"diffid: {state.diffid}; auto-download: "
             f"{'on' if state.auto_download_enabled else 'off'}; "
             f"pending downloads: {len(state.pending_downloads)}"
         ),
         details=_daemon_state_details(state),
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
         actions=_daemon_actions(paths, state.auto_download_enabled),
     )
 
 
 def cmd_daemon_status(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _daemon_status_report(paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _daemon_set_diffid_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -192,13 +192,13 @@ def _daemon_set_diffid_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         normalized = args.diffid
     details["normalized diffid"] = normalized
 
-    if _has_errors(issues):
+    if has_errors(issues):
         return CommandReport(
             command="daemon set-diffid",
             status="error",
             summary="daemon diffid cannot be updated until issues are resolved",
             details=details,
-            issues=_report_issues(_sort_issues(issues)),
+            issues=report_issues(sort_issues(issues)),
         )
 
     if args.execute:
@@ -210,21 +210,21 @@ def _daemon_set_diffid_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         status="ok",
         summary="daemon diffid updated" if args.execute else "daemon diffid update preview is ready",
         details=details,
-        issues=_report_issues(_sort_issues(issues)),
+        issues=report_issues(sort_issues(issues)),
     )
 
 
 def cmd_daemon_set_diffid(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _daemon_set_diffid_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _daemon_auto_download_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     enabled = args.state == "on"
     state_before = read_daemon_state(load_result.config)
-    issues = _sort_issues(list(load_result.issues) + list(state_before.issues))
+    issues = sort_issues(list(load_result.issues) + list(state_before.issues))
     details = {
         "requested auto-download": args.state,
         "planned action": "write auto-download state" if args.execute else "preview auto-download state",
@@ -232,38 +232,38 @@ def _daemon_auto_download_report(args: argparse.Namespace, paths: RuntimePaths) 
         "auto-download file": str(state_before.auto_download_file),
     }
 
-    if _has_errors(issues):
+    if has_errors(issues):
         return CommandReport(
             command="daemon auto-download",
             status="error",
             summary="daemon auto-download cannot be updated until issues are resolved",
             details=details,
-            issues=_report_issues(issues),
+            issues=report_issues(issues),
         )
 
     if args.execute:
         set_auto_download(load_result.config, enabled)
         state_after = read_daemon_state(load_result.config)
-        issues = _sort_issues(list(load_result.issues) + list(state_after.issues))
+        issues = sort_issues(list(load_result.issues) + list(state_after.issues))
         details["current auto-download"] = "on" if state_after.auto_download_enabled else "off"
 
     return CommandReport(
         command="daemon auto-download",
-        status=_status_from_issues(issues),
+        status=status_from_issues(issues),
         summary=(
             "daemon auto-download state updated"
             if args.execute
             else "daemon auto-download update preview is ready"
         ),
         details=details,
-        issues=_report_issues(issues),
+        issues=report_issues(issues),
     )
 
 
 def cmd_daemon_auto_download(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _daemon_auto_download_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _daemon_pending_download_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -292,7 +292,7 @@ def _daemon_pending_download_report(args: argparse.Namespace, paths: RuntimePath
             except ValueError as exc:
                 issues.append(ConfigIssue("PCLOUD_TOOLS_DAEMON_DIFFID", "error", str(exc)))
         details.update({"path": path, "diffid": args.diffid, "reason": args.reason})
-        if not _has_errors(issues) and execute:
+        if not has_errors(issues) and execute:
             item = add_pending_download(load_result.config, path, args.diffid, args.reason)
             details["recorded at"] = item.recorded_at
     elif args.pending_command == "clear":
@@ -313,21 +313,21 @@ def _daemon_pending_download_report(args: argparse.Namespace, paths: RuntimePath
 
     return CommandReport(
         command=f"daemon pending-download {args.pending_command or ''}".strip(),
-        status=_status_from_issues(_sort_issues(issues)),
+        status=status_from_issues(sort_issues(issues)),
         summary=(
             f"daemon pending-download {args.pending_command} executed"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else f"daemon pending-download {args.pending_command} preview is ready"
         ),
         details=details,
-        issues=_report_issues(_sort_issues(issues)),
+        issues=report_issues(sort_issues(issues)),
     )
 
 
 def cmd_daemon_pending_download(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _daemon_pending_download_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _daemon_notification_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -349,7 +349,7 @@ def _daemon_notification_report(args: argparse.Namespace, paths: RuntimePaths) -
         )
     if not getattr(args, "message", "").strip():
         issues.append(ConfigIssue("PCLOUD_TOOLS_DAEMON_NOTIFICATION", "error", "message is required"))
-    if not _has_errors(issues) and execute:
+    if not has_errors(issues) and execute:
         record = record_notification(load_result.config, args.message, args.level)
         details["recorded at"] = record.recorded_at
 
@@ -358,18 +358,18 @@ def _daemon_notification_report(args: argparse.Namespace, paths: RuntimePaths) -
     details["last notification file"] = str(state.notification_file)
     return CommandReport(
         command=f"daemon notification {args.notification_command or ''}".strip(),
-        status=_status_from_issues(_sort_issues(issues)),
+        status=status_from_issues(sort_issues(issues)),
         summary=(
             "daemon notification state updated"
-            if execute and not _has_errors(issues)
+            if execute and not has_errors(issues)
             else "daemon notification update preview is ready"
         ),
         details=details,
-        issues=_report_issues(_sort_issues(issues)),
+        issues=report_issues(sort_issues(issues)),
     )
 
 
 def cmd_daemon_notification(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _daemon_notification_report(args, paths)
-    _print_report(report, args)
-    return _exit_code_for_report(report)
+    print_report(report, args)
+    return exit_code_for_report(report)

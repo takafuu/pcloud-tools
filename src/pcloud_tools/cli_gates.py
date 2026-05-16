@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Any
 
 from .cli_archive import _old_monolith_gate_report
-from .cli_common import action_command as _action_command
+from .cli_common import action_command
 from .cli_service_daemon import _diffd_api_long_poll_gate_report, _pushd_fswatch_resident_gate_report
 from .cli_sync import _sync_autosync_gate_report, _sync_migration_gate_report
 from .output import CommandReport, ReportAction, ReportIssue, render_report
@@ -44,14 +44,14 @@ def _xbar_action(action: ReportAction) -> str:
 
 def _gates_actions(paths: RuntimePaths) -> list[ReportAction]:
     return [
-        ReportAction(id="gates.status", label="Refresh gates", command=_action_command(paths, "gates.status")),
-        ReportAction(id="pushd.status.refresh", label="Pushd status", command=_action_command(paths, "pushd.status.refresh")),
-        ReportAction(id="diffd.status.refresh", label="Diffd status", command=_action_command(paths, "diffd.status.refresh")),
-        ReportAction(id="sync.status.refresh", label="Sync status", command=_action_command(paths, "sync.status.refresh")),
+        ReportAction(id="gates.status", label="Refresh gates", command=action_command(paths, "gates.status")),
+        ReportAction(id="pushd.status.refresh", label="Pushd status", command=action_command(paths, "pushd.status.refresh")),
+        ReportAction(id="diffd.status.refresh", label="Diffd status", command=action_command(paths, "diffd.status.refresh")),
+        ReportAction(id="sync.status.refresh", label="Sync status", command=action_command(paths, "sync.status.refresh")),
         ReportAction(
             id="status.detail",
             label="Open detailed status",
-            command=_action_command(paths, "status.detail"),
+            command=action_command(paths, "status.detail"),
             terminal=True,
             refresh=False,
         ),
