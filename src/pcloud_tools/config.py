@@ -4,6 +4,7 @@ import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Literal
 
 from .runtime import RuntimePaths
 
@@ -76,6 +77,65 @@ class AppConfig:
     pcloud_api_timeout_seconds: int
 
 
+ConfigValueKind = Literal["path", "str", "int", "bool", "csv"]
+
+
+@dataclass(frozen=True)
+class FieldSpec:
+    name: str
+    env_var: str
+    kind: ConfigValueKind
+    default: str
+    dev_default: str | None = None
+
+
+CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
+    FieldSpec("env_file", "", "path", "{env_file}"),
+    FieldSpec("core_dir", "PCLOUD_TOOLS_CORE_DIR", "path", "{home}/p-core", "{workspace_root}"),
+    FieldSpec("remote", "PCLOUD_TOOLS_REMOTE", "str", "pcloud:"),
+    FieldSpec("core_remote", "PCLOUD_TOOLS_CORE_REMOTE", "str", "pcloud:core"),
+    FieldSpec("vault_remote", "PCLOUD_TOOLS_VAULT_REMOTE", "str", "pcloud:vault"),
+    FieldSpec("crypt_remote", "PCLOUD_TOOLS_CRYPT_REMOTE", "str", "pcloud-crypt:"),
+    FieldSpec("vault_dir", "PCLOUD_TOOLS_VAULT_DIR", "path", "{home}/p-vault", "{workspace_root}/.dev-state/links/vault"),
+    FieldSpec("vault_mount_dir", "PCLOUD_TOOLS_VAULT_MOUNT_DIR", "path", "{base_state_dir}/vault"),
+    FieldSpec("crypt_dir", "PCLOUD_TOOLS_CRYPT_DIR", "path", "{home}/p-crypt", "{workspace_root}/.dev-state/links/crypt"),
+    FieldSpec("crypt_mount_dir", "PCLOUD_TOOLS_CRYPT_MOUNT_DIR", "path", "{base_state_dir}/crypt"),
+    FieldSpec("enable_vault_layer", "PCLOUD_TOOLS_ENABLE_VAULT_LAYER", "bool", "1"),
+    FieldSpec("enable_crypt_layer", "PCLOUD_TOOLS_ENABLE_CRYPT_LAYER", "bool", "1"),
+    FieldSpec("vault_engine", "PCLOUD_TOOLS_VAULT_ENGINE", "str", "webdav"),
+    FieldSpec("crypt_engine", "PCLOUD_TOOLS_CRYPT_ENGINE", "str", "webdav"),
+    FieldSpec("vault_port", "PCLOUD_TOOLS_VAULT_PORT", "int", "5566"),
+    FieldSpec("crypt_port", "PCLOUD_TOOLS_CRYPT_PORT", "int", "5567"),
+    FieldSpec("state_dir", "PCLOUD_TOOLS_STATE_DIR", "path", "{base_state_dir}"),
+    FieldSpec("log_dir", "PCLOUD_TOOLS_LOG_DIR", "path", "{base_log_dir}"),
+    FieldSpec("allowlist_file", "PCLOUD_TOOLS_ALLOWLIST_FILE", "path", "{home}/p-core/.pcloud-sync-allowlist", "{workspace_root}/.pcloud-sync-allowlist"),
+    FieldSpec("manager_ignore_file", "PCLOUD_TOOLS_MANAGER_IGNORE_FILE", "path", "{home}/p-core/.pcloudmanagerignore", "{workspace_root}/.pcloudmanagerignore"),
+    FieldSpec("default_excludes", "PCLOUD_TOOLS_DEFAULT_EXCLUDES", "csv", "config/dotfiles/.ssh/agent/**,.DS_Store,**/.DS_Store"),
+    FieldSpec("autosync_label", "PCLOUD_TOOLS_AUTOSYNC_LABEL", "str", "com.takafumi.pcloud-bisync", "com.example.pcloud-bisync.dev"),
+    FieldSpec("autosync_plist", "PCLOUD_TOOLS_AUTOSYNC_PLIST", "path", "{home}/Library/LaunchAgents/com.takafumi.pcloud-bisync.plist", "{workspace_root}/.dev-state/com.example.pcloud-bisync.dev.plist"),
+    FieldSpec("indexer_bin", "PCLOUD_TOOLS_INDEXER_BIN", "path", "{home}/.zsh/functions/pcloud-indexer.py", "{workspace_root}/scripts/pcloud-indexer.py"),
+    FieldSpec("notify_bin", "PCLOUD_TOOLS_NOTIFY_BIN", "path", "{home}/bin/notify", "{workspace_root}/scripts/notify"),
+    FieldSpec("chat_notify_enabled", "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED", "bool", "0"),
+    FieldSpec("chat_notify_cmd", "PCLOUD_TOOLS_CHAT_NOTIFY_CMD", "str", "{home}/bin/notify send --to discord {{message}}", "{workspace_root}/scripts/notify send --to discord {{message}}"),
+    FieldSpec("rclone_bin", "PCLOUD_TOOLS_RCLONE_BIN", "str", "rclone"),
+    FieldSpec("transfer_execution_gate", "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE", "str", ""),
+    FieldSpec("pushd_fswatch_resident_gate", "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE", "str", ""),
+    FieldSpec("diffd_api_long_poll_gate", "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE", "str", ""),
+    FieldSpec("autosync_launchd_gate", "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE", "str", ""),
+    FieldSpec("sync_migration_gate", "PCLOUD_TOOLS_SYNC_MIGRATION_GATE", "str", ""),
+    FieldSpec("transfer_exec_timeout_seconds", "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", "int", "5"),
+    FieldSpec("download_suppression_ttl_seconds", "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS", "int", "86400"),
+    FieldSpec("pushd_debounce_seconds", "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", "int", "3"),
+    FieldSpec("pushd_queue_limit", "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT", "int", "1000"),
+    FieldSpec("diffd_poll_interval_seconds", "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", "int", "60"),
+    FieldSpec("diffd_batch_limit", "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT", "int", "100"),
+    FieldSpec("pcloud_api_base_url", "PCLOUD_TOOLS_PCLOUD_API_BASE_URL", "str", "https://api.pcloud.com"),
+    FieldSpec("pcloud_api_auth_param", "PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM", "str", "auth"),
+    FieldSpec("pcloud_api_token", "PCLOUD_TOOLS_PCLOUD_API_TOKEN", "str", ""),
+    FieldSpec("pcloud_api_timeout_seconds", "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS", "int", "30"),
+)
+
+
 def _expand_value(value: str, mapping: dict[str, str]) -> str:
     def replace(match: re.Match[str]) -> str:
         key = match.group(1)
@@ -144,70 +204,50 @@ def _defaults_for_runtime(paths: RuntimePaths) -> dict[str, str]:
     base_state_dir = paths.state_dir if paths.dev_mode else home / ".pcloud"
     base_log_dir = paths.log_dir if paths.dev_mode else base_state_dir / "logs"
 
-    defaults = {
-        "PCLOUD_TOOLS_CORE_DIR": str(home / "p-core"),
-        "PCLOUD_TOOLS_REMOTE": "pcloud:",
-        "PCLOUD_TOOLS_CORE_REMOTE": "pcloud:core",
-        "PCLOUD_TOOLS_VAULT_REMOTE": "pcloud:vault",
-        "PCLOUD_TOOLS_CRYPT_REMOTE": "pcloud-crypt:",
-        "PCLOUD_TOOLS_VAULT_DIR": str(home / "p-vault"),
-        "PCLOUD_TOOLS_VAULT_MOUNT_DIR": str(base_state_dir / "vault"),
-        "PCLOUD_TOOLS_CRYPT_DIR": str(home / "p-crypt"),
-        "PCLOUD_TOOLS_CRYPT_MOUNT_DIR": str(base_state_dir / "crypt"),
-        "PCLOUD_TOOLS_ENABLE_VAULT_LAYER": "1",
-        "PCLOUD_TOOLS_ENABLE_CRYPT_LAYER": "1",
-        "PCLOUD_TOOLS_VAULT_ENGINE": "webdav",
-        "PCLOUD_TOOLS_CRYPT_ENGINE": "webdav",
-        "PCLOUD_TOOLS_VAULT_PORT": "5566",
-        "PCLOUD_TOOLS_CRYPT_PORT": "5567",
-        "PCLOUD_TOOLS_STATE_DIR": str(base_state_dir),
-        "PCLOUD_TOOLS_LOG_DIR": str(base_log_dir),
-        "PCLOUD_TOOLS_ALLOWLIST_FILE": str(home / "p-core" / ".pcloud-sync-allowlist"),
-        "PCLOUD_TOOLS_MANAGER_IGNORE_FILE": str(home / "p-core" / ".pcloudmanagerignore"),
-        "PCLOUD_TOOLS_DEFAULT_EXCLUDES": "config/dotfiles/.ssh/agent/**,.DS_Store,**/.DS_Store",
-        "PCLOUD_TOOLS_AUTOSYNC_LABEL": "com.takafumi.pcloud-bisync",
-        "PCLOUD_TOOLS_AUTOSYNC_PLIST": str(
-            home / "Library/LaunchAgents/com.takafumi.pcloud-bisync.plist"
-        ),
-        "PCLOUD_TOOLS_INDEXER_BIN": str(home / ".zsh/functions/pcloud-indexer.py"),
-        "PCLOUD_TOOLS_NOTIFY_BIN": str(home / "bin/notify"),
-        "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED": "0",
-        "PCLOUD_TOOLS_CHAT_NOTIFY_CMD": str(home / "bin/notify") + " send --to discord {message}",
-        "PCLOUD_TOOLS_RCLONE_BIN": "rclone",
-        "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE": "",
-        "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "",
-        "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "",
-        "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE": "",
-        "PCLOUD_TOOLS_SYNC_MIGRATION_GATE": "",
-        "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS": "5",
-        "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS": "86400",
-        "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS": "3",
-        "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT": "1000",
-        "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS": "60",
-        "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT": "100",
-        "PCLOUD_TOOLS_PCLOUD_API_BASE_URL": "https://api.pcloud.com",
-        "PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM": "auth",
-        "PCLOUD_TOOLS_PCLOUD_API_TOKEN": "",
-        "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS": "30",
+    tokens = {
+        "home": str(home),
+        "workspace_root": str(paths.workspace_root),
+        "base_state_dir": str(base_state_dir),
+        "base_log_dir": str(base_log_dir),
+        "env_file": str(paths.env_file),
+    }
+    return {
+        spec.env_var: (spec.dev_default if paths.dev_mode and spec.dev_default is not None else spec.default).format(**tokens)
+        for spec in CONFIG_FIELD_SPECS
+        if spec.env_var
     }
 
-    if paths.dev_mode:
-        defaults["PCLOUD_TOOLS_CORE_DIR"] = str(paths.workspace_root)
-        defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"] = str(paths.workspace_root / ".pcloud-sync-allowlist")
-        defaults["PCLOUD_TOOLS_MANAGER_IGNORE_FILE"] = str(paths.workspace_root / ".pcloudmanagerignore")
-        defaults["PCLOUD_TOOLS_VAULT_DIR"] = str(paths.workspace_root / ".dev-state/links/vault")
-        defaults["PCLOUD_TOOLS_CRYPT_DIR"] = str(paths.workspace_root / ".dev-state/links/crypt")
-        defaults["PCLOUD_TOOLS_AUTOSYNC_LABEL"] = "com.example.pcloud-bisync.dev"
-        defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"] = str(
-            paths.workspace_root / ".dev-state/com.example.pcloud-bisync.dev.plist"
-        )
-        defaults["PCLOUD_TOOLS_INDEXER_BIN"] = str(paths.workspace_root / "scripts/pcloud-indexer.py")
-        defaults["PCLOUD_TOOLS_NOTIFY_BIN"] = str(paths.workspace_root / "scripts/notify")
-        defaults["PCLOUD_TOOLS_CHAT_NOTIFY_CMD"] = (
-            str(paths.workspace_root / "scripts/notify") + " send --to discord {message}"
-        )
 
-    return defaults
+def _value_for_spec(
+    spec: FieldSpec,
+    *,
+    paths: RuntimePaths,
+    values: dict[str, str],
+    defaults: dict[str, str],
+) -> object:
+    if not spec.env_var:
+        if spec.name == "env_file":
+            return paths.env_file
+        raise ConfigError(f"{spec.name}: config field has no env var")
+    if spec.kind == "path":
+        return _path_value(spec.env_var, values, defaults[spec.env_var])
+    if spec.kind == "str":
+        return _string_value(spec.env_var, values, defaults[spec.env_var])
+    if spec.kind == "int":
+        return _int_from_value(spec.env_var, values[spec.env_var])
+    if spec.kind == "bool":
+        return _bool_from_value(spec.env_var, values[spec.env_var])
+    if spec.kind == "csv":
+        return _csv_value(spec.env_var, values, defaults[spec.env_var])
+    raise ConfigError(f"{spec.env_var}: unsupported config kind {spec.kind!r}")
+
+
+def _build_config_from_values(paths: RuntimePaths, values: dict[str, str], defaults: dict[str, str]) -> AppConfig:
+    parsed = {
+        spec.name: _value_for_spec(spec, paths=paths, values=values, defaults=defaults)
+        for spec in CONFIG_FIELD_SPECS
+    }
+    return AppConfig(**parsed)
 
 
 def load_config(paths: RuntimePaths) -> ConfigLoadResult:
@@ -223,155 +263,7 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
             if key.startswith("PCLOUD_TOOLS_"):
                 values[key] = value
 
-        config = AppConfig(
-            env_file=paths.env_file,
-            core_dir=_path_value("PCLOUD_TOOLS_CORE_DIR", values, defaults["PCLOUD_TOOLS_CORE_DIR"]),
-            remote=_string_value("PCLOUD_TOOLS_REMOTE", values, defaults["PCLOUD_TOOLS_REMOTE"]),
-            core_remote=_string_value(
-                "PCLOUD_TOOLS_CORE_REMOTE", values, defaults["PCLOUD_TOOLS_CORE_REMOTE"]
-            ),
-            vault_remote=_string_value(
-                "PCLOUD_TOOLS_VAULT_REMOTE", values, defaults["PCLOUD_TOOLS_VAULT_REMOTE"]
-            ),
-            crypt_remote=_string_value(
-                "PCLOUD_TOOLS_CRYPT_REMOTE", values, defaults["PCLOUD_TOOLS_CRYPT_REMOTE"]
-            ),
-            vault_dir=_path_value("PCLOUD_TOOLS_VAULT_DIR", values, defaults["PCLOUD_TOOLS_VAULT_DIR"]),
-            vault_mount_dir=_path_value(
-                "PCLOUD_TOOLS_VAULT_MOUNT_DIR", values, defaults["PCLOUD_TOOLS_VAULT_MOUNT_DIR"]
-            ),
-            crypt_dir=_path_value("PCLOUD_TOOLS_CRYPT_DIR", values, defaults["PCLOUD_TOOLS_CRYPT_DIR"]),
-            crypt_mount_dir=_path_value(
-                "PCLOUD_TOOLS_CRYPT_MOUNT_DIR", values, defaults["PCLOUD_TOOLS_CRYPT_MOUNT_DIR"]
-            ),
-            enable_vault_layer=_bool_from_value(
-                "PCLOUD_TOOLS_ENABLE_VAULT_LAYER",
-                values["PCLOUD_TOOLS_ENABLE_VAULT_LAYER"],
-            ),
-            enable_crypt_layer=_bool_from_value(
-                "PCLOUD_TOOLS_ENABLE_CRYPT_LAYER",
-                values["PCLOUD_TOOLS_ENABLE_CRYPT_LAYER"],
-            ),
-            vault_engine=_string_value(
-                "PCLOUD_TOOLS_VAULT_ENGINE", values, defaults["PCLOUD_TOOLS_VAULT_ENGINE"]
-            ),
-            crypt_engine=_string_value(
-                "PCLOUD_TOOLS_CRYPT_ENGINE", values, defaults["PCLOUD_TOOLS_CRYPT_ENGINE"]
-            ),
-            vault_port=_int_from_value(
-                "PCLOUD_TOOLS_VAULT_PORT",
-                values["PCLOUD_TOOLS_VAULT_PORT"],
-            ),
-            crypt_port=_int_from_value(
-                "PCLOUD_TOOLS_CRYPT_PORT",
-                values["PCLOUD_TOOLS_CRYPT_PORT"],
-            ),
-            state_dir=_path_value("PCLOUD_TOOLS_STATE_DIR", values, defaults["PCLOUD_TOOLS_STATE_DIR"]),
-            log_dir=_path_value("PCLOUD_TOOLS_LOG_DIR", values, defaults["PCLOUD_TOOLS_LOG_DIR"]),
-            allowlist_file=_path_value(
-                "PCLOUD_TOOLS_ALLOWLIST_FILE", values, defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"]
-            ),
-            manager_ignore_file=_path_value(
-                "PCLOUD_TOOLS_MANAGER_IGNORE_FILE",
-                values,
-                defaults["PCLOUD_TOOLS_MANAGER_IGNORE_FILE"],
-            ),
-            default_excludes=_csv_value(
-                "PCLOUD_TOOLS_DEFAULT_EXCLUDES",
-                values,
-                defaults["PCLOUD_TOOLS_DEFAULT_EXCLUDES"],
-            ),
-            autosync_label=_string_value(
-                "PCLOUD_TOOLS_AUTOSYNC_LABEL", values, defaults["PCLOUD_TOOLS_AUTOSYNC_LABEL"]
-            ),
-            autosync_plist=_path_value(
-                "PCLOUD_TOOLS_AUTOSYNC_PLIST", values, defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"]
-            ),
-            indexer_bin=_path_value(
-                "PCLOUD_TOOLS_INDEXER_BIN", values, defaults["PCLOUD_TOOLS_INDEXER_BIN"]
-            ),
-            notify_bin=_path_value(
-                "PCLOUD_TOOLS_NOTIFY_BIN", values, defaults["PCLOUD_TOOLS_NOTIFY_BIN"]
-            ),
-            chat_notify_enabled=_bool_from_value(
-                "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED",
-                values["PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED"],
-            ),
-            chat_notify_cmd=_string_value(
-                "PCLOUD_TOOLS_CHAT_NOTIFY_CMD",
-                values,
-                defaults["PCLOUD_TOOLS_CHAT_NOTIFY_CMD"],
-            ),
-            rclone_bin=_string_value("PCLOUD_TOOLS_RCLONE_BIN", values, defaults["PCLOUD_TOOLS_RCLONE_BIN"]),
-            transfer_execution_gate=_string_value(
-                "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",
-                values,
-                defaults["PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"],
-            ),
-            pushd_fswatch_resident_gate=_string_value(
-                "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE",
-                values,
-                defaults["PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"],
-            ),
-            diffd_api_long_poll_gate=_string_value(
-                "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",
-                values,
-                defaults["PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"],
-            ),
-            autosync_launchd_gate=_string_value(
-                "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE",
-                values,
-                defaults["PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"],
-            ),
-            sync_migration_gate=_string_value(
-                "PCLOUD_TOOLS_SYNC_MIGRATION_GATE",
-                values,
-                defaults["PCLOUD_TOOLS_SYNC_MIGRATION_GATE"],
-            ),
-            transfer_exec_timeout_seconds=_int_from_value(
-                "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
-                values["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"],
-            ),
-            download_suppression_ttl_seconds=_int_from_value(
-                "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS",
-                values["PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS"],
-            ),
-            pushd_debounce_seconds=_int_from_value(
-                "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS",
-                values["PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS"],
-            ),
-            pushd_queue_limit=_int_from_value(
-                "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT",
-                values["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"],
-            ),
-            diffd_poll_interval_seconds=_int_from_value(
-                "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS",
-                values["PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS"],
-            ),
-            diffd_batch_limit=_int_from_value(
-                "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT",
-                values["PCLOUD_TOOLS_DIFFD_BATCH_LIMIT"],
-            ),
-            pcloud_api_base_url=_string_value(
-                "PCLOUD_TOOLS_PCLOUD_API_BASE_URL",
-                values,
-                defaults["PCLOUD_TOOLS_PCLOUD_API_BASE_URL"],
-            ),
-            pcloud_api_auth_param=_string_value(
-                "PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM",
-                values,
-                defaults["PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM"],
-            ),
-            pcloud_api_token=_string_value(
-                "PCLOUD_TOOLS_PCLOUD_API_TOKEN",
-                values,
-                defaults["PCLOUD_TOOLS_PCLOUD_API_TOKEN"],
-            ),
-            pcloud_api_timeout_seconds=_int_from_value(
-                "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS",
-                values["PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS"],
-            ),
-        )
+        config = _build_config_from_values(paths, values, defaults)
     except ConfigError as exc:
         issues.append(ConfigIssue(key="config", level="error", message=str(exc)))
         fallback = _build_fallback_config(paths, defaults)
@@ -384,51 +276,7 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
 
 
 def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> AppConfig:
-    return AppConfig(
-        env_file=paths.env_file,
-        core_dir=Path(defaults["PCLOUD_TOOLS_CORE_DIR"]).expanduser(),
-        remote=defaults["PCLOUD_TOOLS_REMOTE"],
-        core_remote=defaults["PCLOUD_TOOLS_CORE_REMOTE"],
-        vault_remote=defaults["PCLOUD_TOOLS_VAULT_REMOTE"],
-        crypt_remote=defaults["PCLOUD_TOOLS_CRYPT_REMOTE"],
-        vault_dir=Path(defaults["PCLOUD_TOOLS_VAULT_DIR"]).expanduser(),
-        vault_mount_dir=Path(defaults["PCLOUD_TOOLS_VAULT_MOUNT_DIR"]).expanduser(),
-        crypt_dir=Path(defaults["PCLOUD_TOOLS_CRYPT_DIR"]).expanduser(),
-        crypt_mount_dir=Path(defaults["PCLOUD_TOOLS_CRYPT_MOUNT_DIR"]).expanduser(),
-        enable_vault_layer=True,
-        enable_crypt_layer=True,
-        vault_engine=defaults["PCLOUD_TOOLS_VAULT_ENGINE"],
-        crypt_engine=defaults["PCLOUD_TOOLS_CRYPT_ENGINE"],
-        vault_port=int(defaults["PCLOUD_TOOLS_VAULT_PORT"]),
-        crypt_port=int(defaults["PCLOUD_TOOLS_CRYPT_PORT"]),
-        state_dir=Path(defaults["PCLOUD_TOOLS_STATE_DIR"]).expanduser(),
-        log_dir=Path(defaults["PCLOUD_TOOLS_LOG_DIR"]).expanduser(),
-        allowlist_file=Path(defaults["PCLOUD_TOOLS_ALLOWLIST_FILE"]).expanduser(),
-        manager_ignore_file=Path(defaults["PCLOUD_TOOLS_MANAGER_IGNORE_FILE"]).expanduser(),
-        default_excludes=tuple(defaults["PCLOUD_TOOLS_DEFAULT_EXCLUDES"].split(",")),
-        autosync_label=defaults["PCLOUD_TOOLS_AUTOSYNC_LABEL"],
-        autosync_plist=Path(defaults["PCLOUD_TOOLS_AUTOSYNC_PLIST"]).expanduser(),
-        indexer_bin=Path(defaults["PCLOUD_TOOLS_INDEXER_BIN"]).expanduser(),
-        notify_bin=Path(defaults["PCLOUD_TOOLS_NOTIFY_BIN"]).expanduser(),
-        chat_notify_enabled=False,
-        chat_notify_cmd=defaults["PCLOUD_TOOLS_CHAT_NOTIFY_CMD"],
-        rclone_bin=defaults["PCLOUD_TOOLS_RCLONE_BIN"],
-        transfer_execution_gate=defaults["PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"],
-        pushd_fswatch_resident_gate=defaults["PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"],
-        diffd_api_long_poll_gate=defaults["PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"],
-        autosync_launchd_gate=defaults["PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"],
-        sync_migration_gate=defaults["PCLOUD_TOOLS_SYNC_MIGRATION_GATE"],
-        transfer_exec_timeout_seconds=int(defaults["PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS"]),
-        download_suppression_ttl_seconds=int(defaults["PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS"]),
-        pushd_debounce_seconds=int(defaults["PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS"]),
-        pushd_queue_limit=int(defaults["PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT"]),
-        diffd_poll_interval_seconds=int(defaults["PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS"]),
-        diffd_batch_limit=int(defaults["PCLOUD_TOOLS_DIFFD_BATCH_LIMIT"]),
-        pcloud_api_base_url=defaults["PCLOUD_TOOLS_PCLOUD_API_BASE_URL"],
-        pcloud_api_auth_param=defaults["PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM"],
-        pcloud_api_token=defaults["PCLOUD_TOOLS_PCLOUD_API_TOKEN"],
-        pcloud_api_timeout_seconds=int(defaults["PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS"]),
-    )
+    return _build_config_from_values(paths, defaults, defaults)
 
 
 def validate_config(config: AppConfig) -> list[ConfigIssue]:
@@ -615,40 +463,7 @@ def render_env_template(paths: RuntimePaths) -> str:
         "",
     ]
 
-    ordered_keys = [
-        "PCLOUD_TOOLS_CORE_DIR",
-        "PCLOUD_TOOLS_REMOTE",
-        "PCLOUD_TOOLS_CORE_REMOTE",
-        "PCLOUD_TOOLS_VAULT_REMOTE",
-        "PCLOUD_TOOLS_CRYPT_REMOTE",
-        "PCLOUD_TOOLS_VAULT_DIR",
-        "PCLOUD_TOOLS_VAULT_MOUNT_DIR",
-        "PCLOUD_TOOLS_CRYPT_DIR",
-        "PCLOUD_TOOLS_CRYPT_MOUNT_DIR",
-        "PCLOUD_TOOLS_ENABLE_VAULT_LAYER",
-        "PCLOUD_TOOLS_ENABLE_CRYPT_LAYER",
-        "PCLOUD_TOOLS_VAULT_ENGINE",
-        "PCLOUD_TOOLS_CRYPT_ENGINE",
-        "PCLOUD_TOOLS_VAULT_PORT",
-        "PCLOUD_TOOLS_CRYPT_PORT",
-        "PCLOUD_TOOLS_AUTOSYNC_LABEL",
-        "PCLOUD_TOOLS_AUTOSYNC_PLIST",
-        "PCLOUD_TOOLS_ALLOWLIST_FILE",
-        "PCLOUD_TOOLS_MANAGER_IGNORE_FILE",
-        "PCLOUD_TOOLS_DEFAULT_EXCLUDES",
-        "PCLOUD_TOOLS_INDEXER_BIN",
-        "PCLOUD_TOOLS_NOTIFY_BIN",
-        "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED",
-        "PCLOUD_TOOLS_CHAT_NOTIFY_CMD",
-        "PCLOUD_TOOLS_RCLONE_BIN",
-        "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",
-        "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS",
-        "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS",
-        "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS",
-        "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT",
-        "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS",
-        "PCLOUD_TOOLS_DIFFD_BATCH_LIMIT",
-    ]
+    ordered_keys = [spec.env_var for spec in CONFIG_FIELD_SPECS if spec.env_var]
     for key in ordered_keys:
         lines.append(f"{key}={defaults[key]}")
     lines.append("")
