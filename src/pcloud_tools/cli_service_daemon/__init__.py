@@ -82,6 +82,7 @@ from .queue_render import (
     print_diffd_remote_change_report as _print_diffd_remote_change_report,
     print_pushd_queue_report as _print_pushd_queue_report,
 )
+from .status_render import print_service_status_report as _print_service_status_report
 from .transfer_render import (
     print_real_transfer_run_report as _print_real_transfer_run_report,
     print_transfer_check_report as _print_transfer_check_report,
@@ -942,122 +943,6 @@ def cmd_service_daemon(args: argparse.Namespace, paths: RuntimePaths) -> int | N
     return None
 
 
-def _xbar_escape(value: object) -> str:
-    return str(value).replace("\n", " ").replace("|", "/")
-
-
-def _xbar_status_label(status: str) -> str:
-    if status == "ok":
-        return "OK"
-    if status == "warning":
-        return "WARN"
-    return "ERR"
-
-
-def _xbar_action(action: ReportAction) -> str:
-    fields = [
-        f"bash={shlex.quote(action.command[0])}",
-        f"terminal={'true' if action.terminal else 'false'}",
-        f"refresh={'true' if action.refresh else 'false'}",
-    ]
-    for index, arg in enumerate(action.command[1:], start=1):
-        fields.append(f"param{index}={shlex.quote(arg)}")
-    return f"{_xbar_escape(action.label)} | {' '.join(fields)}"
-
-
-def _service_status_xbar_action_ids(service: ServiceDefinition) -> set[str]:
-    common = {
-        f"{service.name}.status.refresh",
-        f"{service.name}.preview",
-        f"{service.name}.launchd.status",
-        f"{service.name}.launchd.gate",
-        f"{service.name}.transfer.check",
-    }
-    if service.name == "pushd":
-        common.add("pushd.fswatch.resident-gate")
-        common.add("pushd.queue.prune-missing-local")
-    else:
-        common.add("diffd.api-poll.long-poll-gate")
-    return common
-
-
-def _render_service_status_xbar(report: CommandReport, service: ServiceDefinition) -> str:
-    details = report.details
-    conflict_line = (
-        f"conflicts={details.get('download conflict count', '-')}; "
-        f"latest={details.get('download latest conflict', '-')}"
-    )
-    if service.name == "pushd":
-        plan_line = (
-            f"plan: uploads={details.get('planned uploads', '-')}; "
-            f"missing={details.get('missing local upload records', '-')}; "
-            f"manual={details.get('manual review transfer records', '-')}; "
-            f"queued={details.get('pending queue items', '-')}"
-        )
-        last_run_line = (
-            f"last resident: {details.get('last resident run status', '-')}; "
-            f"{details.get('last resident run summary', '-')}"
-        )
-        service_gate = f"resident={details.get('resident gate', '-')}"
-    else:
-        plan_line = (
-            f"plan: downloads={details.get('planned downloads', '-')}; "
-            f"manual={details.get('manual review transfer records', '-')}; "
-            f"remote={details.get('remote changes', '-')}; diffid={details.get('daemon diffid', '-')}"
-        )
-        last_run_line = (
-            f"last api poll: {details.get('last api poll run status', '-')}; "
-            f"{details.get('last api poll run summary', '-')}"
-        )
-        service_gate = f"long-poll={details.get('long-poll gate', '-')}"
-    allowed_actions = _service_status_xbar_action_ids(service)
-    notify_line = f"notify: {details.get('chat notify mode', '-')}"
-    if details.get("chat notify dedupe seconds", "-") != "-":
-        notify_line += f"; dedupe={details.get('chat notify dedupe seconds', '-')}s"
-    lines = [
-        f"pCloud {_xbar_status_label(report.status)}",
-        "---",
-        _xbar_escape(report.summary),
-        _xbar_escape(plan_line),
-        _xbar_escape(last_run_line),
-        _xbar_escape(
-            f"launchd: {details.get('launchd registration', '-')}; loaded={details.get('launchd loaded', '-')}"
-        ),
-        _xbar_escape(
-            f"gates: real={details.get('real-operation gate', '-')}; {service_gate}; "
-            f"transfer={details.get('transfer gate', '-')}"
-        ),
-        _xbar_escape(f"download journal: {conflict_line}"),
-        _xbar_escape(f"missing local uploads: {details.get('missing local upload records', '-')}")
-        if service.name == "pushd"
-        else _xbar_escape("missing local uploads: -"),
-        _xbar_escape(f"upload echo: suppressed={details.get('upload origin completed', '-')}"),
-        _xbar_escape(notify_line),
-    ]
-    if service.name == "pushd":
-        missing_records = details.get("missing local upload record details", [])
-        if isinstance(missing_records, list) and missing_records:
-            lines.append("---")
-            lines.append(_xbar_escape("Missing local upload records"))
-            for record in missing_records[:5]:
-                if not isinstance(record, dict):
-                    continue
-                reason = record.get("reason", "-")
-                lines.append(_xbar_escape(f"{record.get('path', '-')} ({reason})"))
-            if len(missing_records) > 5:
-                lines.append(_xbar_escape(f"... and {len(missing_records) - 5} more"))
-    if report.issues:
-        lines.append("---")
-        for issue in report.issues:
-            lines.append(f"{issue.level}: {_xbar_escape(issue.message)}")
-    actions = [action for action in report.actions if action.id in allowed_actions]
-    if actions:
-        lines.append("---")
-        for action in actions:
-            lines.append(_xbar_action(action))
-    return "\n".join(lines)
-
-
 def _real_gate_args(args: argparse.Namespace, *, allow_confirmed_subset: bool = False) -> argparse.Namespace:
     values = vars(args).copy()
     values["final_review"] = True
@@ -1630,10 +1515,7 @@ def cmd_service_status(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
     report = _service_status_report(paths, service)
-    if output_format(args) == "xbar":
-        print(_render_service_status_xbar(report, service))
-        return exit_code_for_report(report)
-    print_report(report, args)
+    _print_service_status_report(report, args, service.name)
     return exit_code_for_report(report)
 
 
