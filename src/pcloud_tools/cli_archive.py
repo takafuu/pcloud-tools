@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import os
 import shutil
 import shlex
 import subprocess
@@ -16,12 +17,10 @@ from .cli_common import (
     status_from_issues,
 )
 from .config import ConfigIssue
+from .gates import GATES, add_gate_review_args, validate_gate
 from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
-
-_OLD_MONOLITH_ARCHIVE_GATE_VALUE = "operator-approved-old-monolith-archive-v1"
-
 
 def add_archive_parser(subparsers: argparse._SubParsersAction) -> None:
     archive_parser = subparsers.add_parser("archive", help="Read-only archive readiness checks.")
@@ -30,20 +29,14 @@ def add_archive_parser(subparsers: argparse._SubParsersAction) -> None:
         "old-monolith-gate", help="Read-only checklist before archiving the old pcloud-manager monolith."
     )
     old_monolith_parser.add_argument("--backup-dir", type=Path)
-    old_monolith_parser.add_argument("--operator-reviewed-current-wrapper", action="store_true")
-    old_monolith_parser.add_argument("--reviewer-approved-backup-source", action="store_true")
-    old_monolith_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
-    old_monolith_parser.add_argument("--reviewer-approved-archive-target", action="store_true")
+    add_gate_review_args(old_monolith_parser, GATES["archive.old-monolith"])
     old_monolith_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     old_monolith_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     old_monolith_run_parser = archive_subparsers.add_parser(
         "old-monolith-run", help="Run guarded old pcloud-manager monolith archival after the dedicated gate opens."
     )
     old_monolith_run_parser.add_argument("--backup-dir", type=Path)
-    old_monolith_run_parser.add_argument("--operator-reviewed-current-wrapper", action="store_true")
-    old_monolith_run_parser.add_argument("--reviewer-approved-backup-source", action="store_true")
-    old_monolith_run_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
-    old_monolith_run_parser.add_argument("--reviewer-approved-archive-target", action="store_true")
+    add_gate_review_args(old_monolith_run_parser, GATES["archive.old-monolith"])
     old_monolith_run_parser.add_argument("--execute", action="store_true")
     old_monolith_run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     old_monolith_run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -174,6 +167,7 @@ def _render_old_monolith_run_human(report: CommandReport) -> str:
 
 def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     issues: list[ConfigIssue] = []
+    archive_gate = validate_gate(GATES["archive.old-monolith"], args, os.environ)
     current_wrapper = Path("/Users/takafumi/p-core/dotfiles/.zsh/functions/pcloud-manager")
     home_wrapper = Path("/Users/takafumi/.zsh/functions/pcloud-manager")
     command_wrapper = _command_path("pcloud-manager")
@@ -213,22 +207,22 @@ def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         ),
         _check(
             "operator current-wrapper review",
-            getattr(args, "operator_reviewed_current_wrapper", False),
+            archive_gate.flag_ok("--operator-reviewed-current-wrapper"),
             "operator reviewed command -v and current wrapper target",
         ),
         _check(
             "backup source approval",
-            getattr(args, "reviewer_approved_backup_source", False),
+            archive_gate.flag_ok("--reviewer-approved-backup-source"),
             "reviewer approved the selected legacy monolith backup as rollback/archive source",
         ),
         _check(
             "rollback policy approval",
-            getattr(args, "reviewer_approved_rollback_policy", False),
+            archive_gate.flag_ok("--reviewer-approved-rollback-policy"),
             "reviewer approved restoring pcloud-manager.current from backup if archive/cutover assumptions fail",
         ),
         _check(
             "archive target approval",
-            getattr(args, "reviewer_approved_archive_target", False),
+            archive_gate.flag_ok("--reviewer-approved-archive-target"),
             "reviewer approved archive target and retention policy before moving any files",
         ),
         _check(
@@ -255,7 +249,7 @@ def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         )
     issues.append(
         ConfigIssue(
-            key="PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE",
+            key=archive_gate.spec.env_var,
             level="warning",
             message="old monolith archive remains gated; this command is read-only",
         )
@@ -336,9 +330,8 @@ def cmd_archive_old_monolith_gate(args: argparse.Namespace, paths: RuntimePaths)
 
 
 def _old_monolith_archive_gate_open() -> bool:
-    import os
-
-    return os.environ.get("PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE", "") == _OLD_MONOLITH_ARCHIVE_GATE_VALUE
+    spec = GATES["archive.old-monolith"]
+    return os.environ.get(spec.env_var, "") == spec.expected_value
 
 
 def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -351,6 +344,7 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
         if issue.key != "PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE"
     ]
     approval_status = str(details.get("archive approval status", "pending"))
+    archive_spec = GATES["archive.old-monolith"]
     gate_open = _old_monolith_archive_gate_open()
     backup_dir = Path(str(details.get("backup dir", "-")))
     legacy_backup = Path(str(details.get("legacy backup file", "-")))
@@ -367,21 +361,21 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
                 else "old monolith archive run preview only; files are not copied or moved"
             ),
             "archive run gate status": (
-                f"open: {_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+                f"open: {archive_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+                else f"closed: requires {archive_spec.env_var}={archive_spec.expected_value}"
             ),
             "archive gate status": (
-                f"open: {_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+                f"open: {archive_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE}"
+                else f"closed: requires {archive_spec.env_var}={archive_spec.expected_value}"
             ),
             "archive can run": "yes" if gate_open and approval_status == "complete-read-only" else "no",
             "execute requested": "yes" if execute else "no",
             "state writes": "archive target copy and manifest" if execute else "none",
             "archive target": str(archive_target),
             "archive manifest": str(manifest_path),
-            "future gate env": f"PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE}",
+            "future gate env": f"{archive_spec.env_var}={archive_spec.expected_value}",
         }
     )
 
@@ -400,7 +394,7 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
                 level="error" if execute else "warning",
                 message=(
                     "old monolith archive execution requires "
-                    f"PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE={_OLD_MONOLITH_ARCHIVE_GATE_VALUE!r}"
+                    f"{archive_spec.env_var}={archive_spec.expected_value!r}"
                 ),
             )
         )

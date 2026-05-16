@@ -134,6 +134,38 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
         "operator-approved-real-transfer-automation-run-v1"
     )
     assert GATES["real_transfer.automation-run"].approval_flags == ()
+    assert GATES["mode.switch"].env_var == "PCLOUD_TOOLS_MODE_SWITCH_GATE"
+    assert GATES["mode.switch"].expected_value == "operator-approved-mode-switch-v1"
+    assert GATES["mode.switch"].approval_flags == (
+        "--operator-reviewed-mode-plan",
+        "--reviewer-approved-exclusive-policy",
+        "--reviewer-approved-launchd-policy",
+        "--reviewer-approved-rollback-policy",
+    )
+    assert GATES["autosync.launchd"].env_var == "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"
+    assert GATES["autosync.launchd"].expected_value == "operator-approved-autosync-launchd-v1"
+    assert GATES["autosync.launchd"].approval_flags == (
+        "--operator-reviewed-preview",
+        "--reviewer-approved-plist",
+        "--reviewer-approved-launchctl-policy",
+        "--reviewer-approved-rollback-policy",
+    )
+    assert GATES["sync.migration"].env_var == "PCLOUD_TOOLS_SYNC_MIGRATION_GATE"
+    assert GATES["sync.migration"].expected_value == "operator-approved-sync-migration-v1"
+    assert GATES["sync.migration"].approval_flags == (
+        "--operator-reviewed-status",
+        "--reviewer-approved-scope",
+        "--reviewer-approved-rollback-policy",
+        "--reviewer-approved-stop-conditions",
+    )
+    assert GATES["archive.old-monolith"].env_var == "PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE"
+    assert GATES["archive.old-monolith"].expected_value == "operator-approved-old-monolith-archive-v1"
+    assert GATES["archive.old-monolith"].approval_flags == (
+        "--operator-reviewed-current-wrapper",
+        "--reviewer-approved-backup-source",
+        "--reviewer-approved-rollback-policy",
+        "--reviewer-approved-archive-target",
+    )
     assert GATES["diffd.api.long-poll"].env_var == "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"
     assert GATES["diffd.api.long-poll"].expected_value == "operator-approved-api-long-poll-v1"
     assert GATES["diffd.api.long-poll"].approval_flags == (

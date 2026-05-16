@@ -22,6 +22,7 @@ from .cli_common import (
 )
 from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import read_daemon_state
+from .gates import GATES, add_gate_review_args, validate_gate
 from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
@@ -29,8 +30,6 @@ from .service_daemon_plan import build_diffd_plan, build_pushd_plan
 from .service_daemon_state import read_service_daemon_state
 from .sync_runtime import read_sync_lock_state
 
-_MODE_SWITCH_GATE_ENV = "PCLOUD_TOOLS_MODE_SWITCH_GATE"
-_MODE_SWITCH_GATE_VALUE = "operator-approved-mode-switch-v1"
 _VALID_MODES = ("daemon", "maintenance", "pause")
 
 
@@ -54,10 +53,7 @@ def add_mode_parser(subparsers: argparse._SubParsersAction) -> None:
     switch_parser.add_argument("--execute", action="store_true")
     switch_parser.add_argument("--json", action="store_true")
     switch_parser.add_argument("--xbar", action="store_true")
-    switch_parser.add_argument("--operator-reviewed-mode-plan", action="store_true")
-    switch_parser.add_argument("--reviewer-approved-exclusive-policy", action="store_true")
-    switch_parser.add_argument("--reviewer-approved-launchd-policy", action="store_true")
-    switch_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(switch_parser, GATES["mode.switch"])
 
 
 def cmd_mode(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
@@ -381,32 +377,32 @@ def _planned_commands(target_mode: str, config: AppConfig, launchctl_bin: str) -
     return commands
 
 
-def _approval_checks(args: argparse.Namespace, gate_open: bool) -> list[dict[str, str]]:
+def _approval_checks(gate) -> list[dict[str, str]]:
     return [
         {
             "name": "operator mode plan review",
-            "status": "ok" if getattr(args, "operator_reviewed_mode_plan", False) else "pending",
+            "status": "ok" if gate.flag_ok("--operator-reviewed-mode-plan") else "pending",
             "detail": "operator reviewed current mode, dirty state, and planned launchctl commands",
         },
         {
             "name": "exclusive policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_exclusive_policy", False) else "pending",
+            "status": "ok" if gate.flag_ok("--reviewer-approved-exclusive-policy") else "pending",
             "detail": "reviewer approved bisync and daemon automation remain mutually exclusive",
         },
         {
             "name": "launchd policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_launchd_policy", False) else "pending",
+            "status": "ok" if gate.flag_ok("--reviewer-approved-launchd-policy") else "pending",
             "detail": "reviewer approved bootout/disable/enable/bootstrap command set",
         },
         {
             "name": "rollback policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "status": "ok" if gate.flag_ok("--reviewer-approved-rollback-policy") else "pending",
             "detail": "reviewer approved using mode switch pause as rollback stop state",
         },
         {
             "name": "mode switch gate env",
-            "status": "ok" if gate_open else "pending",
-            "detail": f"{_MODE_SWITCH_GATE_ENV}={_MODE_SWITCH_GATE_VALUE}",
+            "status": "ok" if gate.env_ok else "pending",
+            "detail": f"{gate.spec.env_var}={gate.spec.expected_value}",
         },
     ]
 
@@ -482,8 +478,9 @@ def _mode_plan_report(
         launchctl_bin = "launchctl"
     dirty = snapshot["dirty state"]
     blockers = _dirty_blockers(dirty if isinstance(dirty, dict) else {})
-    gate_open = os.environ.get(_MODE_SWITCH_GATE_ENV) == _MODE_SWITCH_GATE_VALUE
-    approval_checks = _approval_checks(args, gate_open)
+    gate = validate_gate(GATES["mode.switch"], args, os.environ)
+    gate_open = gate.env_ok
+    approval_checks = _approval_checks(gate)
     approval_status = "complete" if all(check["status"] == "ok" for check in approval_checks) else "pending"
     commands = _planned_commands(target_mode, config, launchctl_bin)
     state_file = _mode_switch_state_file(config)
@@ -518,9 +515,9 @@ def _mode_plan_report(
         "current mode": snapshot.get("current mode"),
         "execute requested": "yes" if execute else "no",
         "mode switch gate": (
-            f"open: {_MODE_SWITCH_GATE_VALUE}"
+            f"open: {gate.spec.expected_value}"
             if gate_open
-            else f"closed: requires {_MODE_SWITCH_GATE_ENV}={_MODE_SWITCH_GATE_VALUE}"
+            else f"closed: requires {gate.spec.env_var}={gate.spec.expected_value}"
         ),
         "mode switch can run": "yes" if approval_status == "complete" and not blockers else "no",
         "approval status": approval_status,

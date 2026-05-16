@@ -24,6 +24,7 @@ from .cli_common import (
     status_from_issues,
 )
 from .config import AppConfig, ConfigIssue, load_config
+from .gates import GATES, add_gate_review_args, validate_gate
 from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
@@ -53,10 +54,6 @@ from .sync_scope import (
     sync_filter_file,
     write_sync_filter_file,
 )
-
-_AUTOSYNC_LAUNCHD_GATE_VALUE = "operator-approved-autosync-launchd-v1"
-_SYNC_MIGRATION_GATE_VALUE = "operator-approved-sync-migration-v1"
-
 
 def _rclone_cache_dir() -> Path:
     raw = os.environ.get("XDG_CACHE_HOME", "").strip()
@@ -205,10 +202,7 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         "autosync-gate", help="Read-only checklist before changing autosync launchd registration."
     )
     sync_autosync_gate_parser.add_argument("--report-path", type=Path)
-    sync_autosync_gate_parser.add_argument("--operator-reviewed-preview", action="store_true")
-    sync_autosync_gate_parser.add_argument("--reviewer-approved-plist", action="store_true")
-    sync_autosync_gate_parser.add_argument("--reviewer-approved-launchctl-policy", action="store_true")
-    sync_autosync_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(sync_autosync_gate_parser, GATES["autosync.launchd"])
     sync_autosync_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_autosync_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     sync_autosync_run_parser = sync_subparsers.add_parser(
@@ -216,10 +210,7 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     sync_autosync_run_parser.add_argument("mode", choices=("enable", "disable"))
     sync_autosync_run_parser.add_argument("--report-path", type=Path)
-    sync_autosync_run_parser.add_argument("--operator-reviewed-preview", action="store_true")
-    sync_autosync_run_parser.add_argument("--reviewer-approved-plist", action="store_true")
-    sync_autosync_run_parser.add_argument("--reviewer-approved-launchctl-policy", action="store_true")
-    sync_autosync_run_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(sync_autosync_run_parser, GATES["autosync.launchd"])
     sync_autosync_run_parser.add_argument("--execute", action="store_true")
     sync_autosync_run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_autosync_run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -228,10 +219,7 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     sync_migration_gate_parser.add_argument("--report-path", type=Path)
     sync_migration_gate_parser.add_argument("--sync-status-report-path", type=Path)
-    sync_migration_gate_parser.add_argument("--operator-reviewed-status", action="store_true")
-    sync_migration_gate_parser.add_argument("--reviewer-approved-scope", action="store_true")
-    sync_migration_gate_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
-    sync_migration_gate_parser.add_argument("--reviewer-approved-stop-conditions", action="store_true")
+    add_gate_review_args(sync_migration_gate_parser, GATES["sync.migration"])
     sync_migration_gate_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_migration_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     sync_migration_run_parser = sync_subparsers.add_parser(
@@ -241,10 +229,7 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_migration_run_parser.add_argument("--resync-mode", choices=RESYNC_MODES, default=DEFAULT_RESYNC_MODE)
     sync_migration_run_parser.add_argument("--report-path", type=Path)
     sync_migration_run_parser.add_argument("--sync-status-report-path", type=Path)
-    sync_migration_run_parser.add_argument("--operator-reviewed-status", action="store_true")
-    sync_migration_run_parser.add_argument("--reviewer-approved-scope", action="store_true")
-    sync_migration_run_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
-    sync_migration_run_parser.add_argument("--reviewer-approved-stop-conditions", action="store_true")
+    add_gate_review_args(sync_migration_run_parser, GATES["sync.migration"])
     sync_migration_run_parser.add_argument("--execute", action="store_true")
     sync_migration_run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_migration_run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -1508,8 +1493,13 @@ def _autosync_launchd_run_state_file(config: AppConfig) -> Path:
     return config.state_dir / "sync" / "autosync-launchd-last-run.json"
 
 
+def _autosync_launchd_gate_spec():
+    return GATES["autosync.launchd"]
+
+
 def _autosync_launchd_gate_open(config: AppConfig) -> bool:
-    return config.autosync_launchd_gate == _AUTOSYNC_LAUNCHD_GATE_VALUE
+    spec = _autosync_launchd_gate_spec()
+    return config.autosync_launchd_gate == spec.expected_value
 
 
 def _actual_launchctl_commands(config: AppConfig, launchctl_bin: str, mode: str) -> list[list[str]]:
@@ -1573,6 +1563,11 @@ def _render_autosync_run_human(report: CommandReport) -> str:
 def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
+    autosync_gate = validate_gate(
+        _autosync_launchd_gate_spec(),
+        args,
+        {_autosync_launchd_gate_spec().env_var: config.autosync_launchd_gate},
+    )
     autosync = read_autosync_state(config)
     issues = list(load_result.issues)
     shadow_check, shadow_issues = _saved_shadow_report_check(getattr(args, "report_path", None))
@@ -1629,22 +1624,22 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
         },
         {
             "name": "operator preview review",
-            "status": "ok" if getattr(args, "operator_reviewed_preview", False) else "pending",
+            "status": "ok" if autosync_gate.flag_ok("--operator-reviewed-preview") else "pending",
             "detail": "operator reviewed enable/disable autosync preview output and launchd label",
         },
         {
             "name": "plist approval",
-            "status": "ok" if getattr(args, "reviewer_approved_plist", False) else "pending",
+            "status": "ok" if autosync_gate.flag_ok("--reviewer-approved-plist") else "pending",
             "detail": "reviewer approved plist path, label, and public entrypoint target",
         },
         {
             "name": "launchctl policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_launchctl_policy", False) else "pending",
+            "status": "ok" if autosync_gate.flag_ok("--reviewer-approved-launchctl-policy") else "pending",
             "detail": "reviewer approved bootstrap/bootout/enable/disable behavior before launchd changes",
         },
         {
             "name": "rollback policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "status": "ok" if autosync_gate.flag_ok("--reviewer-approved-rollback-policy") else "pending",
             "detail": "reviewer approved rollback commands and stop conditions before launchd changes",
         },
         {
@@ -1656,7 +1651,7 @@ def _sync_autosync_gate_report(args: argparse.Namespace, paths: RuntimePaths) ->
     approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
     issues.append(
         ConfigIssue(
-            key="PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE",
+            key=autosync_gate.spec.env_var,
             level="warning",
             message="autosync launchd changes remain gated; this command is read-only",
         )
@@ -1734,6 +1729,7 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         if issue.key != "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE"
     ]
     approval_status = str(details.get("autosync approval status", "pending"))
+    autosync_spec = _autosync_launchd_gate_spec()
     gate_open = _autosync_launchd_gate_open(config)
     state_file = _autosync_launchd_run_state_file(config)
     planned_commands = _actual_launchctl_commands(config, launchctl_bin or "launchctl", mode)
@@ -1748,21 +1744,21 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
             ),
             "mode": mode,
             "launchd run gate status": (
-                f"open: {_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+                f"open: {autosync_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+                else f"closed: requires {autosync_spec.env_var}={autosync_spec.expected_value}"
             ),
             "launchd gate status": (
-                f"open: {_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+                f"open: {autosync_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE}"
+                else f"closed: requires {autosync_spec.env_var}={autosync_spec.expected_value}"
             ),
             "autosync changes can run": "yes" if gate_open and approval_status == "complete-read-only" else "no",
             "execute requested": "yes" if execute else "no",
             "state writes": "autosync launchd run state" if execute else "none",
             "planned launchctl commands": planned_commands,
             "launchd run state file": str(state_file),
-            "future gate env": f"PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE}",
+            "future gate env": f"{autosync_spec.env_var}={autosync_spec.expected_value}",
         }
     )
 
@@ -1781,7 +1777,7 @@ def _sync_autosync_run_report(args: argparse.Namespace, paths: RuntimePaths) -> 
                 level="error" if execute else "warning",
                 message=(
                     "autosync launchd execution requires "
-                    f"PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE={_AUTOSYNC_LAUNCHD_GATE_VALUE!r}"
+                    f"{autosync_spec.env_var}={autosync_spec.expected_value!r}"
                 ),
             )
         )
@@ -1951,8 +1947,13 @@ def _sync_migration_run_state_file(config: AppConfig) -> Path:
     return config.state_dir / "sync" / "migration-last-run.json"
 
 
+def _sync_migration_gate_spec():
+    return GATES["sync.migration"]
+
+
 def _sync_migration_gate_open(config: AppConfig) -> bool:
-    return config.sync_migration_gate == _SYNC_MIGRATION_GATE_VALUE
+    spec = _sync_migration_gate_spec()
+    return config.sync_migration_gate == spec.expected_value
 
 
 def _render_migration_run_human(report: CommandReport) -> str:
@@ -2076,6 +2077,11 @@ def _saved_sync_status_report(
 def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
+    migration_gate = validate_gate(
+        _sync_migration_gate_spec(),
+        args,
+        {_sync_migration_gate_spec().env_var: config.sync_migration_gate},
+    )
     sync_state = read_sync_state(config)
     lock_state = read_sync_lock_state(config)
     rclone_lock = _rclone_bisync_lock_info(config)
@@ -2217,22 +2223,22 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         },
         {
             "name": "operator status review",
-            "status": "ok" if getattr(args, "operator_reviewed_status", False) else "pending",
+            "status": "ok" if migration_gate.flag_ok("--operator-reviewed-status") else "pending",
             "detail": "operator reviewed sync status, latest result, lock state, and preview commands",
         },
         {
             "name": "scope approval",
-            "status": "ok" if getattr(args, "reviewer_approved_scope", False) else "pending",
+            "status": "ok" if migration_gate.flag_ok("--reviewer-approved-scope") else "pending",
             "detail": "reviewer approved document/media allowlist scope before migration validation",
         },
         {
             "name": "rollback policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "status": "ok" if migration_gate.flag_ok("--reviewer-approved-rollback-policy") else "pending",
             "detail": "reviewer approved listing/filter rollback backups and restore commands before validation",
         },
         {
             "name": "stop conditions approval",
-            "status": "ok" if getattr(args, "reviewer_approved_stop_conditions", False) else "pending",
+            "status": "ok" if migration_gate.flag_ok("--reviewer-approved-stop-conditions") else "pending",
             "detail": "reviewer approved stop conditions for sync errors, locks, broad scope, or unexpected transfer plan",
         },
         {
@@ -2244,7 +2250,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
     approval_status = "complete-read-only" if all(check["status"] == "ok" for check in checks) else "pending"
     issues.append(
         ConfigIssue(
-            key="PCLOUD_TOOLS_SYNC_MIGRATION_GATE",
+            key=migration_gate.spec.env_var,
             level="warning",
             message="normal sync/resync migration validation remains gated; this command is read-only",
         )
@@ -2346,6 +2352,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
         if issue.key != "PCLOUD_TOOLS_SYNC_MIGRATION_GATE"
     ]
     approval_status = str(details.get("migration approval status", "pending"))
+    migration_spec = _sync_migration_gate_spec()
     gate_open = _sync_migration_gate_open(config)
     state_file = _sync_migration_run_state_file(config)
     rclone_bin = _command_path("rclone")
@@ -2361,20 +2368,20 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
             ),
             "mode": mode,
             "migration run gate status": (
-                f"open: {_SYNC_MIGRATION_GATE_VALUE}"
+                f"open: {migration_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE}"
+                else f"closed: requires {migration_spec.env_var}={migration_spec.expected_value}"
             ),
             "migration gate status": (
-                f"open: {_SYNC_MIGRATION_GATE_VALUE}"
+                f"open: {migration_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE}"
+                else f"closed: requires {migration_spec.env_var}={migration_spec.expected_value}"
             ),
             "sync/resync can run": "yes" if gate_open and approval_status == "complete-read-only" else "no",
             "execute requested": "yes" if execute else "no",
             "state writes": "sync logs, lock, status, and migration run state" if execute else "none",
             "migration run state file": str(state_file),
-            "future gate env": f"PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE}",
+            "future gate env": f"{migration_spec.env_var}={migration_spec.expected_value}",
         }
     )
 
@@ -2393,7 +2400,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
                 level="error" if execute else "warning",
                 message=(
                     "sync migration execution requires "
-                    f"PCLOUD_TOOLS_SYNC_MIGRATION_GATE={_SYNC_MIGRATION_GATE_VALUE!r}"
+                    f"{migration_spec.env_var}={migration_spec.expected_value!r}"
                 ),
             )
         )
