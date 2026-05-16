@@ -114,6 +114,48 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="launchd bootout/bootstrap reload",
     ),
+    "pushd.launchd.automation-plist": GateSpec(
+        name="pushd.launchd.automation-plist",
+        env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_AUTOMATION_PLIST_GATE",
+        expected_value="operator-approved-pushd-launchd-automation-plist-v1",
+        approval_flags=(
+            "--operator-reviewed-automation-command",
+            "--reviewer-approved-automation-environment",
+            "--reviewer-approved-no-bootstrap",
+        ),
+        summary="public real-transfer automation plist write",
+    ),
+    "diffd.launchd.automation-plist": GateSpec(
+        name="diffd.launchd.automation-plist",
+        env_var="PCLOUD_TOOLS_DIFFD_LAUNCHD_AUTOMATION_PLIST_GATE",
+        expected_value="operator-approved-diffd-launchd-automation-plist-v1",
+        approval_flags=(
+            "--operator-reviewed-automation-command",
+            "--reviewer-approved-automation-environment",
+            "--reviewer-approved-no-bootstrap",
+        ),
+        summary="public real-transfer automation plist write",
+    ),
+    "pushd.launchd.automation-reload": GateSpec(
+        name="pushd.launchd.automation-reload",
+        env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_AUTOMATION_RELOAD_GATE",
+        expected_value="operator-approved-pushd-launchd-automation-reload-v1",
+        approval_flags=(
+            "--operator-reviewed-automation-plist",
+            "--reviewer-approved-bootout-bootstrap",
+        ),
+        summary="public real-transfer automation launchd reload",
+    ),
+    "diffd.launchd.automation-reload": GateSpec(
+        name="diffd.launchd.automation-reload",
+        env_var="PCLOUD_TOOLS_DIFFD_LAUNCHD_AUTOMATION_RELOAD_GATE",
+        expected_value="operator-approved-diffd-launchd-automation-reload-v1",
+        approval_flags=(
+            "--operator-reviewed-automation-plist",
+            "--reviewer-approved-bootout-bootstrap",
+        ),
+        summary="public real-transfer automation launchd reload",
+    ),
     "pushd.fswatch.resident": GateSpec(
         name="pushd.fswatch.resident",
         env_var="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE",
@@ -160,6 +202,25 @@ GATES: dict[str, GateSpec] = {
             "--reviewer-approved-consume-policy",
         ),
         summary="real transfer execution",
+    ),
+    "real_transfer.automation": GateSpec(
+        name="real_transfer.automation",
+        env_var="PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE",
+        expected_value="operator-approved-real-transfer-automation-v1",
+        approval_flags=(
+            "--operator-reviewed-real-transfer-gate",
+            "--reviewer-approved-automation-command",
+            "--reviewer-approved-launchd-policy",
+            "--reviewer-approved-rollback-policy",
+        ),
+        summary="real transfer automation gate",
+    ),
+    "real_transfer.automation-run": GateSpec(
+        name="real_transfer.automation-run",
+        env_var="PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE",
+        expected_value="operator-approved-real-transfer-automation-run-v1",
+        approval_flags=(),
+        summary="real transfer automation run",
     ),
     "diffd.api.long-poll": GateSpec(
         name="diffd.api.long-poll",

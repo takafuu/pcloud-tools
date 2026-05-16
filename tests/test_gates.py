@@ -117,6 +117,23 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
         "--reviewer-approved-real-command",
         "--reviewer-approved-consume-policy",
     )
+    assert GATES["real_transfer.automation"].env_var == "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE"
+    assert GATES["real_transfer.automation"].expected_value == (
+        "operator-approved-real-transfer-automation-v1"
+    )
+    assert GATES["real_transfer.automation"].approval_flags == (
+        "--operator-reviewed-real-transfer-gate",
+        "--reviewer-approved-automation-command",
+        "--reviewer-approved-launchd-policy",
+        "--reviewer-approved-rollback-policy",
+    )
+    assert GATES["real_transfer.automation-run"].env_var == (
+        "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE"
+    )
+    assert GATES["real_transfer.automation-run"].expected_value == (
+        "operator-approved-real-transfer-automation-run-v1"
+    )
+    assert GATES["real_transfer.automation-run"].approval_flags == ()
     assert GATES["diffd.api.long-poll"].env_var == "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"
     assert GATES["diffd.api.long-poll"].expected_value == "operator-approved-api-long-poll-v1"
     assert GATES["diffd.api.long-poll"].approval_flags == (
@@ -138,6 +155,51 @@ def test_diffd_api_catchup_and_checkpoint_gate_specs_match_existing_public_contr
     assert GATES["diffd.api.checkpoint"].approval_flags == (
         "--operator-reviewed-checkpoint",
         "--reviewer-approved-checkpoint-policy",
+    )
+
+
+def test_launchd_automation_gate_specs_match_existing_public_contracts() -> None:
+    assert GATES["pushd.launchd.automation-plist"].env_var == (
+        "PCLOUD_TOOLS_PUSHD_LAUNCHD_AUTOMATION_PLIST_GATE"
+    )
+    assert GATES["pushd.launchd.automation-plist"].expected_value == (
+        "operator-approved-pushd-launchd-automation-plist-v1"
+    )
+    assert GATES["pushd.launchd.automation-plist"].approval_flags == (
+        "--operator-reviewed-automation-command",
+        "--reviewer-approved-automation-environment",
+        "--reviewer-approved-no-bootstrap",
+    )
+    assert GATES["diffd.launchd.automation-plist"].env_var == (
+        "PCLOUD_TOOLS_DIFFD_LAUNCHD_AUTOMATION_PLIST_GATE"
+    )
+    assert GATES["diffd.launchd.automation-plist"].expected_value == (
+        "operator-approved-diffd-launchd-automation-plist-v1"
+    )
+    assert GATES["diffd.launchd.automation-plist"].approval_flags == (
+        "--operator-reviewed-automation-command",
+        "--reviewer-approved-automation-environment",
+        "--reviewer-approved-no-bootstrap",
+    )
+    assert GATES["pushd.launchd.automation-reload"].env_var == (
+        "PCLOUD_TOOLS_PUSHD_LAUNCHD_AUTOMATION_RELOAD_GATE"
+    )
+    assert GATES["pushd.launchd.automation-reload"].expected_value == (
+        "operator-approved-pushd-launchd-automation-reload-v1"
+    )
+    assert GATES["pushd.launchd.automation-reload"].approval_flags == (
+        "--operator-reviewed-automation-plist",
+        "--reviewer-approved-bootout-bootstrap",
+    )
+    assert GATES["diffd.launchd.automation-reload"].env_var == (
+        "PCLOUD_TOOLS_DIFFD_LAUNCHD_AUTOMATION_RELOAD_GATE"
+    )
+    assert GATES["diffd.launchd.automation-reload"].expected_value == (
+        "operator-approved-diffd-launchd-automation-reload-v1"
+    )
+    assert GATES["diffd.launchd.automation-reload"].approval_flags == (
+        "--operator-reviewed-automation-plist",
+        "--reviewer-approved-bootout-bootstrap",
     )
 
 

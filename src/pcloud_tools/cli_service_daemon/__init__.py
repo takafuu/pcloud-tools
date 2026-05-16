@@ -157,8 +157,6 @@ _TIMEOUT_POLICIES = (
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
-_REAL_TRANSFER_AUTOMATION_GATE_VALUE = "operator-approved-real-transfer-automation-v1"
-_REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE = "operator-approved-real-transfer-automation-run-v1"
 
 
 def _add_transfer_automation_gate_parser(
@@ -176,13 +174,8 @@ def _add_transfer_automation_gate_parser(
     parser.add_argument("--confirm-direction", choices=("upload", "download"))
     parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
     parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
-    parser.add_argument("--operator-reviewed-dry-run", action="store_true")
-    parser.add_argument("--reviewer-approved-real-command", action="store_true")
-    parser.add_argument("--reviewer-approved-consume-policy", action="store_true")
-    parser.add_argument("--operator-reviewed-real-transfer-gate", action="store_true")
-    parser.add_argument("--reviewer-approved-automation-command", action="store_true")
-    parser.add_argument("--reviewer-approved-launchd-policy", action="store_true")
-    parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(parser, GATES["real_transfer.execution"])
+    add_gate_review_args(parser, GATES["real_transfer.automation"])
     parser.add_argument(
         "--start-interval-seconds",
         type=int,
@@ -224,13 +217,8 @@ def _add_automation_review_args(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--confirm-direction", choices=("upload", "download"))
     parser.add_argument("--consume-policy", choices=_CONSUME_POLICIES)
     parser.add_argument("--timeout-policy", choices=_TIMEOUT_POLICIES)
-    parser.add_argument("--operator-reviewed-dry-run", action="store_true")
-    parser.add_argument("--reviewer-approved-real-command", action="store_true")
-    parser.add_argument("--reviewer-approved-consume-policy", action="store_true")
-    parser.add_argument("--operator-reviewed-real-transfer-gate", action="store_true")
-    parser.add_argument("--reviewer-approved-automation-command", action="store_true")
-    parser.add_argument("--reviewer-approved-launchd-policy", action="store_true")
-    parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(parser, GATES["real_transfer.execution"])
+    add_gate_review_args(parser, GATES["real_transfer.automation"])
     parser.add_argument(
         "--start-interval-seconds",
         type=int,
@@ -317,9 +305,7 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction, service:
         help="Preview the future public real-transfer queue executor LaunchAgent plist without writing it.",
     )
     _add_automation_review_args(launchd_automation_plist_parser)
-    launchd_automation_plist_parser.add_argument("--operator-reviewed-automation-command", action="store_true")
-    launchd_automation_plist_parser.add_argument("--reviewer-approved-automation-environment", action="store_true")
-    launchd_automation_plist_parser.add_argument("--reviewer-approved-no-bootstrap", action="store_true")
+    add_gate_review_args(launchd_automation_plist_parser, GATES[f"{service.name}.launchd.automation-plist"])
     launchd_automation_plist_parser.add_argument("--execute", action="store_true")
     launchd_automation_plist_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     launchd_automation_plist_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -328,8 +314,7 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction, service:
         help="Preview future public real-transfer queue executor launchd bootout/bootstrap without running it.",
     )
     _add_automation_review_args(launchd_automation_reload_parser)
-    launchd_automation_reload_parser.add_argument("--operator-reviewed-automation-plist", action="store_true")
-    launchd_automation_reload_parser.add_argument("--reviewer-approved-bootout-bootstrap", action="store_true")
+    add_gate_review_args(launchd_automation_reload_parser, GATES[f"{service.name}.launchd.automation-reload"])
     launchd_automation_reload_parser.add_argument("--execute", action="store_true")
     launchd_automation_reload_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     launchd_automation_reload_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -2422,20 +2407,12 @@ def _service_launchd_plist_gate_spec(service: ServiceDefinition) -> GateSpec:
     return GATES[f"{service.name}.launchd.plist"]
 
 
-def _service_launchd_automation_plist_gate_env(service: ServiceDefinition) -> str:
-    return f"PCLOUD_TOOLS_{service.name.upper()}_LAUNCHD_AUTOMATION_PLIST_GATE"
+def _service_launchd_automation_plist_gate_spec(service: ServiceDefinition) -> GateSpec:
+    return GATES[f"{service.name}.launchd.automation-plist"]
 
 
-def _service_launchd_automation_plist_gate_value(service: ServiceDefinition) -> str:
-    return f"operator-approved-{service.name}-launchd-automation-plist-v1"
-
-
-def _service_launchd_automation_reload_gate_env(service: ServiceDefinition) -> str:
-    return f"PCLOUD_TOOLS_{service.name.upper()}_LAUNCHD_AUTOMATION_RELOAD_GATE"
-
-
-def _service_launchd_automation_reload_gate_value(service: ServiceDefinition) -> str:
-    return f"operator-approved-{service.name}-launchd-automation-reload-v1"
+def _service_launchd_automation_reload_gate_spec(service: ServiceDefinition) -> GateSpec:
+    return GATES[f"{service.name}.launchd.automation-reload"]
 
 
 def _service_launchd_plist_payload(
@@ -2535,8 +2512,8 @@ def _service_public_executor_launchd_plist_payload(
         "EnvironmentVariables": {
             "PATH": _LAUNCHD_RESIDENT_PATH,
             GATES["real_transfer.execution"].env_var: GATES["real_transfer.execution"].expected_value,
-            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE": _REAL_TRANSFER_AUTOMATION_GATE_VALUE,
-            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE": _REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE,
+            GATES["real_transfer.automation"].env_var: GATES["real_transfer.automation"].expected_value,
+            GATES["real_transfer.automation-run"].env_var: GATES["real_transfer.automation-run"].expected_value,
             "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS": str(
                 _PUBLIC_REAL_TRANSFER_TIMEOUT_SECONDS
             ),
@@ -2893,9 +2870,11 @@ def _service_launchd_automation_plist_report(
         report_path=report_path,
     )
     expected_root = Path.home() / "Library" / "LaunchAgents"
-    plist_gate_env = _service_launchd_automation_plist_gate_env(service)
-    plist_gate_value = _service_launchd_automation_plist_gate_value(service)
-    plist_gate_open = os.environ.get(plist_gate_env) == plist_gate_value
+    plist_gate_spec = _service_launchd_automation_plist_gate_spec(service)
+    plist_gate = validate_gate(plist_gate_spec, args, os.environ)
+    plist_gate_env = plist_gate_spec.env_var
+    plist_gate_value = plist_gate_spec.expected_value
+    plist_gate_open = plist_gate.env_ok
     checks = [
         shadow_check,
         {
@@ -2910,17 +2889,17 @@ def _service_launchd_automation_plist_report(
         },
         {
             "name": "automation command review",
-            "status": "ok" if getattr(args, "operator_reviewed_automation_command", False) else "pending",
+            "status": "ok" if plist_gate.flag_ok("--operator-reviewed-automation-command") else "pending",
             "detail": "operator reviewed automation-run ProgramArguments with --execute and --consume-on-success",
         },
         {
             "name": "automation environment approval",
-            "status": "ok" if getattr(args, "reviewer_approved_automation_environment", False) else "pending",
+            "status": "ok" if plist_gate.flag_ok("--reviewer-approved-automation-environment") else "pending",
             "detail": "reviewer approved real-transfer, automation, and automation-run gate env values in plist",
         },
         {
             "name": "no-bootstrap approval",
-            "status": "ok" if getattr(args, "reviewer_approved_no_bootstrap", False) else "pending",
+            "status": "ok" if plist_gate.flag_ok("--reviewer-approved-no-bootstrap") else "pending",
             "detail": "reviewer approved writing plist only; no bootout/bootstrap in this gate",
         },
         {
@@ -3089,9 +3068,11 @@ def _service_launchd_automation_reload_report(
         [launchctl, "disable", target],
     ]
     operational_status, operational_detail = _public_executor_plist_operational_status(plist_path, service)
-    reload_gate_env = _service_launchd_automation_reload_gate_env(service)
-    reload_gate_value = _service_launchd_automation_reload_gate_value(service)
-    reload_gate_open = os.environ.get(reload_gate_env) == reload_gate_value
+    reload_gate_spec = _service_launchd_automation_reload_gate_spec(service)
+    reload_gate = validate_gate(reload_gate_spec, args, os.environ)
+    reload_gate_env = reload_gate_spec.env_var
+    reload_gate_value = reload_gate_spec.expected_value
+    reload_gate_open = reload_gate.env_ok
     checks = [
         shadow_check,
         {
@@ -3106,12 +3087,12 @@ def _service_launchd_automation_reload_report(
         },
         {
             "name": "automation plist review",
-            "status": "ok" if getattr(args, "operator_reviewed_automation_plist", False) else "pending",
+            "status": "ok" if reload_gate.flag_ok("--operator-reviewed-automation-plist") else "pending",
             "detail": "operator reviewed public executor plist before launchd reload",
         },
         {
             "name": "bootout/bootstrap approval",
-            "status": "ok" if getattr(args, "reviewer_approved_bootout_bootstrap", False) else "pending",
+            "status": "ok" if reload_gate.flag_ok("--reviewer-approved-bootout-bootstrap") else "pending",
             "detail": "reviewer approved bootout then bootstrap for this executor service only",
         },
         {
@@ -3890,9 +3871,11 @@ def _public_executor_plist_operational_status(plist_path: Path, service: Service
     real_transfer_spec = GATES["real_transfer.execution"]
     if env.get(real_transfer_spec.env_var) != real_transfer_spec.expected_value:
         return "not-operational", "automation EnvironmentVariables are missing the real transfer gate"
-    if env.get("PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE") != _REAL_TRANSFER_AUTOMATION_GATE_VALUE:
+    automation_spec = GATES["real_transfer.automation"]
+    if env.get(automation_spec.env_var) != automation_spec.expected_value:
         return "not-operational", "automation EnvironmentVariables are missing the automation gate"
-    if env.get("PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE") != _REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE:
+    automation_run_spec = GATES["real_transfer.automation-run"]
+    if env.get(automation_run_spec.env_var) != automation_run_spec.expected_value:
         return "not-operational", "automation EnvironmentVariables are missing the automation-run gate"
     if "/opt/homebrew/bin" not in str(env.get("PATH", "")):
         return "not-operational", "automation PATH does not include /opt/homebrew/bin"
@@ -7815,14 +7798,16 @@ def _transfer_automation_gate_report(
     public_entrypoint = _command_v("pcloud-manager") or "pcloud-manager"
     label = _service_public_executor_launchd_label(service)
     plist_path = _service_public_launchd_plist_path(label)
-    automation_gate_env = "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE"
-    automation_gate_provided = os.environ.get(automation_gate_env)
-    automation_gate_open = automation_gate_provided == _REAL_TRANSFER_AUTOMATION_GATE_VALUE
+    automation_spec = GATES["real_transfer.automation"]
+    automation_gate = validate_gate(automation_spec, args, os.environ)
+    automation_gate_env = automation_spec.env_var
+    automation_gate_provided = automation_gate.env_value
+    automation_gate_open = automation_gate.env_ok
     command_status = "implemented-gated"
     automation_checks = [
         {
             "name": "first real-transfer gate review",
-            "status": "ok" if getattr(args, "operator_reviewed_real_transfer_gate", False) else "pending",
+            "status": "ok" if automation_gate.flag_ok("--operator-reviewed-real-transfer-gate") else "pending",
             "detail": "operator reviewed transfer real-gate output and first target policy",
         },
         {
@@ -7849,7 +7834,7 @@ def _transfer_automation_gate_report(
         },
         {
             "name": "automation command approval",
-            "status": "ok" if getattr(args, "reviewer_approved_automation_command", False) else "pending",
+            "status": "ok" if automation_gate.flag_ok("--reviewer-approved-automation-command") else "pending",
             "detail": "reviewer approved the future automation command argv, environment, and command ownership",
         },
         {
@@ -7859,18 +7844,18 @@ def _transfer_automation_gate_report(
         },
         {
             "name": "automation launchd policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_launchd_policy", False) else "pending",
+            "status": "ok" if automation_gate.flag_ok("--reviewer-approved-launchd-policy") else "pending",
             "detail": f"reviewer approved public label, plist path, StartInterval={interval}, logs, and rollback scope",
         },
         {
             "name": "automation rollback policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "status": "ok" if automation_gate.flag_ok("--reviewer-approved-rollback-policy") else "pending",
             "detail": "reviewer approved disabling only this executor service on failure",
         },
         {
             "name": "automation gate env",
             "status": "ok" if automation_gate_open else "pending",
-            "detail": f"{automation_gate_env}={_REAL_TRANSFER_AUTOMATION_GATE_VALUE}",
+            "detail": f"{automation_gate_env}={automation_spec.expected_value}",
         },
         {
             "name": "automation interval",
@@ -7885,7 +7870,7 @@ def _transfer_automation_gate_report(
     ]
     issues = [
         ConfigIssue(
-            key="PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE",
+            key=automation_spec.env_var,
             level="warning",
             message="automatic real upload/download transfer execution remains closed; this command is read-only",
         ),
@@ -7916,7 +7901,7 @@ def _transfer_automation_gate_report(
             "automation can run": "no",
             "automation command status": command_status,
             "automation gate env var": automation_gate_env,
-            "automation gate accepted value": _REAL_TRANSFER_AUTOMATION_GATE_VALUE,
+            "automation gate accepted value": automation_spec.expected_value,
             "automation gate env provided": "yes" if automation_gate_provided else "no",
             "automation gate env honored": "no",
             "planned public executor service label": label,
@@ -8051,8 +8036,10 @@ def _transfer_automation_run_report(
     state = read_service_daemon_state(load_result.config, service.name)
     real_transfer_spec = GATES["real_transfer.execution"]
     real_gate_env = os.environ.get(real_transfer_spec.env_var)
-    automation_gate_env = os.environ.get("PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE")
-    automation_run_gate_env = os.environ.get("PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE")
+    automation_spec = GATES["real_transfer.automation"]
+    automation_gate_env = os.environ.get(automation_spec.env_var)
+    automation_run_spec = GATES["real_transfer.automation-run"]
+    automation_run_gate_env = os.environ.get(automation_run_spec.env_var)
     execute = getattr(args, "execute", False)
     consume_on_success = getattr(args, "consume_on_success", False)
     max_records = int(getattr(args, "max_records", 1))
@@ -8113,8 +8100,8 @@ def _transfer_automation_run_report(
             )
         )
     real_gate_open = real_gate_env == real_transfer_spec.expected_value
-    automation_gate_open = automation_gate_env == _REAL_TRANSFER_AUTOMATION_GATE_VALUE
-    automation_run_gate_open = automation_run_gate_env == _REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE
+    automation_gate_open = automation_gate_env == automation_spec.expected_value
+    automation_run_gate_open = automation_run_gate_env == automation_run_spec.expected_value
     if not real_gate_open:
         issues.append(
             ConfigIssue(
@@ -8129,22 +8116,22 @@ def _transfer_automation_run_report(
     if not automation_gate_open:
         issues.append(
             ConfigIssue(
-                key="PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE",
+                key=automation_spec.env_var,
                 level="error" if execute else "warning",
                 message=(
-                    "automation-run requires PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE="
-                    f"{_REAL_TRANSFER_AUTOMATION_GATE_VALUE!r}"
+                    f"automation-run requires {automation_spec.env_var}="
+                    f"{automation_spec.expected_value!r}"
                 ),
             )
         )
     if not automation_run_gate_open:
         issues.append(
             ConfigIssue(
-                key="PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE",
+                key=automation_run_spec.env_var,
                 level="error" if execute else "warning",
                 message=(
-                    "automation-run requires PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE="
-                    f"{_REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE!r}"
+                    f"automation-run requires {automation_run_spec.env_var}="
+                    f"{automation_run_spec.expected_value!r}"
                 ),
             )
         )
@@ -8276,8 +8263,8 @@ def _transfer_automation_run_report(
         "automation gate env honored": "yes" if automation_gate_open else "no",
         "automation run gate env provided": "yes" if automation_run_gate_env else "no",
         "automation run gate env honored": "yes" if automation_run_gate_open else "no",
-        "automation run gate env var": "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE",
-        "automation run gate accepted value": _REAL_TRANSFER_AUTOMATION_RUN_GATE_VALUE,
+        "automation run gate env var": automation_run_spec.env_var,
+        "automation run gate accepted value": automation_run_spec.expected_value,
         "rclone binary": rclone_bin or _preview_rclone_bin(load_result.config),
         "state writes": state_writes if state_writes else "none",
         "public plist writes": "no",
