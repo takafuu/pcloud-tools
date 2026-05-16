@@ -82,6 +82,14 @@ ConfigValueKind = Literal["path", "str", "int", "bool", "csv"]
 
 @dataclass(frozen=True)
 class FieldSpec:
+    """Configuration field metadata.
+
+    Default templates are expanded by _defaults_for_runtime with home,
+    workspace_root, base_state_dir, base_log_dir, and env_file. Literal braces
+    that must survive expansion should be escaped as {{...}}, for example
+    chat_notify_cmd's {{message}} placeholder.
+    """
+
     name: str
     env_var: str
     kind: ConfigValueKind

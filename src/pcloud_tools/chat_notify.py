@@ -136,5 +136,6 @@ def configured_chat_notify_enabled(env_file: Path) -> bool:
     try:
         values = parse_env_file(env_file)
     except Exception:
+        # Notification setup failures must not block the core workflow.
         return False
     return values.get("PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED", "0").strip() in {"1", "true", "yes", "on"}
