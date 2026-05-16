@@ -11,6 +11,16 @@ def test_dev_sync_execute_is_refused_before_remote_execution(tmp_path: Path) -> 
     assert payload["status"] == "error"
     assert payload["summary"] == "dev mode refuses to execute bisync against a configured remote"
     assert [issue["key"] for issue in payload["issues"]] == ["PCLOUD_TOOLS_DEV_EXECUTION"]
+def test_sync_background_json_emits_baseline_report(tmp_path: Path) -> None:
+    result = _run_cli(tmp_path, "sync", "background", "--json")
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["schema_version"] == "pcloud-tools-report.v1"
+    assert payload["command"] == "sync background"
+    assert payload["status"] in {"ok", "warning"}
+    assert isinstance(payload["summary"], str)
+    assert payload["summary"]
 def test_sync_status_marks_old_last_error_as_historical_after_success(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
