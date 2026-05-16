@@ -6,10 +6,11 @@ from pathlib import Path
 from typing import Any
 
 from .cli_archive import _old_monolith_gate_report
+from .cli_common import action_command as _action_command
 from .cli_service_daemon import _diffd_api_long_poll_gate_report, _pushd_fswatch_resident_gate_report
 from .cli_sync import _sync_autosync_gate_report, _sync_migration_gate_report
 from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .runtime import RuntimePaths
 
 
 def _shell_join(value: object) -> str:
@@ -39,10 +40,6 @@ def _xbar_action(action: ReportAction) -> str:
     for index, arg in enumerate(action.command[1:], start=1):
         fields.append(f"param{index}={shlex.quote(arg)}")
     return f"{_xbar_escape(action.label)} | {' '.join(fields)}"
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (action_entrypoint_command(paths), "action", action_id)
 
 
 def _gates_actions(paths: RuntimePaths) -> list[ReportAction]:

@@ -10,6 +10,7 @@ from typing import Any
 from .config import AppConfig, ConfigIssue
 from .daemon_state import DaemonState
 from .download_suppression import download_suppression_match, upload_origin_match
+from .io_utils import atomic_write_json, atomic_write_text
 from .manager_ignore import manager_ignore_match
 from .service_daemon_state import ServiceDaemonState
 from .sync_scope import SyncScopeInfo, sync_allowlist_info
@@ -172,8 +173,7 @@ def append_plan_record(path: Path, key_prefix: str, record: PlanRecord) -> PlanU
     if issue:
         return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
     updated = [*payload, _record_payload(record.path, record.action, record.reason)]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_json(path, updated)
     return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
 
 
@@ -219,8 +219,7 @@ def append_plan_record_with_policy(
             ),
         )
     updated = [*payload, _record_payload(record.path, record.action, record.reason)]
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_json(path, updated)
     return PlanAppendPolicyResult(
         file=path,
         before_count=before_count,
@@ -234,8 +233,7 @@ def clear_plan_records(path: Path, key_prefix: str) -> PlanUpdateResult:
     payload, issue = _read_json_list(path, key_prefix)
     if issue:
         return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text("[]\n")
+    atomic_write_json(path, [])
     return PlanUpdateResult(file=path, before_count=len(payload), after_count=0)
 
 
@@ -249,8 +247,7 @@ def remove_plan_records(path: Path, key_prefix: str, target_path: str, *, write:
         if normalize_plan_path(item.get("path", "") if isinstance(item, dict) else item) != normalized_target
     ]
     if write:
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_text(json.dumps(updated, indent=2, ensure_ascii=False) + "\n")
+        atomic_write_json(path, updated)
     return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
 
 
@@ -278,10 +275,9 @@ def record_dry_run_state(
         "recorded_at": generated_at,
         "cursor": cursor,
     }
-    state.last_plan_file.parent.mkdir(parents=True, exist_ok=True)
-    state.last_plan_file.write_text(json.dumps(plan_payload, indent=2, ensure_ascii=False) + "\n")
-    state.last_event_file.write_text(json.dumps(event_payload, indent=2, ensure_ascii=False) + "\n")
-    state.cursor_file.write_text(f"{cursor}\n")
+    atomic_write_json(state.last_plan_file, plan_payload)
+    atomic_write_json(state.last_event_file, event_payload)
+    atomic_write_text(state.cursor_file, f"{cursor}\n")
     return DryRunStateResult(
         last_plan_file=state.last_plan_file,
         last_event_file=state.last_event_file,

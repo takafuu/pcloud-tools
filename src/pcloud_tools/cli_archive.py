@@ -8,9 +8,17 @@ import subprocess
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .cli_common import (
+    action_command as _action_command,
+    entrypoint_command as _entrypoint_command,
+    has_errors as _has_errors,
+    report_issues as _report_issues,
+    sort_issues as _sort_issues,
+    status_from_issues as _status_from_issues,
+)
 from .config import ConfigIssue
-from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .output import CommandReport, ReportAction, render_report
+from .runtime import RuntimePaths
 
 _OLD_MONOLITH_ARCHIVE_GATE_VALUE = "operator-approved-old-monolith-archive-v1"
 
@@ -49,27 +57,6 @@ def cmd_archive(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     return None
 
 
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    order = {"error": 0, "warning": 1}
-    return sorted(issues, key=lambda issue: (order.get(issue.level, 2), issue.key, issue.message))
-
-
-def _status_from_issues(issues: list[ConfigIssue]) -> str:
-    if any(issue.level == "error" for issue in issues):
-        return "error"
-    if issues:
-        return "warning"
-    return "ok"
-
-
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
 def _command_path(command: str) -> str | None:
     try:
         result = subprocess.run(
@@ -85,14 +72,6 @@ def _command_path(command: str) -> str | None:
         if value:
             return value[0]
     return None
-
-
-def _entrypoint_command(paths: RuntimePaths) -> str:
-    return action_entrypoint_command(paths)
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (_entrypoint_command(paths), "action", action_id)
 
 
 def _latest_cutover_backup(paths: RuntimePaths) -> Path | None:

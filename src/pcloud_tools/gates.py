@@ -1,0 +1,88 @@
+from __future__ import annotations
+
+import argparse
+from dataclasses import dataclass
+from typing import Mapping
+
+
+@dataclass(frozen=True)
+class GateSpec:
+    name: str
+    env_var: str
+    expected_value: str
+    approval_flags: tuple[str, ...]
+    summary: str
+
+
+@dataclass(frozen=True)
+class GateFlagStatus:
+    flag: str
+    attr: str
+    approved: bool
+
+
+@dataclass(frozen=True)
+class GateValidation:
+    spec: GateSpec
+    env_value: str | None
+    env_ok: bool
+    flag_statuses: tuple[GateFlagStatus, ...]
+
+    @property
+    def flags_ok(self) -> bool:
+        return all(status.approved for status in self.flag_statuses)
+
+    @property
+    def complete(self) -> bool:
+        return self.env_ok and self.flags_ok
+
+    @property
+    def missing_flags(self) -> tuple[str, ...]:
+        return tuple(status.flag for status in self.flag_statuses if not status.approved)
+
+    def flag_ok(self, flag: str) -> bool:
+        for status in self.flag_statuses:
+            if status.flag == flag:
+                return status.approved
+        raise KeyError(flag)
+
+
+GATES: dict[str, GateSpec] = {
+    "pushd.launchd.reload": GateSpec(
+        name="pushd.launchd.reload",
+        env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_RELOAD_GATE",
+        expected_value="operator-approved-pushd-launchd-reload-v1",
+        approval_flags=(
+            "--reviewer-approved-bootout-bootstrap",
+            "--reviewer-approved-rollback-policy",
+        ),
+        summary="pushd launchd bootout/bootstrap reload",
+    ),
+}
+
+
+def add_gate_review_args(parser: argparse.ArgumentParser, spec: GateSpec) -> None:
+    for flag in spec.approval_flags:
+        parser.add_argument(flag, action="store_true")
+
+
+def validate_gate(spec: GateSpec, args: argparse.Namespace, env: Mapping[str, str]) -> GateValidation:
+    env_value = env.get(spec.env_var)
+    flag_statuses = tuple(
+        GateFlagStatus(
+            flag=flag,
+            attr=_flag_attr(flag),
+            approved=bool(getattr(args, _flag_attr(flag), False)),
+        )
+        for flag in spec.approval_flags
+    )
+    return GateValidation(
+        spec=spec,
+        env_value=env_value,
+        env_ok=env_value == spec.expected_value,
+        flag_statuses=flag_statuses,
+    )
+
+
+def _flag_attr(flag: str) -> str:
+    return flag.lstrip("-").replace("-", "_")

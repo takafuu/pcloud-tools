@@ -1,21 +1,39 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 from importlib import metadata
 from pathlib import Path
 
 from .autosync_runtime import read_autosync_state
+from .cli_common import (
+    action_command as _action_command,
+    entrypoint_command as _entrypoint_command,
+    exit_code_for_report as _exit_code_for_report,
+    has_errors as _has_errors,
+    has_warnings as _has_warnings,
+    issue_sort_key as _issue_sort_key,
+    output_format as _output_format,
+    print_report as _print_report,
+    report_issues as _report_issues,
+    sort_issues as _sort_issues,
+    status_from_issues as _status_from_issues,
+)
 from .config import (
+    AppConfig,
     ConfigIssue,
     load_config,
     repair_allowlist_file,
     repair_env_file,
     repair_manager_ignore_file,
 )
+from .daemon_state import read_daemon_state
 from .mount_ops import mount_layer_state, resolve_layers
 from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .runtime import RuntimePaths
+from .service_daemon_plan import PlanRecord, build_diffd_plan, build_pushd_plan
+from .service_daemon_state import read_service_daemon_state
 from .sync_exec import bisync_listing_recovery_state
 from .sync_runtime import (
     parse_sync_progress,
@@ -66,6 +84,16 @@ def add_status_doctor_parsers(subparsers: argparse._SubParsersAction) -> None:
         help="Create a starter .env file if it is missing.",
     )
     doctor_parser.add_argument(
+        "--detail",
+        action="store_true",
+        help="Show full path and runtime diagnostics.",
+    )
+    doctor_parser.add_argument(
+        "--plain",
+        action="store_true",
+        help="Disable styled TTY output.",
+    )
+    doctor_parser.add_argument(
         "--json",
         action="store_true",
         help="Emit structured JSON output.",
@@ -86,44 +114,6 @@ def _config_summary(paths: RuntimePaths) -> dict[str, str]:
         "vault layer": "enabled" if config.enable_vault_layer else "disabled",
         "crypt layer": "enabled" if config.enable_crypt_layer else "disabled",
     }
-
-
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
-def _has_warnings(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "warning" for issue in issues)
-
-
-def _status_from_issues(issues: list[ConfigIssue]) -> str:
-    if _has_errors(issues):
-        return "error"
-    if _has_warnings(issues):
-        return "warning"
-    return "ok"
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _output_format(args: argparse.Namespace) -> str:
-    if getattr(args, "xbar", False):
-        return "xbar"
-    return "json" if getattr(args, "json", False) else "human"
-
-
-def _print_report(report: CommandReport, args: argparse.Namespace) -> None:
-    print(render_report(report, output_format=_output_format(args)))
-
-
-def _entrypoint_command(paths: RuntimePaths) -> str:
-    return action_entrypoint_command(paths)
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (_entrypoint_command(paths), "action", action_id)
 
 
 def _status_actions(paths: RuntimePaths) -> list[ReportAction]:
@@ -152,6 +142,23 @@ def _status_actions(paths: RuntimePaths) -> list[ReportAction]:
             id="daemon.status.refresh",
             label="Daemon state",
             command=_action_command(paths, "daemon.status.refresh"),
+        ),
+        ReportAction(
+            id="pushd.status.refresh",
+            label="Push queue status",
+            command=_action_command(paths, "pushd.status.refresh"),
+        ),
+        ReportAction(
+            id="diffd.status.refresh",
+            label="Pull queue status",
+            command=_action_command(paths, "diffd.status.refresh"),
+        ),
+        ReportAction(
+            id="pushd.queue.prune-missing-local",
+            label="Ignore missing local upload records",
+            command=_action_command(paths, "pushd.queue.prune-missing-local"),
+            terminal=False,
+            refresh=True,
         ),
         ReportAction(
             id="notify.chat.status",
@@ -305,19 +312,6 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
     )
 
 
-def _exit_code_for_report(report: CommandReport) -> int:
-    return 1 if report.status == "error" else 0
-
-
-def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
-    priority = 0 if issue.level == "error" else 1
-    return (priority, issue.key)
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=_issue_sort_key)
-
-
 def _sync_state_issues(sync_state) -> list[ConfigIssue]:
     if sync_state.state != "sync_error":
         return []
@@ -344,6 +338,136 @@ def _mount_state_issues(layer_states: dict[str, object]) -> list[ConfigIssue]:
             )
         )
     return issues
+
+
+_SIMPLE_TRANSFER_ACTIONS = {
+    "change",
+    "create",
+    "created",
+    "download",
+    "modify",
+    "modified",
+    "sync",
+    "update",
+    "updated",
+    "upload",
+}
+_MANUAL_REVIEW_ACTION_TOKENS = ("delete", "remove", "rename", "move")
+
+
+def _split_missing_local_upload_records(
+    config: AppConfig,
+    records: tuple[PlanRecord, ...],
+) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...]]:
+    present_records: list[PlanRecord] = []
+    missing_records: list[PlanRecord] = []
+    for record in records:
+        if record.action == "upload" and not (config.core_dir / record.path).exists():
+            missing_records.append(PlanRecord(record.path, record.action, "local source file is missing"))
+        else:
+            present_records.append(record)
+    return tuple(present_records), tuple(missing_records)
+
+
+def _manual_review_records(
+    records: tuple[PlanRecord, ...],
+    opposite_records: tuple[PlanRecord, ...],
+) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...]]:
+    opposite_paths = {record.path for record in opposite_records if record.path}
+    transfer_records: list[PlanRecord] = []
+    manual_records: list[PlanRecord] = []
+    for record in records:
+        action = record.action.strip().lower().replace("_", "-")
+        if any(token in action for token in _MANUAL_REVIEW_ACTION_TOKENS):
+            manual_records.append(record)
+        elif action not in _SIMPLE_TRANSFER_ACTIONS:
+            manual_records.append(record)
+        elif record.path in opposite_paths:
+            manual_records.append(record)
+        else:
+            transfer_records.append(record)
+    return tuple(transfer_records), tuple(manual_records)
+
+
+def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[ConfigIssue]]:
+    pushd_state = read_service_daemon_state(config, "pushd")
+    diffd_state = read_service_daemon_state(config, "diffd")
+    daemon_state = read_daemon_state(config)
+
+    pushd_plan, _pushd_scope = build_pushd_plan(config, pushd_state)
+    diffd_plan = build_diffd_plan(config, diffd_state, daemon_state)
+    present_uploads, missing_uploads = _split_missing_local_upload_records(config, pushd_plan.upload_records)
+    planned_uploads, manual_uploads = _manual_review_records(present_uploads, diffd_plan.download_records)
+    planned_downloads, manual_downloads = _manual_review_records(diffd_plan.download_records, present_uploads)
+
+    issues: list[ConfigIssue] = [
+        *pushd_state.issues,
+        *diffd_state.issues,
+        *daemon_state.issues,
+        *pushd_plan.issues,
+        *diffd_plan.issues,
+    ]
+    if missing_uploads:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL",
+                level="warning",
+                message=(
+                    "pushd queue has upload records whose local source file is missing; "
+                    "review with `pcloud-manager pushd status` or ignore them with "
+                    "`pcloud-manager action pushd.queue.prune-missing-local`"
+                ),
+            )
+        )
+
+    details: dict[str, object] = {
+        "push": (
+            f"queued={pushd_plan.total}; planned={len(planned_uploads)}; "
+            f"stale={len(missing_uploads)}; manual-review={len(manual_uploads)}"
+        ),
+        "pull": (
+            f"pending={diffd_plan.pending_download_count}; remote={diffd_plan.remote_change_count}; "
+            f"planned={len(planned_downloads)}; skipped={diffd_plan.skipped_count}; "
+            f"manual-review={len(manual_downloads)}"
+        ),
+        "push queued": pushd_plan.total,
+        "push planned": len(planned_uploads),
+        "push missing local": len(missing_uploads),
+        "push manual review": len(manual_uploads),
+        "pull pending": diffd_plan.pending_download_count,
+        "pull remote changes": diffd_plan.remote_change_count,
+        "pull planned": len(planned_downloads),
+        "pull skipped": diffd_plan.skipped_count,
+        "pull manual review": len(manual_downloads),
+    }
+    if missing_uploads:
+        details.update(
+            {
+                "push warning": f"missing local upload records={len(missing_uploads)}",
+                "push review": "pcloud-manager pushd status",
+                "push cleanup": "pcloud-manager action pushd.queue.prune-missing-local",
+            }
+        )
+    return details, _sort_issues(issues)
+
+
+def _queue_warning_summary(queue_details: dict[str, object]) -> str:
+    missing = int(queue_details.get("push missing local", 0) or 0)
+    if missing > 0:
+        return f"pushd warning: missing-local={missing}"
+    return ""
+
+
+def _doctor_operational_summary(queue_details: dict[str, object]) -> str:
+    if int(queue_details.get("push missing local", 0) or 0) > 0:
+        return "queue warning"
+    return ""
+
+
+def _doctor_operational_suspected_cause(queue_details: dict[str, object]) -> str:
+    if int(queue_details.get("push missing local", 0) or 0) > 0:
+        return "pushd queue has missing local upload records"
+    return "-"
 
 
 def _core_status_label(sync_state) -> str:
@@ -428,16 +552,19 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
         spec.name: mount_layer_state(spec)
         for spec in resolve_layers(config, "all")
     }
+    queue_details, queue_issues = _service_queue_overview(config)
     issues = _sort_issues(
         list(load_result.issues)
         + _sync_state_issues(sync_state)
         + scope_issues(scope_info)
         + _mount_state_issues(layer_states)
+        + queue_issues
     )
     details = {
         "core": _core_status_label(sync_state),
         "vault": _mount_status_label(layer_states["vault"]),
         "crypt": _mount_status_label(layer_states["crypt"]),
+        **queue_details,
     }
     if args.detail:
         details.update(
@@ -476,14 +603,18 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
                 "autosync plist": autosync.plist,
             }
         )
+    queue_summary = _queue_warning_summary(queue_details)
+    summary = (
+        f"core: {_core_status_label(sync_state)}; "
+        f"vault: {_mount_status_label(layer_states['vault'])}; "
+        f"crypt: {_mount_status_label(layer_states['crypt'])} ({mode})"
+    )
+    if queue_summary:
+        summary = f"{summary}; {queue_summary}"
     return CommandReport(
         command="status",
         status=_status_from_issues(issues),
-        summary=(
-            f"core: {_core_status_label(sync_state)}; "
-            f"vault: {_mount_status_label(layer_states['vault'])}; "
-            f"crypt: {_mount_status_label(layer_states['crypt'])} ({mode})"
-        ),
+        summary=summary,
         details=details,
         issues=_report_issues(issues),
         actions=_status_actions(paths),
@@ -500,6 +631,122 @@ def cmd_info(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _info_report(args, paths)
     print(render_report(report, as_json=args.json))
     return _exit_code_for_report(report)
+
+
+def _doctor_next_actions(report: CommandReport) -> list[tuple[str, str]]:
+    details = report.details
+    actions: list[tuple[str, str]] = []
+    if details.get("push review"):
+        actions.append(("review push queue", str(details["push review"])))
+    if details.get("push cleanup"):
+        actions.append(("ignore stale push records", str(details["push cleanup"])))
+    actions.append(("full diagnostics", "pcloud-manager doctor --detail"))
+    return actions
+
+
+def _doctor_check_rows(report: CommandReport) -> list[tuple[str, str]]:
+    details = report.details
+    rows = [
+        ("core", str(details.get("sync state", details.get("core", "-")))),
+        ("vault", str(details.get("vault state", "-"))),
+        ("crypt", str(details.get("crypt state", "-"))),
+        ("scope", f"{details.get('scope status', '-')} ({details.get('scope entries', '-')} entries)"),
+        ("push", str(details.get("push", "-"))),
+        ("pull", str(details.get("pull", "-"))),
+    ]
+    if details.get("push warning"):
+        rows.append(("push warning", str(details["push warning"])))
+    return rows
+
+
+def _issue_label(issue: ReportIssue) -> str:
+    return issue.level.upper()
+
+
+def _doctor_plain_human(report: CommandReport) -> str:
+    lines = [
+        f"{report.command}: {report.status}",
+        f"summary: {report.details.get('summary', report.summary)}",
+        f"cause: {report.details.get('suspected cause', '-')}",
+        "",
+        "next:",
+    ]
+    for label, command in _doctor_next_actions(report):
+        lines.append(f"- {label}: {command}")
+    lines.extend(["", "checks:"])
+    for label, value in _doctor_check_rows(report):
+        lines.append(f"- {label}: {value}")
+    if report.issues:
+        lines.extend(["", "issues:"])
+        for issue in report.issues:
+            lines.append(f"- {_issue_label(issue)} {issue.key}: {issue.message}")
+    return "\n".join(lines)
+
+
+def _doctor_can_use_rich(args: argparse.Namespace) -> bool:
+    if getattr(args, "plain", False):
+        return False
+    if os.environ.get("NO_COLOR") or os.environ.get("TERM") == "dumb":
+        return False
+    return sys.stdout.isatty()
+
+
+def _print_doctor_rich(report: CommandReport) -> bool:
+    try:
+        from rich.console import Console
+        from rich.table import Table
+        from rich.text import Text
+    except ImportError:
+        return False
+
+    status_style = {
+        "ok": "bold green",
+        "warning": "bold yellow",
+        "error": "bold red",
+    }.get(report.status, "bold")
+    console = Console()
+    title = Text.assemble(("doctor: ", "bold"), (report.status.upper(), status_style))
+    console.print(title)
+    console.print(f"[bold]summary:[/bold] {report.details.get('summary', report.summary)}")
+    console.print(f"[bold]cause:[/bold] {report.details.get('suspected cause', '-')}")
+
+    next_table = Table(title="Next", show_header=True, header_style="bold", box=None, pad_edge=False)
+    next_table.add_column("Action", style="bold")
+    next_table.add_column("Command", style="cyan", overflow="fold")
+    for label, command in _doctor_next_actions(report):
+        next_table.add_row(label, command)
+    console.print()
+    console.print(next_table)
+
+    checks = Table(title="Checks", show_header=True, header_style="bold", box=None, pad_edge=False)
+    checks.add_column("Check", style="bold")
+    checks.add_column("Value")
+    for label, value in _doctor_check_rows(report):
+        row_style = "yellow" if label.endswith("warning") else None
+        checks.add_row(label, value, style=row_style)
+    console.print()
+    console.print(checks)
+
+    if report.issues:
+        issues = Table(title="Issues", show_header=True, header_style="bold", box=None, pad_edge=False)
+        issues.add_column("Level", style="bold")
+        issues.add_column("Key")
+        issues.add_column("Message", overflow="fold")
+        for issue in report.issues:
+            style = "yellow" if issue.level == "warning" else "red" if issue.level == "error" else None
+            issues.add_row(_issue_label(issue), issue.key, issue.message, style=style)
+        console.print()
+        console.print(issues)
+    return True
+
+
+def _print_doctor_human(report: CommandReport, args: argparse.Namespace) -> None:
+    if getattr(args, "detail", False):
+        print(render_report(report, output_format="human"))
+        return
+    if _doctor_can_use_rich(args) and _print_doctor_rich(report):
+        return
+    print(_doctor_plain_human(report))
 
 
 def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[CommandReport, bool]:
@@ -534,15 +781,17 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         spec.name: mount_layer_state(spec)
         for spec in resolve_layers(config, "all")
     }
+    queue_details, queue_issues = _service_queue_overview(config)
     issues = _sort_issues(
         list(load_result.issues)
         + _sync_state_issues(sync_state)
         + scope_issues(scope_info)
         + _mount_state_issues(layer_states)
+        + queue_issues
     )
     has_errors = _has_errors(issues)
     status = _status_from_issues(issues)
-    doctor_summary = _doctor_summary(sync_state, layer_states)
+    doctor_summary = _doctor_operational_summary(queue_details) or _doctor_summary(sync_state, layer_states)
     suspected_cause = _doctor_suspected_cause(
         scope_info,
         lock_state,
@@ -551,6 +800,9 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         sync_state,
         progress,
     )
+    operational_cause = _doctor_operational_suspected_cause(queue_details)
+    if operational_cause != "-":
+        suspected_cause = operational_cause
     details = {
         "summary": doctor_summary,
         "suspected cause": suspected_cause,
@@ -595,6 +847,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "autosync runs": autosync.runs,
         "autosync label": autosync.label,
         "autosync plist": autosync.plist,
+        **queue_details,
     }
     if repaired_items:
         details["repair"] = "; ".join(f"created {item}" for item in repaired_items)
@@ -605,6 +858,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         summary=doctor_summary if suspected_cause == "-" else f"{doctor_summary}; suspected cause: {suspected_cause}",
         details=details,
         issues=_report_issues(issues),
+        actions=_status_actions(paths),
     )
     return report, has_errors
 
@@ -612,5 +866,8 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
 def cmd_doctor(args: argparse.Namespace, paths: RuntimePaths) -> int:
     paths.ensure_directories()
     report, has_errors = _doctor_report(args, paths)
-    print(render_report(report, as_json=args.json))
+    if args.json:
+        print(render_report(report, as_json=True))
+    else:
+        _print_doctor_human(report, args)
     return 1 if has_errors else 0

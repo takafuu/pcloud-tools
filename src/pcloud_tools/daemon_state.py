@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Any
 
 from .config import AppConfig, ConfigIssue
+from .io_utils import atomic_write_json
 
 
 @dataclass(frozen=True)
@@ -190,22 +191,19 @@ def add_pending_download(
     item = PendingDownload(path=path, diffid=diffid, reason=reason, recorded_at=_now())
     payload = [asdict(existing) for existing in state.pending_downloads]
     payload.append(asdict(item))
-    state.pending_downloads_file.parent.mkdir(parents=True, exist_ok=True)
-    state.pending_downloads_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_json(state.pending_downloads_file, payload)
     return item
 
 
 def clear_pending_downloads(config: AppConfig) -> int:
     state = read_daemon_state(config)
     count = len(state.pending_downloads)
-    state.pending_downloads_file.parent.mkdir(parents=True, exist_ok=True)
-    state.pending_downloads_file.write_text("[]\n")
+    atomic_write_json(state.pending_downloads_file, [])
     return count
 
 
 def record_notification(config: AppConfig, message: str, level: str = "info") -> NotificationRecord:
     record = NotificationRecord(message=message, level=level, recorded_at=_now())
     files = _state_files(config)
-    files["notification"].parent.mkdir(parents=True, exist_ok=True)
-    files["notification"].write_text(json.dumps(asdict(record), indent=2, ensure_ascii=False) + "\n")
+    atomic_write_json(files["notification"], asdict(record))
     return record

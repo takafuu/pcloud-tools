@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import argparse
 import json
 import os
 import plistlib
@@ -13,9 +14,23 @@ import urllib.parse
 from datetime import datetime, timezone
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from types import SimpleNamespace
+from typing import cast
 
 from pcloud_tools.config import AppConfig
-from pcloud_tools.download_suppression import local_fingerprint
+from pcloud_tools.download_suppression import (
+    LocalFingerprint,
+    SuppressionRecord,
+    local_fingerprint,
+    mark_download_completed,
+    mark_upload_completed,
+    read_download_suppression_journal,
+    read_upload_origin_journal,
+    write_download_suppression_journal,
+    write_upload_origin_journal,
+)
+from pcloud_tools.gates import GATES, validate_gate
+from pcloud_tools.io_utils import atomic_write_json
 from pcloud_tools.sync_exec import build_sync_plan
 
 
@@ -72,6 +87,156 @@ def _run_cli(tmp_path: Path, *args: str, extra_env: dict[str, str] | None = None
 
 def _payload(result: subprocess.CompletedProcess[str]) -> dict[str, object]:
     return json.loads(result.stdout)
+
+
+def _minimal_journal_config(tmp_path: Path) -> AppConfig:
+    return cast(
+        AppConfig,
+        SimpleNamespace(
+            state_dir=tmp_path / "state",
+            core_dir=tmp_path / "workspace",
+            download_suppression_ttl_seconds=86400,
+        ),
+    )
+
+
+def test_validate_gate_accepts_matching_env_and_flags() -> None:
+    spec = GATES["pushd.launchd.reload"]
+    args = argparse.Namespace(
+        reviewer_approved_bootout_bootstrap=True,
+        reviewer_approved_rollback_policy=True,
+    )
+
+    result = validate_gate(spec, args, {spec.env_var: spec.expected_value})
+
+    assert result.env_ok is True
+    assert result.flags_ok is True
+    assert result.complete is True
+    assert result.missing_flags == ()
+
+
+def test_validate_gate_rejects_env_mismatch() -> None:
+    spec = GATES["pushd.launchd.reload"]
+    args = argparse.Namespace(
+        reviewer_approved_bootout_bootstrap=True,
+        reviewer_approved_rollback_policy=True,
+    )
+
+    result = validate_gate(spec, args, {spec.env_var: "wrong"})
+
+    assert result.env_ok is False
+    assert result.flags_ok is True
+    assert result.complete is False
+    assert result.env_value == "wrong"
+
+
+def test_validate_gate_reports_missing_flags() -> None:
+    spec = GATES["pushd.launchd.reload"]
+    args = argparse.Namespace(
+        reviewer_approved_bootout_bootstrap=True,
+        reviewer_approved_rollback_policy=False,
+    )
+
+    result = validate_gate(spec, args, {spec.env_var: spec.expected_value})
+
+    assert result.env_ok is True
+    assert result.flags_ok is False
+    assert result.complete is False
+    assert result.missing_flags == ("--reviewer-approved-rollback-policy",)
+
+
+def test_suppression_journal_wrappers_round_trip_records(tmp_path: Path) -> None:
+    config = _minimal_journal_config(tmp_path)
+    completed_at = datetime.now(timezone.utc).isoformat()
+    download_record = SuppressionRecord(
+        path="Documents/downloaded.txt",
+        state="completed",
+        direction="download",
+        started_at=completed_at,
+        completed_at=completed_at,
+        local_fingerprint=LocalFingerprint(exists=True, size=12, mtime_ns=34),
+    )
+    upload_record = SuppressionRecord(
+        path="Documents/uploaded.txt",
+        state="completed",
+        direction="upload",
+        started_at=completed_at,
+        completed_at=completed_at,
+        local_fingerprint=LocalFingerprint(exists=True, size=56, mtime_ns=78),
+    )
+
+    download_path = write_download_suppression_journal(config, (download_record,))
+    upload_path = write_upload_origin_journal(config, (upload_record, download_record))
+
+    download_payload = json.loads(download_path.read_text())
+    upload_payload = json.loads(upload_path.read_text())
+    assert download_payload["schema_version"] == "pcloud-tools-download-suppression.v1"
+    assert upload_payload["schema_version"] == "pcloud-tools-upload-origin-suppression.v1"
+    assert read_download_suppression_journal(config).records == (download_record,)
+    assert read_upload_origin_journal(config).records == (upload_record,)
+
+
+def test_mark_completed_keeps_started_at_for_download_and_upload_journals(tmp_path: Path) -> None:
+    config = _minimal_journal_config(tmp_path)
+    fingerprint = LocalFingerprint(exists=True, size=123, mtime_ns=456)
+    download_started = SuppressionRecord(
+        path="Documents/downloaded.txt",
+        state="in-progress",
+        direction="download",
+        started_at="2026-05-07T00:00:00+00:00",
+    )
+    upload_started = SuppressionRecord(
+        path="Documents/uploaded.txt",
+        state="in-progress",
+        direction="upload",
+        started_at="2026-05-08T00:00:00+00:00",
+    )
+    write_download_suppression_journal(config, (download_started,))
+    write_upload_origin_journal(config, (upload_started,))
+
+    mark_download_completed(config, "/Documents/downloaded.txt", fingerprint)
+    mark_upload_completed(config, "/Documents/uploaded.txt", fingerprint)
+
+    download_record = read_download_suppression_journal(config).records[0]
+    upload_record = read_upload_origin_journal(config).records[0]
+    assert download_record.started_at == download_started.started_at
+    assert download_record.direction == "download"
+    assert download_record.local_fingerprint == fingerprint
+    assert upload_record.started_at == upload_started.started_at
+    assert upload_record.direction == "upload"
+    assert upload_record.local_fingerprint == fingerprint
+
+
+def test_atomic_write_json_preserves_format_and_original_on_replace_failure(
+    tmp_path: Path,
+    monkeypatch: object,
+) -> None:
+    path = tmp_path / "state.json"
+    payload = {"records": [{"path": "Documents/example.txt", "action": "upload"}]}
+    expected = json.dumps(payload, indent=2, ensure_ascii=False) + "\n"
+
+    atomic_write_json(path, payload)
+
+    assert path.read_text() == expected
+
+    original = path.read_text()
+    real_replace = os.replace
+
+    def fail_replace(src: object, dst: object) -> None:
+        if Path(dst) == path:
+            raise OSError("simulated replace failure")
+        real_replace(src, dst)
+
+    monkeypatch.setattr(os, "replace", fail_replace)
+    try:
+        atomic_write_json(path, {"records": []})
+    except OSError as exc:
+        assert str(exc) == "simulated replace failure"
+    else:
+        raise AssertionError("atomic_write_json should raise when os.replace fails")
+
+    assert path.read_text() == original
+    assert list(tmp_path.glob(".state.json.*.tmp"))
 
 
 def test_launchctl_command_runner_retries_bootstrap_input_output_error(tmp_path: Path) -> None:
@@ -643,6 +808,94 @@ def test_sync_status_marks_old_last_error_as_historical_after_success(tmp_path: 
     assert sync_payload["details"]["last error status"] == "historical"
     assert status_result.returncode == 0
     assert status_payload["details"]["last sync error status"] == "historical"
+
+
+def test_top_level_status_and_doctor_surface_pushd_missing_local_warning(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    existing = workspace / "Documents" / "existing.txt"
+    existing.parent.mkdir(parents=True)
+    existing.write_text("local content\n")
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text(
+        json.dumps(
+            [
+                {"path": "Documents/missing.txt", "action": "upload", "reason": "fswatch"},
+                {"path": "Documents/existing.txt", "action": "upload", "reason": "fswatch"},
+            ]
+        )
+    )
+
+    status = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    status_human = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "status"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    doctor = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "doctor", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    doctor_human = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "doctor"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    doctor_detail = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "doctor", "--detail"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    status_payload = _payload(status)
+    doctor_payload = _payload(doctor)
+    issue_keys = [issue["key"] for issue in status_payload["issues"]]
+
+    assert status.returncode == 0
+    assert status_payload["status"] == "warning"
+    assert status_payload["details"]["push"] == "queued=2; planned=1; stale=1; manual-review=0"
+    assert status_payload["details"]["push review"] == "pcloud-manager pushd status"
+    assert status_payload["details"]["push cleanup"] == "pcloud-manager action pushd.queue.prune-missing-local"
+    assert "pushd warning: missing-local=1" in status_payload["summary"]
+    assert "PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL" in issue_keys
+    assert "push: queued=2; planned=1; stale=1; manual-review=0" in status_human.stdout
+    assert "push cleanup: pcloud-manager action pushd.queue.prune-missing-local" in status_human.stdout
+    assert doctor.returncode == 0
+    assert doctor_payload["status"] == "warning"
+    assert doctor_payload["details"]["summary"] == "queue warning"
+    assert doctor_payload["details"]["suspected cause"] == "pushd queue has missing local upload records"
+    assert doctor_payload["details"]["push warning"] == "missing local upload records=1"
+    assert doctor_human.returncode == 0
+    assert "next:" in doctor_human.stdout
+    assert "checks:" in doctor_human.stdout
+    assert "push cleanup: pcloud-manager action pushd.queue.prune-missing-local" not in doctor_human.stdout
+    assert "ignore stale push records: pcloud-manager action pushd.queue.prune-missing-local" in doctor_human.stdout
+    assert "config dir:" not in doctor_human.stdout
+    assert doctor_detail.returncode == 0
+    assert "config dir:" in doctor_detail.stdout
+    assert "path1 list:" in doctor_detail.stdout
 
 
 def test_sync_status_marks_last_error_as_current_when_latest_result_failed(tmp_path: Path) -> None:
@@ -8329,6 +8582,7 @@ def test_pushd_plan_suppresses_fresh_completed_download_until_local_file_changes
         json.dumps([{"path": "Documents/downloaded.txt", "action": "upload", "reason": "fswatch"}])
     )
     fingerprint = local_fingerprint(target).as_dict()
+    completed_at = datetime.now(timezone.utc).isoformat()
     (diffd_dir / "download-suppression-journal.json").write_text(
         json.dumps(
             {
@@ -8338,8 +8592,8 @@ def test_pushd_plan_suppresses_fresh_completed_download_until_local_file_changes
                         "path": "Documents/downloaded.txt",
                         "state": "completed",
                         "direction": "download",
-                        "started_at": "2026-05-07T00:00:00+00:00",
-                        "completed_at": "2026-05-07T00:00:01+00:00",
+                        "started_at": completed_at,
+                        "completed_at": completed_at,
                         "local_fingerprint": fingerprint,
                     }
                 ],
@@ -8389,6 +8643,7 @@ def test_diffd_plan_suppresses_fresh_completed_upload_until_local_file_changes(t
         json.dumps([{"path": "Documents/uploaded.txt", "action": "download", "reason": "diff:createfile"}])
     )
     fingerprint = local_fingerprint(target).as_dict()
+    completed_at = datetime.now(timezone.utc).isoformat()
     (pushd_dir / "upload-origin-journal.json").write_text(
         json.dumps(
             {
@@ -8398,8 +8653,8 @@ def test_diffd_plan_suppresses_fresh_completed_upload_until_local_file_changes(t
                         "path": "Documents/uploaded.txt",
                         "state": "completed",
                         "direction": "upload",
-                        "started_at": "2026-05-07T00:00:00+00:00",
-                        "completed_at": "2026-05-07T00:00:01+00:00",
+                        "started_at": completed_at,
+                        "completed_at": completed_at,
                         "local_fingerprint": fingerprint,
                     }
                 ],

@@ -2,6 +2,19 @@ from __future__ import annotations
 
 import argparse
 
+from .cli_common import (
+    action_command as _action_command,
+    entrypoint_command as _entrypoint_command,
+    exit_code_for_report as _exit_code_for_report,
+    has_errors as _has_errors,
+    has_warnings as _has_warnings,
+    issue_sort_key as _issue_sort_key,
+    output_format as _output_format,
+    print_report as _print_report,
+    report_issues as _report_issues,
+    sort_issues as _sort_issues,
+    status_from_issues as _status_from_issues,
+)
 from .config import ConfigIssue, load_config
 from .daemon_state import (
     add_pending_download,
@@ -12,8 +25,8 @@ from .daemon_state import (
     set_auto_download,
     write_diffid,
 )
-from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .output import CommandReport, ReportAction
+from .runtime import RuntimePaths
 
 
 def add_daemon_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -90,57 +103,6 @@ def cmd_daemon(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.daemon_command == "notification":
         return cmd_daemon_notification(args, paths)
     return None
-
-
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
-def _has_warnings(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "warning" for issue in issues)
-
-
-def _status_from_issues(issues: list[ConfigIssue]) -> str:
-    if _has_errors(issues):
-        return "error"
-    if _has_warnings(issues):
-        return "warning"
-    return "ok"
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
-    priority = 0 if issue.level == "error" else 1
-    return (priority, issue.key)
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=_issue_sort_key)
-
-
-def _output_format(args: argparse.Namespace) -> str:
-    if getattr(args, "xbar", False):
-        return "xbar"
-    return "json" if getattr(args, "json", False) else "human"
-
-
-def _print_report(report: CommandReport, args: argparse.Namespace) -> None:
-    print(render_report(report, output_format=_output_format(args)))
-
-
-def _exit_code_for_report(report: CommandReport) -> int:
-    return 1 if report.status == "error" else 0
-
-
-def _entrypoint_command(paths: RuntimePaths) -> str:
-    return action_entrypoint_command(paths)
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (_entrypoint_command(paths), "action", action_id)
 
 
 def _daemon_actions(paths: RuntimePaths, auto_download_enabled: bool) -> list[ReportAction]:

@@ -11,9 +11,21 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from .autosync_runtime import disable_autosync, enable_autosync, read_autosync_state
+from .cli_common import (
+    action_command as _action_command,
+    entrypoint_command as _entrypoint_command,
+    exit_code_for_report as _exit_code_for_report,
+    has_errors as _has_errors,
+    has_warnings as _has_warnings,
+    issue_sort_key as _issue_sort_key,
+    report_issues as _report_issues,
+    shell_command as _shell_command,
+    sort_issues as _sort_issues,
+    status_from_issues as _status_from_issues,
+)
 from .config import AppConfig, ConfigIssue, load_config
-from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .output import CommandReport, ReportAction, render_report
+from .runtime import RuntimePaths
 from .sync_exec import (
     DEFAULT_RESYNC_MODE,
     RESYNC_MODES,
@@ -303,47 +315,6 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.sync_command == "check-allowlist":
         return cmd_sync_check_allowlist(args, paths)
     return None
-
-
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
-def _has_warnings(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "warning" for issue in issues)
-
-
-def _status_from_issues(issues: list[ConfigIssue]) -> str:
-    if _has_errors(issues):
-        return "error"
-    if _has_warnings(issues):
-        return "warning"
-    return "ok"
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
-    priority = 0 if issue.level == "error" else 1
-    return (priority, issue.key)
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=_issue_sort_key)
-
-
-def _exit_code_for_report(report: CommandReport) -> int:
-    return 1 if report.status == "error" else 0
-
-
-def _entrypoint_command(paths: RuntimePaths) -> str:
-    return action_entrypoint_command(paths)
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (_entrypoint_command(paths), "action", action_id)
 
 
 def _command_path(name: str) -> str | None:
@@ -1469,12 +1440,6 @@ def _saved_shadow_report_check(
             )
         ],
     )
-
-
-def _shell_command(value: object) -> str:
-    if isinstance(value, (list, tuple)):
-        return shlex.join(str(part) for part in value)
-    return str(value)
 
 
 def _render_autosync_gate_human(report: CommandReport) -> str:

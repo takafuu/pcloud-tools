@@ -4,9 +4,10 @@ import argparse
 import shlex
 
 from .chat_notify import chat_notify_status, send_chat_notification, set_chat_notify_enabled
+from .cli_common import action_command as _action_command, report_issues as _report_issues
 from .config import ConfigIssue, load_config
-from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .output import CommandReport, ReportAction, render_report
+from .runtime import RuntimePaths
 
 
 def add_notify_parser(subparsers: argparse._SubParsersAction) -> None:
@@ -23,10 +24,6 @@ def add_notify_parser(subparsers: argparse._SubParsersAction) -> None:
         sub = notify_subparsers.add_parser(name, help=help_text)
         sub.add_argument("--json", action="store_true")
         sub.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> list[str]:
-    return [action_entrypoint_command(paths), "action", action_id]
 
 
 def _actions(paths: RuntimePaths) -> list[ReportAction]:
@@ -108,7 +105,7 @@ def _report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
         status="error" if any(issue.level == "error" for issue in issues) else "ok",
         summary=summary,
         details=details,
-        issues=[ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues],
+        issues=_report_issues(issues),
         actions=_actions(paths),
     )
 
@@ -128,7 +125,7 @@ def _xbar_action(action: ReportAction) -> str:
     return f"{_xbar_escape(action.label)} | {' '.join(fields)}"
 
 
-def _print_report(report: CommandReport, args: argparse.Namespace) -> None:
+def _print_notify_report(report: CommandReport, args: argparse.Namespace) -> None:
     if getattr(args, "xbar", False):
         lines = [
             f"Discord notify: {report.details.get('chat notify mode', '-')}",
@@ -145,5 +142,5 @@ def _print_report(report: CommandReport, args: argparse.Namespace) -> None:
 
 def cmd_notify(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _report(args, paths)
-    _print_report(report, args)
+    _print_notify_report(report, args)
     return 1 if report.status == "error" else 0

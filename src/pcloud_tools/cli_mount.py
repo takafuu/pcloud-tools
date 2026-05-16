@@ -4,6 +4,13 @@ import argparse
 import shlex
 import subprocess
 
+from .cli_common import (
+    exit_code_for_report as _exit_code_for_report,
+    has_errors as _has_errors,
+    issue_sort_key as _issue_sort_key,
+    report_issues as _report_issues,
+    sort_issues as _sort_issues,
+)
 from .config import ConfigIssue, load_config
 from .mount_ops import (
     MountCommandError,
@@ -15,7 +22,7 @@ from .mount_ops import (
     preview_umount_operations,
     resolve_layers,
 )
-from .output import CommandReport, ReportIssue, render_report
+from .output import CommandReport, render_report
 from .runtime import RuntimePaths
 
 
@@ -54,14 +61,6 @@ def add_mount_parsers(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
 def _command_path(name: str) -> str | None:
     try:
         result = subprocess.run(
@@ -76,19 +75,6 @@ def _command_path(name: str) -> str | None:
         return None
     path = result.stdout.strip().splitlines()
     return path[0] if path else None
-
-
-def _exit_code_for_report(report: CommandReport) -> int:
-    return 1 if report.status == "error" else 0
-
-
-def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
-    priority = 0 if issue.level == "error" else 1
-    return (priority, issue.key)
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=_issue_sort_key)
 
 
 def _mount_option_issues(args: argparse.Namespace, target: str) -> list[ConfigIssue]:

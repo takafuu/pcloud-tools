@@ -1,6 +1,7 @@
 .dev-state/
 .venv/
 .DS_Store
+.claude/
 __pycache__/
 *.pyc
 plan.md

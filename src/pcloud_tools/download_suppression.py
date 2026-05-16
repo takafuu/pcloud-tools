@@ -4,8 +4,12 @@ import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Literal
 
 from .config import AppConfig, ConfigIssue
+from .io_utils import atomic_write_json
+
+JournalKind = Literal["download_suppression", "upload_origin"]
 
 _SCHEMA_VERSION = "pcloud-tools-download-suppression.v1"
 _UPLOAD_ORIGIN_SCHEMA_VERSION = "pcloud-tools-upload-origin-suppression.v1"
@@ -57,7 +61,7 @@ class SuppressionJournal:
 
 
 def download_suppression_journal_path(config: AppConfig) -> Path:
-    return config.state_dir / "diffd" / "download-suppression-journal.json"
+    return _journal_path(config, "download_suppression")
 
 
 def download_staging_dir(config: AppConfig) -> Path:
@@ -65,7 +69,37 @@ def download_staging_dir(config: AppConfig) -> Path:
 
 
 def upload_origin_journal_path(config: AppConfig) -> Path:
+    return _journal_path(config, "upload_origin")
+
+
+def _journal_path(config: AppConfig, kind: JournalKind) -> Path:
+    if kind == "download_suppression":
+        return config.state_dir / "diffd" / "download-suppression-journal.json"
     return config.state_dir / "pushd" / "upload-origin-journal.json"
+
+
+def _journal_schema_version(kind: JournalKind) -> str:
+    if kind == "download_suppression":
+        return _SCHEMA_VERSION
+    return _UPLOAD_ORIGIN_SCHEMA_VERSION
+
+
+def _journal_issue_key(kind: JournalKind) -> str:
+    if kind == "download_suppression":
+        return "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_JOURNAL"
+    return "PCLOUD_TOOLS_UPLOAD_ORIGIN_JOURNAL"
+
+
+def _journal_label(kind: JournalKind) -> str:
+    if kind == "download_suppression":
+        return "download suppression journal"
+    return "upload origin journal"
+
+
+def _journal_direction_filter(kind: JournalKind) -> str | None:
+    if kind == "upload_origin":
+        return "upload"
+    return None
 
 
 def local_fingerprint(path: Path) -> LocalFingerprint:
@@ -157,10 +191,12 @@ def _is_expired(record: SuppressionRecord, *, now: datetime, ttl_seconds: int) -
     return (now - completed_at).total_seconds() > ttl_seconds
 
 
-def read_download_suppression_journal(config: AppConfig) -> SuppressionJournal:
-    path = download_suppression_journal_path(config)
+def _read_journal(config: AppConfig, kind: JournalKind) -> SuppressionJournal:
+    path = _journal_path(config, kind)
     if not path.exists():
         return SuppressionJournal(path=path, records=(), expired_count=0)
+    issue_key = _journal_issue_key(kind)
+    label = _journal_label(kind)
     try:
         payload = json.loads(path.read_text())
     except (OSError, json.JSONDecodeError) as exc:
@@ -170,9 +206,9 @@ def read_download_suppression_journal(config: AppConfig) -> SuppressionJournal:
             expired_count=0,
             issues=(
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_JOURNAL",
+                    key=issue_key,
                     level="warning",
-                    message=f"cannot read download suppression journal {path}: {exc}",
+                    message=f"cannot read {label} {path}: {exc}",
                 ),
             ),
         )
@@ -184,97 +220,54 @@ def read_download_suppression_journal(config: AppConfig) -> SuppressionJournal:
             expired_count=0,
             issues=(
                 ConfigIssue(
-                    key="PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_JOURNAL",
+                    key=issue_key,
                     level="warning",
-                    message=f"download suppression journal must contain records list: {path}",
+                    message=f"{label} must contain records list: {path}",
                 ),
             ),
         )
     now = _now()
     records: list[SuppressionRecord] = []
     expired_count = 0
+    direction_filter = _journal_direction_filter(kind)
     for raw in raw_records:
         record = _record_from_payload(raw)
         if record is None:
             continue
+        if direction_filter is not None and record.direction != direction_filter:
+            continue
         if _is_expired(record, now=now, ttl_seconds=config.download_suppression_ttl_seconds):
             expired_count += 1
             continue
         records.append(record)
     return SuppressionJournal(path=path, records=tuple(records), expired_count=expired_count)
+
+
+def _write_journal(config: AppConfig, kind: JournalKind, records: tuple[SuppressionRecord, ...]) -> Path:
+    path = _journal_path(config, kind)
+    payload = {
+        "schema_version": _journal_schema_version(kind),
+        "generated_at": _now_text(),
+        "ttl_seconds": config.download_suppression_ttl_seconds,
+        "records": [_payload_from_record(record) for record in records],
+    }
+    return atomic_write_json(path, payload)
+
+
+def read_download_suppression_journal(config: AppConfig) -> SuppressionJournal:
+    return _read_journal(config, "download_suppression")
 
 
 def read_upload_origin_journal(config: AppConfig) -> SuppressionJournal:
-    path = upload_origin_journal_path(config)
-    if not path.exists():
-        return SuppressionJournal(path=path, records=(), expired_count=0)
-    try:
-        payload = json.loads(path.read_text())
-    except (OSError, json.JSONDecodeError) as exc:
-        return SuppressionJournal(
-            path=path,
-            records=(),
-            expired_count=0,
-            issues=(
-                ConfigIssue(
-                    key="PCLOUD_TOOLS_UPLOAD_ORIGIN_JOURNAL",
-                    level="warning",
-                    message=f"cannot read upload origin journal {path}: {exc}",
-                ),
-            ),
-        )
-    raw_records = payload.get("records") if isinstance(payload, dict) else payload
-    if not isinstance(raw_records, list):
-        return SuppressionJournal(
-            path=path,
-            records=(),
-            expired_count=0,
-            issues=(
-                ConfigIssue(
-                    key="PCLOUD_TOOLS_UPLOAD_ORIGIN_JOURNAL",
-                    level="warning",
-                    message=f"upload origin journal must contain records list: {path}",
-                ),
-            ),
-        )
-    now = _now()
-    records: list[SuppressionRecord] = []
-    expired_count = 0
-    for raw in raw_records:
-        record = _record_from_payload(raw)
-        if record is None or record.direction != "upload":
-            continue
-        if _is_expired(record, now=now, ttl_seconds=config.download_suppression_ttl_seconds):
-            expired_count += 1
-            continue
-        records.append(record)
-    return SuppressionJournal(path=path, records=tuple(records), expired_count=expired_count)
+    return _read_journal(config, "upload_origin")
 
 
 def write_download_suppression_journal(config: AppConfig, records: tuple[SuppressionRecord, ...]) -> Path:
-    path = download_suppression_journal_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": _SCHEMA_VERSION,
-        "generated_at": _now_text(),
-        "ttl_seconds": config.download_suppression_ttl_seconds,
-        "records": [_payload_from_record(record) for record in records],
-    }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    return path
+    return _write_journal(config, "download_suppression", records)
 
 
 def write_upload_origin_journal(config: AppConfig, records: tuple[SuppressionRecord, ...]) -> Path:
-    path = upload_origin_journal_path(config)
-    path.parent.mkdir(parents=True, exist_ok=True)
-    payload = {
-        "schema_version": _UPLOAD_ORIGIN_SCHEMA_VERSION,
-        "generated_at": _now_text(),
-        "ttl_seconds": config.download_suppression_ttl_seconds,
-        "records": [_payload_from_record(record) for record in records],
-    }
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
-    return path
+    return _write_journal(config, "upload_origin", records)
 
 
 def _replace_record(
@@ -298,33 +291,33 @@ def mark_download_started(config: AppConfig, path: str) -> Path:
 
 
 def mark_download_completed(config: AppConfig, path: str, fingerprint: LocalFingerprint) -> Path:
-    normalized = normalize_plan_path(path)
-    journal = read_download_suppression_journal(config)
-    existing = next((record for record in journal.records if record.path == normalized), None)
-    record = SuppressionRecord(
-        path=normalized,
-        state="completed",
-        direction="download",
-        started_at=existing.started_at if existing else _now_text(),
-        completed_at=_now_text(),
-        local_fingerprint=fingerprint,
-    )
-    return write_download_suppression_journal(config, _replace_record(journal.records, record))
+    return _mark_completed(config, "download_suppression", path, fingerprint, direction="download")
 
 
 def mark_upload_completed(config: AppConfig, path: str, fingerprint: LocalFingerprint) -> Path:
+    return _mark_completed(config, "upload_origin", path, fingerprint, direction="upload")
+
+
+def _mark_completed(
+    config: AppConfig,
+    kind: JournalKind,
+    path: str,
+    fingerprint: LocalFingerprint,
+    *,
+    direction: str,
+) -> Path:
     normalized = normalize_plan_path(path)
-    journal = read_upload_origin_journal(config)
+    journal = _read_journal(config, kind)
     existing = next((record for record in journal.records if record.path == normalized), None)
     record = SuppressionRecord(
         path=normalized,
         state="completed",
-        direction="upload",
+        direction=direction,
         started_at=existing.started_at if existing else _now_text(),
         completed_at=_now_text(),
         local_fingerprint=fingerprint,
     )
-    return write_upload_origin_journal(config, _replace_record(journal.records, record))
+    return _write_journal(config, kind, _replace_record(journal.records, record))
 
 
 def mark_download_conflict(

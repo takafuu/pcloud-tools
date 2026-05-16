@@ -17,16 +17,30 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .chat_notify import build_chat_notify_command, chat_notify_status, send_chat_notification
-from .config import AppConfig, ConfigIssue, load_config
-from .daemon_state import DaemonState, read_daemon_state, write_diffid
-from .diffd_events import (
+from ..chat_notify import build_chat_notify_command, chat_notify_status, send_chat_notification
+from ..cli_common import (
+    action_command as _action_command,
+    entrypoint_command as _entrypoint_command,
+    exit_code_for_report as _exit_code_for_report,
+    has_errors as _has_errors,
+    has_warnings as _has_warnings,
+    issue_sort_key as _issue_sort_key,
+    output_format as _output_format,
+    print_report as _print_report,
+    report_issues as _report_issues,
+    shell_command as _shell_command,
+    sort_issues as _sort_issues,
+    status_from_issues as _status_from_issues,
+)
+from ..config import AppConfig, ConfigIssue, load_config
+from ..daemon_state import DaemonState, read_daemon_state, write_diffid
+from ..diffd_events import (
     DiffdResponseParseResult,
     diff_changes_to_records,
     parse_diff_response_fixture,
     parse_diff_response_text,
 )
-from .download_suppression import (
+from ..download_suppression import (
     clear_download_suppression_record,
     conflict_copy_path,
     download_staging_dir,
@@ -37,11 +51,28 @@ from .download_suppression import (
     mark_upload_completed,
     suppression_status_details,
 )
-from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .rclone_config import load_rclone_pcloud_credentials, rclone_config_path
-from .pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
-from .runtime import RuntimePaths, action_entrypoint_command, detect_runtime_paths
-from .service_daemon_plan import (
+from ..gates import GATES, add_gate_review_args, validate_gate
+from .launchd_render import (
+    print_service_launchd_gate_report as _print_service_launchd_gate_report,
+    print_service_launchd_plist_report as _print_service_launchd_plist_report,
+    print_service_launchd_register_report as _print_service_launchd_register_report,
+    print_service_launchd_reload_report as _print_service_launchd_reload_report,
+    print_service_launchd_resident_plist_report as _print_service_launchd_resident_plist_report,
+    print_service_launchd_review_report as _print_service_launchd_review_report,
+    print_service_launchd_status_report as _print_service_launchd_status_report,
+    render_service_launchd_gate_human as _render_service_launchd_gate_human,
+    render_service_launchd_plist_human as _render_service_launchd_plist_human,
+    render_service_launchd_register_human as _render_service_launchd_register_human,
+    render_service_launchd_reload_human as _render_service_launchd_reload_human,
+    render_service_launchd_resident_plist_human as _render_service_launchd_resident_plist_human,
+    render_service_launchd_review_human as _render_service_launchd_review_human,
+    render_service_launchd_status_human as _render_service_launchd_status_human,
+)
+from ..output import CommandReport, ReportAction, render_report
+from ..rclone_config import load_rclone_pcloud_credentials, rclone_config_path
+from ..pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
+from ..runtime import RuntimePaths, action_entrypoint_command, detect_runtime_paths
+from ..service_daemon_plan import (
     DiffdPlan,
     PlanRecord,
     PushdPlan,
@@ -57,8 +88,8 @@ from .service_daemon_plan import (
     record_payloads,
     remove_plan_records,
 )
-from .service_daemon_state import ServiceDaemonState, read_service_daemon_state
-from .sync_scope import ScopeBaseline, SyncScopeInfo, scope_issues, sync_allowlist_info
+from ..service_daemon_state import ServiceDaemonState, read_service_daemon_state
+from ..sync_scope import ScopeBaseline, SyncScopeInfo, scope_issues, sync_allowlist_info
 
 
 @dataclass(frozen=True)
@@ -116,7 +147,6 @@ _PUSHD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-plist-v1"
 _DIFFD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-plist-v1"
 _PUSHD_LAUNCHD_RESIDENT_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-resident-plist-v1"
 _DIFFD_LAUNCHD_LONG_POLL_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-long-poll-plist-v1"
-_PUSHD_LAUNCHD_RELOAD_GATE_VALUE = "operator-approved-pushd-launchd-reload-v1"
 _DIFFD_LAUNCHD_RELOAD_GATE_VALUE = "operator-approved-diffd-launchd-reload-v1"
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
@@ -242,8 +272,7 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     launchd_reload_parser.add_argument("--report-path", type=Path)
     launchd_reload_parser.add_argument("--operator-reviewed-resident-plist", action="store_true")
-    launchd_reload_parser.add_argument("--reviewer-approved-bootout-bootstrap", action="store_true")
-    launchd_reload_parser.add_argument("--reviewer-approved-rollback-policy", action="store_true")
+    add_gate_review_args(launchd_reload_parser, GATES["pushd.launchd.reload"])
     launchd_reload_parser.add_argument("--execute", action="store_true")
     launchd_reload_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     launchd_reload_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
@@ -965,51 +994,6 @@ def cmd_service_daemon(args: argparse.Namespace, paths: RuntimePaths) -> int | N
     return None
 
 
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
-def _has_warnings(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "warning" for issue in issues)
-
-
-def _status_from_issues(issues: list[ConfigIssue]) -> str:
-    if _has_errors(issues):
-        return "error"
-    if _has_warnings(issues):
-        return "warning"
-    return "ok"
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
-    priority = 0 if issue.level == "error" else 1
-    return (priority, issue.key)
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=_issue_sort_key)
-
-
-def _output_format(args: argparse.Namespace) -> str:
-    if getattr(args, "xbar", False):
-        return "xbar"
-    return "json" if getattr(args, "json", False) else "human"
-
-
-def _print_report(report: CommandReport, args: argparse.Namespace) -> None:
-    print(render_report(report, output_format=_output_format(args)))
-
-
-def _shell_command(value: object) -> str:
-    if isinstance(value, (list, tuple)):
-        return shlex.join(str(part) for part in value)
-    return str(value)
-
-
 def _xbar_escape(value: object) -> str:
     return str(value).replace("\n", " ").replace("|", "/")
 
@@ -1710,333 +1694,6 @@ def _print_validation_matrix_report(report: CommandReport, args: argparse.Namesp
         print(_render_validation_matrix_human(report))
         return
     _print_report(report, args)
-
-
-def _render_service_launchd_gate_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"launchd gate: {details.get('launchd gate status', '-')}",
-        f"launchd can register: {details.get('launchd can register', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"service label: {details.get('service label', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-        f"plist status: {details.get('plist status', '-')}",
-        f"launchctl: {details.get('launchctl availability', '-')} ({details.get('launchctl binary', '-')})",
-        f"approval status: {details.get('approval status', '-')}",
-    ]
-    daemon_command = details.get("daemon command preview")
-    if daemon_command:
-        lines.append(f"daemon command preview: {_shell_command(daemon_command)}")
-    bootstrap_commands = details.get("bootstrap command examples")
-    if isinstance(bootstrap_commands, list) and bootstrap_commands:
-        lines.append("bootstrap command examples:")
-        for command in bootstrap_commands:
-            lines.append(f"- {_shell_command(command)}")
-    rollback_commands = details.get("rollback command examples")
-    if isinstance(rollback_commands, list) and rollback_commands:
-        lines.append("rollback command examples:")
-        for command in rollback_commands:
-            lines.append(f"- {_shell_command(command)}")
-    lines.append(
-        "future gate env: "
-        f"{details.get('future launchd gate env var', '-')}="
-        f"{details.get('future launchd gate accepted value', '-')}"
-    )
-    checks = details.get("preflight checks")
-    if isinstance(checks, list) and checks:
-        lines.append("preflight checks:")
-        for check in checks:
-            if isinstance(check, dict):
-                lines.append(f"- {check.get('name', '-')}: {check.get('status', '-')}")
-    blocked = details.get("blocked operations")
-    if isinstance(blocked, list) and blocked:
-        lines.append("blocked operations:")
-        lines.extend(f"- {item}" for item in blocked)
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_gate_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_gate_human(report))
-        return
-    _print_report(report, args)
-
-
-def _render_service_launchd_status_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"registration status: {details.get('registration status', '-')}",
-        f"loaded: {details.get('launchd loaded', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"service label: {details.get('service label', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-        f"plist status: {details.get('plist status', '-')}",
-        f"launchctl: {details.get('launchctl availability', '-')} ({details.get('launchctl binary', '-')})",
-    ]
-    print_command = details.get("launchctl print command")
-    if print_command:
-        lines.append(f"launchctl print command: {_shell_command(print_command)}")
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_status_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_status_human(report))
-        return
-    _print_report(report, args)
-
-
-def _render_service_launchd_review_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"human review status: {details.get('human review status', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"launchctl execution: {details.get('launchctl execution', '-')}",
-        f"persistent daemon start: {details.get('persistent daemon start', '-')}",
-        f"service label: {details.get('service label', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-    ]
-    program_arguments = details.get("program arguments")
-    if program_arguments:
-        lines.append(f"program arguments: {_shell_command(program_arguments)}")
-    foreground_command = details.get("foreground command preview")
-    if foreground_command:
-        lines.append(f"foreground command preview: {_shell_command(foreground_command)}")
-    review_commands = details.get("terminal review commands")
-    if isinstance(review_commands, list) and review_commands:
-        lines.append("terminal review commands:")
-        for command in review_commands:
-            lines.append(f"- {_shell_command(command)}")
-    blocked = details.get("blocked operations")
-    if isinstance(blocked, list) and blocked:
-        lines.append("blocked operations:")
-        lines.extend(f"- {item}" for item in blocked)
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_review_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_review_human(report))
-        return
-    _print_report(report, args)
-
-
-def _render_service_launchd_register_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"execute: {details.get('execute', '-')}",
-        f"registration gate: {details.get('launchd gate status', '-')}",
-        f"launchd can register: {details.get('launchd can register', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"launchctl execution: {details.get('launchctl execution', '-')}",
-        f"persistent daemon start: {details.get('persistent daemon start', '-')}",
-        f"service label: {details.get('service label', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-        f"plist status: {details.get('plist status', '-')}",
-    ]
-    commands = details.get("planned launchctl commands")
-    if isinstance(commands, list) and commands:
-        lines.append("planned launchctl commands:")
-        for command in commands:
-            lines.append(f"- {_shell_command(command)}")
-    results = details.get("launchctl results")
-    if isinstance(results, list) and results:
-        lines.append("launchctl results:")
-        for result in results:
-            if isinstance(result, dict):
-                lines.append(
-                    f"- {result.get('command', '-')}: rc={result.get('returncode', '-')}"
-                )
-    checks = details.get("preflight checks")
-    if isinstance(checks, list) and checks:
-        lines.append("preflight checks:")
-        for check in checks:
-            if isinstance(check, dict):
-                lines.append(f"- {check.get('name', '-')}: {check.get('status', '-')}")
-    blocked = details.get("blocked operations")
-    if isinstance(blocked, list) and blocked:
-        lines.append("blocked operations:")
-        lines.extend(f"- {item}" for item in blocked)
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_register_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_register_human(report))
-        return
-    _print_report(report, args)
-
-
-def _render_service_launchd_reload_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"execute: {details.get('execute', '-')}",
-        f"reload gate: {details.get('reload gate status', '-')}",
-        f"launchd can reload: {details.get('launchd can reload', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"launchctl execution: {details.get('launchctl execution', '-')}",
-        f"persistent daemon start: {details.get('persistent daemon start', '-')}",
-        f"service label: {details.get('service label', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-        f"resident plist status: {details.get('resident plist status', '-')}",
-    ]
-    commands = details.get("planned launchctl commands")
-    if isinstance(commands, list) and commands:
-        lines.append("planned launchctl commands:")
-        for command in commands:
-            lines.append(f"- {_shell_command(command)}")
-    checks = details.get("preflight checks")
-    if isinstance(checks, list) and checks:
-        lines.append("preflight checks:")
-        for check in checks:
-            if isinstance(check, dict):
-                lines.append(f"- {check.get('name', '-')}: {check.get('status', '-')}")
-    results = details.get("launchctl results")
-    if isinstance(results, list) and results:
-        lines.append("launchctl results:")
-        for result in results:
-            if isinstance(result, dict):
-                lines.append(f"- {result.get('command', '-')}: rc={result.get('returncode', '-')}")
-    blocked = details.get("blocked operations")
-    if isinstance(blocked, list) and blocked:
-        lines.append("blocked operations:")
-        lines.extend(f"- {item}" for item in blocked)
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_reload_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_reload_human(report))
-        return
-    _print_report(report, args)
-
-
-def _render_service_launchd_resident_plist_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"execute: {details.get('execute', '-')}",
-        f"resident plist gate: {details.get('resident plist gate status', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"launchctl execution: {details.get('launchctl execution', '-')}",
-        f"persistent daemon start: {details.get('persistent daemon start', '-')}",
-        f"service label: {details.get('service label', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-        f"plist status: {details.get('plist status', '-')}",
-    ]
-    command = details.get("resident program arguments")
-    if command:
-        lines.append(f"resident program arguments: {_shell_command(command)}")
-    environment = details.get("environment variables")
-    if isinstance(environment, dict) and environment:
-        lines.append("environment variables:")
-        for key, value in environment.items():
-            lines.append(f"- {key}={value}")
-    checks = details.get("preflight checks")
-    if isinstance(checks, list) and checks:
-        lines.append("preflight checks:")
-        for check in checks:
-            if isinstance(check, dict):
-                lines.append(f"- {check.get('name', '-')}: {check.get('status', '-')}")
-    blocked = details.get("blocked operations")
-    if isinstance(blocked, list) and blocked:
-        lines.append("blocked operations:")
-        lines.extend(f"- {item}" for item in blocked)
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_resident_plist_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_resident_plist_human(report))
-        return
-    _print_report(report, args)
-
-
-def _render_service_launchd_plist_human(report: CommandReport) -> str:
-    details = report.details
-    lines = [
-        f"{report.command}: {report.status}",
-        report.summary,
-        f"execute: {details.get('execute', '-')}",
-        f"plist path: {details.get('plist path', '-')}",
-        f"plist status: {details.get('plist status', '-')}",
-        f"state writes: {details.get('state writes', '-')}",
-        f"launchctl execution: {details.get('launchctl execution', '-')}",
-        f"service label: {details.get('service label', '-')}",
-    ]
-    program_arguments = details.get("program arguments")
-    if program_arguments:
-        lines.append(f"program arguments: {_shell_command(program_arguments)}")
-    if "start interval seconds" in details:
-        lines.append(f"start interval seconds: {details.get('start interval seconds', '-')}")
-    environment = details.get("environment variables")
-    if isinstance(environment, dict) and environment:
-        lines.append("environment variables:")
-        for key, value in environment.items():
-            lines.append(f"- {key}={value}")
-    blocked = details.get("blocked operations")
-    if isinstance(blocked, list) and blocked:
-        lines.append("blocked operations:")
-        lines.extend(f"- {item}" for item in blocked)
-    if report.issues:
-        lines.append("warnings:" if report.status != "error" else "issues:")
-        for issue in report.issues:
-            lines.append(f"- {issue.key}: {issue.message}")
-    return "\n".join(lines)
-
-
-def _print_service_launchd_plist_report(report: CommandReport, args: argparse.Namespace) -> None:
-    if _output_format(args) == "human":
-        print(_render_service_launchd_plist_human(report))
-        return
-    _print_report(report, args)
-
-
-def _exit_code_for_report(report: CommandReport) -> int:
-    return 1 if report.status == "error" else 0
-
-
-def _entrypoint_command(paths: RuntimePaths) -> str:
-    return action_entrypoint_command(paths)
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (_entrypoint_command(paths), "action", action_id)
 
 
 def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[ReportAction]:
@@ -4786,10 +4443,6 @@ def _pushd_launchd_resident_plist_report(
     )
 
 
-def _pushd_launchd_reload_gate_env() -> str:
-    return "PCLOUD_TOOLS_PUSHD_LAUNCHD_RELOAD_GATE"
-
-
 def _diffd_launchd_reload_gate_env() -> str:
     return "PCLOUD_TOOLS_DIFFD_LAUNCHD_RELOAD_GATE"
 
@@ -4907,12 +4560,18 @@ def _pushd_launchd_reload_report(
     ]
     operational_status, operational_detail = _resident_plist_operational_status(plist_path, service)
     if service.name == "pushd":
-        reload_gate_env = _pushd_launchd_reload_gate_env()
-        reload_gate_value = _PUSHD_LAUNCHD_RELOAD_GATE_VALUE
+        reload_gate = validate_gate(GATES["pushd.launchd.reload"], args, os.environ)
+        reload_gate_env = reload_gate.spec.env_var
+        reload_gate_value = reload_gate.spec.expected_value
+        bootout_bootstrap_approved = reload_gate.flag_ok("--reviewer-approved-bootout-bootstrap")
+        rollback_policy_approved = reload_gate.flag_ok("--reviewer-approved-rollback-policy")
+        reload_gate_open = reload_gate.env_ok
     else:
         reload_gate_env = _diffd_launchd_reload_gate_env()
         reload_gate_value = _DIFFD_LAUNCHD_RELOAD_GATE_VALUE
-    reload_gate_open = os.environ.get(reload_gate_env) == reload_gate_value
+        bootout_bootstrap_approved = bool(getattr(args, "reviewer_approved_bootout_bootstrap", False))
+        rollback_policy_approved = bool(getattr(args, "reviewer_approved_rollback_policy", False))
+        reload_gate_open = os.environ.get(reload_gate_env) == reload_gate_value
     checks = [
         shadow_check,
         {
@@ -4932,12 +4591,12 @@ def _pushd_launchd_reload_report(
         },
         {
             "name": "bootout/bootstrap approval",
-            "status": "ok" if getattr(args, "reviewer_approved_bootout_bootstrap", False) else "pending",
+            "status": "ok" if bootout_bootstrap_approved else "pending",
             "detail": "reviewer approved bootout then bootstrap for this service only",
         },
         {
             "name": "rollback policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_rollback_policy", False) else "pending",
+            "status": "ok" if rollback_policy_approved else "pending",
             "detail": "reviewer approved rollback command order",
         },
         {

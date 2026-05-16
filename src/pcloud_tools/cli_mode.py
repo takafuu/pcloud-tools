@@ -10,10 +10,20 @@ from pathlib import Path
 from typing import Any
 
 from .autosync_runtime import read_autosync_state
+from .cli_common import (
+    action_command as _action_command,
+    entrypoint_command as _entrypoint_command,
+    exit_code_for_report as _exit_code_for_report,
+    has_errors as _has_errors,
+    report_issues as _report_issues,
+    shell_command as _shell_command,
+    sort_issues as _sort_issues,
+    status_from_issues as _status_from_issues,
+)
 from .config import AppConfig, ConfigIssue, load_config
 from .daemon_state import read_daemon_state
-from .output import CommandReport, ReportAction, ReportIssue, render_report
-from .runtime import RuntimePaths, action_entrypoint_command
+from .output import CommandReport, ReportAction, render_report
+from .runtime import RuntimePaths
 from .service_daemon_plan import build_diffd_plan, build_pushd_plan
 from .service_daemon_state import read_service_daemon_state
 from .sync_runtime import read_sync_lock_state
@@ -63,38 +73,6 @@ def cmd_mode(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     return _exit_code_for_report(report)
 
 
-def _status_from_issues(issues: list[ConfigIssue]) -> str:
-    if any(issue.level == "error" for issue in issues):
-        return "error"
-    if any(issue.level == "warning" for issue in issues):
-        return "warning"
-    return "ok"
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=lambda issue: (0 if issue.level == "error" else 1, issue.key))
-
-
-def _exit_code_for_report(report: CommandReport) -> int:
-    return 1 if report.status == "error" else 0
-
-
-def _has_errors(issues: list[ConfigIssue]) -> bool:
-    return any(issue.level == "error" for issue in issues)
-
-
-def _entrypoint_command(paths: RuntimePaths) -> str:
-    return action_entrypoint_command(paths)
-
-
-def _action_command(paths: RuntimePaths, action_id: str) -> tuple[str, ...]:
-    return (_entrypoint_command(paths), "action", action_id)
-
-
 def _command_v(command_name: str) -> str | None:
     result = subprocess.run(
         ["/bin/sh", "-c", f"command -v {shlex.quote(command_name)}"],
@@ -104,12 +82,6 @@ def _command_v(command_name: str) -> str | None:
     )
     found = result.stdout.strip()
     return found.splitlines()[0] if found else None
-
-
-def _shell_command(value: object) -> str:
-    if isinstance(value, (list, tuple)):
-        return " ".join(shlex.quote(str(item)) for item in value)
-    return str(value)
 
 
 def _service_plist_path(label: str) -> Path:

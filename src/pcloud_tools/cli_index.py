@@ -5,27 +5,19 @@ import os
 import subprocess
 import sys
 
+from .cli_common import (
+    issue_sort_key as _issue_sort_key,
+    report_issues as _report_issues,
+    sort_issues as _sort_issues,
+)
 from .config import ConfigIssue, load_config
-from .output import CommandReport, ReportIssue, render_report
+from .output import CommandReport, render_report
 from .runtime import RuntimePaths
 
 
 def add_index_parser(subparsers: argparse._SubParsersAction) -> None:
     index_parser = subparsers.add_parser("index", help="Run the configured indexer script.")
     index_parser.add_argument("index_args", nargs=argparse.REMAINDER)
-
-
-def _report_issues(issues: list[ConfigIssue]) -> list[ReportIssue]:
-    return [ReportIssue(level=issue.level, key=issue.key, message=issue.message) for issue in issues]
-
-
-def _issue_sort_key(issue: ConfigIssue) -> tuple[int, str]:
-    priority = 0 if issue.level == "error" else 1
-    return (priority, issue.key)
-
-
-def _sort_issues(issues: list[ConfigIssue]) -> list[ConfigIssue]:
-    return sorted(issues, key=_issue_sort_key)
 
 
 def cmd_index(args: argparse.Namespace, paths: RuntimePaths) -> int:
