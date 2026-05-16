@@ -52,6 +52,7 @@ from ..download_suppression import (
     suppression_status_details,
 )
 from ..gates import GATES, add_gate_review_args, validate_gate
+from ..io_utils import atomic_write_json
 from .launchd_render import (
     print_service_launchd_gate_report as _print_service_launchd_gate_report,
     print_service_launchd_plist_report as _print_service_launchd_plist_report,
@@ -5033,7 +5034,7 @@ def _resident_run_state_file(config: AppConfig) -> Path:
 
 def _write_resident_run_state(state_file: Path, payload: dict[str, object]) -> None:
     state_file.parent.mkdir(parents=True, exist_ok=True)
-    state_file.write_text(json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_json(state_file, payload, sort_keys=True)
 
 
 def _normalize_resident_fswatch_line(line: str, root: Path) -> str:
@@ -5740,7 +5741,7 @@ def _read_diffd_folder_cache(config: AppConfig) -> dict[str, str]:
 def _write_diffd_folder_cache(config: AppConfig, folder_paths: dict[str, str]) -> None:
     path = _diffd_folder_cache_file(config)
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(folder_paths, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+    atomic_write_json(path, folder_paths, sort_keys=True)
 
 
 def _diffd_folder_cache_entries(folder_paths: dict[str, str]) -> list[dict[str, str]]:
@@ -6401,7 +6402,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         }
         try:
             state_file.parent.mkdir(parents=True, exist_ok=True)
-            state_file.write_text(json.dumps(failure_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+            atomic_write_json(state_file, failure_state, sort_keys=True)
             failure_state_written = True
             details["process result"] = failure_state
         except OSError as exc:
@@ -6495,7 +6496,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     }
     if not _has_errors(issues):
         state_file.parent.mkdir(parents=True, exist_ok=True)
-        state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+        atomic_write_json(state_file, run_state, sort_keys=True)
         _write_diffd_folder_cache(config, parsed.folder_paths)
     if lock_acquired:
         try:
@@ -6679,7 +6680,7 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
                     "policy": "checkpoint current pCloud account diffid; ignore earlier history",
                 }
                 state_file.parent.mkdir(parents=True, exist_ok=True)
-                state_file.write_text(json.dumps(run_state, indent=2, ensure_ascii=False, sort_keys=True) + "\n")
+                atomic_write_json(state_file, run_state, sort_keys=True)
         except (OSError, urllib.error.URLError, TimeoutError, ValueError) as exc:
             issues.append(
                 ConfigIssue(
@@ -7283,7 +7284,7 @@ def _read_chat_notify_journal(path: Path) -> dict[str, object]:
 
 def _write_chat_notify_journal(path: Path, journal: dict[str, object]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(journal, indent=2, sort_keys=True) + "\n")
+    atomic_write_json(path, journal, ensure_ascii=True, sort_keys=True)
 
 
 def _chat_notify_dedupe_key(
@@ -7348,7 +7349,7 @@ def _record_transfer_execution_state(
     }
     path = state.state_dir / "last-transfer.json"
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, ensure_ascii=False) + "\n")
+    atomic_write_json(path, payload)
     return path
 
 
