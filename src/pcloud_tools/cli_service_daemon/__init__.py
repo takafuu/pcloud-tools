@@ -78,6 +78,10 @@ from .launchd_render import (
     render_service_launchd_review_human as _render_service_launchd_review_human,
     render_service_launchd_status_human as _render_service_launchd_status_human,
 )
+from .queue_render import (
+    print_diffd_remote_change_report as _print_diffd_remote_change_report,
+    print_pushd_queue_report as _print_pushd_queue_report,
+)
 from .transfer_render import (
     print_real_transfer_run_report as _print_real_transfer_run_report,
     print_transfer_check_report as _print_transfer_check_report,
@@ -9172,7 +9176,7 @@ def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> Comman
 
 def cmd_pushd_queue(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _pushd_queue_report(args, paths)
-    print_report(report, args)
+    _print_pushd_queue_report(report, args)
     return exit_code_for_report(report)
 
 
@@ -9322,7 +9326,7 @@ def _diffd_remote_change_report(args: argparse.Namespace, paths: RuntimePaths) -
 
 def cmd_diffd_remote_change(args: argparse.Namespace, paths: RuntimePaths) -> int:
     report = _diffd_remote_change_report(args, paths)
-    print_report(report, args)
+    _print_diffd_remote_change_report(report, args)
     return exit_code_for_report(report)
 
 
