@@ -62,6 +62,10 @@ from .fswatch_render import (
     print_fswatch_resident_gate_report as _print_fswatch_resident_gate_report,
     print_fswatch_resident_run_report as _print_fswatch_resident_run_report,
 )
+from .gates_render import (
+    print_service_gate_report as _print_service_gate_report,
+    service_gate_report as _service_gate_report,
+)
 from .launchd_render import (
     print_service_launchd_gate_report as _print_service_launchd_gate_report,
     print_service_launchd_plist_report as _print_service_launchd_plist_report,
@@ -2171,88 +2175,11 @@ def cmd_service_policy(
     return exit_code_for_report(report)
 
 
-def _gate_details(paths: RuntimePaths, config: AppConfig, service: ServiceDefinition) -> dict[str, object]:
-    shared_requirements = [
-        "saved shadow validation report with status ok",
-        "reviewer approval recorded in report handoff",
-        "explicit operator gate for this real operation",
-    ]
-    if service.name == "pushd":
-        blocked = [
-            "fswatch resident daemon",
-            "launchd registration",
-            "real upload execution",
-            "queue consumption against live state",
-        ]
-        next_units = [
-            "capture first real upload target with transfer check --final-review",
-            "complete read-only real-gate approvals without opening execution",
-            "hold real-run implementation until the human gate is explicitly confirmed",
-        ]
-    else:
-        blocked = [
-            "pCloud API long-poll",
-            "launchd registration",
-            "real download execution",
-            "diff cursor mutation against live state",
-        ]
-        next_units = [
-            "capture first real download target with transfer check --final-review",
-            "complete read-only real-gate approvals without opening execution",
-            "hold real-run implementation until the human gate is explicitly confirmed",
-        ]
-    return {
-        "gate status": "closed",
-        "allowed work": "dev-state preview/status/plan/report/test only",
-        "operator verification required": "no",
-        "operator verification scope": "read-only gate diagnostics; automated validation is enough",
-        "human gate status": "required-before-real-work",
-        "human gate reason": (
-            "remaining work includes real rclone/pCloud transfer, real validation, or archive decisions"
-        ),
-        "next human check trigger": (
-            "first real target review, real execution gate implementation, or actual pCloud/rclone transfer"
-        ),
-        "dev mode": "on" if paths.dev_mode else "off",
-        "state dir": str(config.state_dir / service.name),
-        "workspace root": str(paths.workspace_root),
-        "shadow validation command": "python3 scripts/pcloud-shadow-validation.py --json",
-        "blocked operations": blocked,
-        "required before opening": shared_requirements,
-        "suggested next units": next_units,
-    }
-
-
-def _service_gate_report(paths: RuntimePaths, service: ServiceDefinition) -> CommandReport:
-    load_result = load_config(paths)
-    issues = list(load_result.issues)
-    issues.append(
-        ConfigIssue(
-            key=f"PCLOUD_TOOLS_{service.name.upper()}_REAL_GATE",
-            level="warning",
-            message=(
-                f"{service.name} real operations remain gated; "
-                "use preview/dev-state paths until the dedicated gate is explicitly opened"
-            ),
-        )
-    )
-    issues = sort_issues(issues)
-    return CommandReport(
-        command=f"{service.name} gate",
-        status=status_from_issues(issues),
-        summary=f"{service.name} real-operation gate is closed",
-        details=_gate_details(paths, load_result.config, service),
-        issues=report_issues(issues),
-        actions=_service_actions(paths, service),
-    )
-
-
 def cmd_service_gate(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int:
-    report = _service_gate_report(paths, service)
-    print_report(report, args)
-    return exit_code_for_report(report)
+    report = _service_gate_report(paths, service.name, _service_actions(paths, service))
+    return _print_service_gate_report(report, args)
 
 
 def _service_launchd_label(paths: RuntimePaths, service: ServiceDefinition) -> str:
