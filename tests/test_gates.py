@@ -105,6 +105,20 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
     )
 
 
+def test_diffd_api_catchup_and_checkpoint_gate_specs_match_existing_public_contracts() -> None:
+    assert GATES["diffd.api.catchup"].env_var == "PCLOUD_TOOLS_DIFFD_API_CATCHUP_GATE"
+    assert GATES["diffd.api.catchup"].expected_value == "operator-approved-api-catchup-v1"
+    assert GATES["diffd.api.catchup"].approval_flags == (
+        "--reviewer-approved-catchup-policy",
+    )
+    assert GATES["diffd.api.checkpoint"].env_var == "PCLOUD_TOOLS_DIFFD_API_CHECKPOINT_GATE"
+    assert GATES["diffd.api.checkpoint"].expected_value == "operator-approved-api-checkpoint-v1"
+    assert GATES["diffd.api.checkpoint"].approval_flags == (
+        "--operator-reviewed-checkpoint",
+        "--reviewer-approved-checkpoint-policy",
+    )
+
+
 def test_operational_launchd_plist_gate_specs_match_existing_public_contracts() -> None:
     assert GATES["pushd.launchd.resident-plist"].env_var == "PCLOUD_TOOLS_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE"
     assert GATES["pushd.launchd.resident-plist"].expected_value == (

@@ -154,8 +154,6 @@ _TIMEOUT_POLICIES = (
     "reuse-fake-rclone-cleanup",
     "manual-review",
 )
-_DIFFD_API_CATCHUP_GATE_VALUE = "operator-approved-api-catchup-v1"
-_DIFFD_API_CHECKPOINT_GATE_VALUE = "operator-approved-api-checkpoint-v1"
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
@@ -743,7 +741,7 @@ def _add_service_parser(
             help="Pass block=1 to the live pCloud /diff request.",
         )
         api_poll_long_poll_run_parser.add_argument("--max-iterations", type=int)
-        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-catchup-policy", action="store_true")
+        add_gate_review_args(api_poll_long_poll_run_parser, GATES["diffd.api.catchup"])
         api_poll_long_poll_run_parser.add_argument("--execute", action="store_true")
         api_poll_long_poll_run_parser.add_argument(
             "--json", action="store_true", help="Emit structured JSON output."
@@ -756,8 +754,7 @@ def _add_service_parser(
             help="Set the diffd cursor to the current pCloud diffid after the dedicated gate opens.",
         )
         api_poll_checkpoint_parser.add_argument("--report-path", type=Path)
-        api_poll_checkpoint_parser.add_argument("--operator-reviewed-checkpoint", action="store_true")
-        api_poll_checkpoint_parser.add_argument("--reviewer-approved-checkpoint-policy", action="store_true")
+        add_gate_review_args(api_poll_checkpoint_parser, GATES["diffd.api.checkpoint"])
         api_poll_checkpoint_parser.add_argument("--execute", action="store_true")
         api_poll_checkpoint_parser.add_argument(
             "--json", action="store_true", help="Emit structured JSON output."
@@ -5833,9 +5830,10 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     lock_dir = _diffd_api_long_poll_lock_dir(config)
     lock_stale_seconds = _diffd_api_lock_stale_seconds(config)
     lock_acquired = False
-    catchup_gate_env = "PCLOUD_TOOLS_DIFFD_API_CATCHUP_GATE"
-    catchup_gate_open = os.environ.get(catchup_gate_env) == _DIFFD_API_CATCHUP_GATE_VALUE
-    catchup_policy_approved = bool(getattr(args, "reviewer_approved_catchup_policy", False))
+    catchup_gate = validate_gate(GATES["diffd.api.catchup"], args, os.environ)
+    catchup_gate_env = catchup_gate.spec.env_var
+    catchup_gate_open = catchup_gate.env_ok
+    catchup_policy_approved = catchup_gate.flag_ok("--reviewer-approved-catchup-policy")
     catchup_requested = bool(live_api and requested_iterations != 1)
 
     details.update(
@@ -5894,7 +5892,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "max iterations": requested_iterations,
             "catch-up requested": "yes" if catchup_requested else "no",
             "catch-up gate env var": catchup_gate_env,
-            "catch-up gate accepted value": _DIFFD_API_CATCHUP_GATE_VALUE,
+            "catch-up gate accepted value": catchup_gate.spec.expected_value,
             "catch-up gate env honored": "yes" if catchup_gate_open else "no",
             "catch-up policy approval": "yes" if catchup_policy_approved else "no",
             "catch-up max iterations limit": 100,
@@ -5984,7 +5982,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 ConfigIssue(
                     key=catchup_gate_env,
                     level="error",
-                    message=f"live pCloud API catch-up requires {catchup_gate_env}={_DIFFD_API_CATCHUP_GATE_VALUE}",
+                    message=f"live pCloud API catch-up requires {catchup_gate_env}={catchup_gate.spec.expected_value}",
                 )
             )
 
@@ -6262,10 +6260,11 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
     config = load_result.config
     daemon_state = read_daemon_state(config)
     execute = bool(getattr(args, "execute", False))
-    checkpoint_gate_env = "PCLOUD_TOOLS_DIFFD_API_CHECKPOINT_GATE"
-    checkpoint_gate_open = os.environ.get(checkpoint_gate_env) == _DIFFD_API_CHECKPOINT_GATE_VALUE
-    operator_reviewed = bool(getattr(args, "operator_reviewed_checkpoint", False))
-    policy_approved = bool(getattr(args, "reviewer_approved_checkpoint_policy", False))
+    checkpoint_gate = validate_gate(GATES["diffd.api.checkpoint"], args, os.environ)
+    checkpoint_gate_env = checkpoint_gate.spec.env_var
+    checkpoint_gate_open = checkpoint_gate.env_ok
+    operator_reviewed = checkpoint_gate.flag_ok("--operator-reviewed-checkpoint")
+    policy_approved = checkpoint_gate.flag_ok("--reviewer-approved-checkpoint-policy")
     state_file = _diffd_api_checkpoint_state_file(config)
     lock_dir = _diffd_api_long_poll_lock_dir(config)
     lock_stale_seconds = _diffd_api_lock_stale_seconds(config)
@@ -6299,7 +6298,7 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
         "diffd API lock status": "-",
         "diffd API lock stale threshold seconds": lock_stale_seconds,
         "checkpoint gate env var": checkpoint_gate_env,
-        "checkpoint gate accepted value": _DIFFD_API_CHECKPOINT_GATE_VALUE,
+        "checkpoint gate accepted value": checkpoint_gate.spec.expected_value,
         "checkpoint gate env honored": "yes" if checkpoint_gate_open else "no",
         "operator checkpoint review": "yes" if operator_reviewed else "no",
         "checkpoint policy approval": "yes" if policy_approved else "no",
@@ -6342,7 +6341,7 @@ def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) 
             ConfigIssue(
                 key=checkpoint_gate_env,
                 level="error",
-                message=f"diffd API checkpoint requires {checkpoint_gate_env}={_DIFFD_API_CHECKPOINT_GATE_VALUE}",
+                message=f"diffd API checkpoint requires {checkpoint_gate_env}={checkpoint_gate.spec.expected_value}",
             )
         )
     if execute and not api_credential.token:
@@ -9603,8 +9602,7 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
             help="Set the diffd cursor to the current pCloud diffid after the dedicated gate opens.",
         )
         api_poll_checkpoint_parser.add_argument("--report-path", type=Path)
-        api_poll_checkpoint_parser.add_argument("--operator-reviewed-checkpoint", action="store_true")
-        api_poll_checkpoint_parser.add_argument("--reviewer-approved-checkpoint-policy", action="store_true")
+        add_gate_review_args(api_poll_checkpoint_parser, GATES["diffd.api.checkpoint"])
         api_poll_checkpoint_parser.add_argument("--execute", action="store_true")
         api_poll_checkpoint_parser.add_argument(
             "--json", action="store_true", help="Emit structured JSON output."

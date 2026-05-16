@@ -137,6 +137,25 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="diffd live API long-poll",
     ),
+    "diffd.api.catchup": GateSpec(
+        name="diffd.api.catchup",
+        env_var="PCLOUD_TOOLS_DIFFD_API_CATCHUP_GATE",
+        expected_value="operator-approved-api-catchup-v1",
+        approval_flags=(
+            "--reviewer-approved-catchup-policy",
+        ),
+        summary="diffd live API catch-up",
+    ),
+    "diffd.api.checkpoint": GateSpec(
+        name="diffd.api.checkpoint",
+        env_var="PCLOUD_TOOLS_DIFFD_API_CHECKPOINT_GATE",
+        expected_value="operator-approved-api-checkpoint-v1",
+        approval_flags=(
+            "--operator-reviewed-checkpoint",
+            "--reviewer-approved-checkpoint-policy",
+        ),
+        summary="diffd API checkpoint",
+    ),
     "pushd.launchd.resident-plist": GateSpec(
         name="pushd.launchd.resident-plist",
         env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_RESIDENT_PLIST_GATE",
