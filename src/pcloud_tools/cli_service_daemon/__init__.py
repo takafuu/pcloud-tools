@@ -156,8 +156,6 @@ _TIMEOUT_POLICIES = (
 )
 _DIFFD_API_CATCHUP_GATE_VALUE = "operator-approved-api-catchup-v1"
 _DIFFD_API_CHECKPOINT_GATE_VALUE = "operator-approved-api-checkpoint-v1"
-_PUSHD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-pushd-launchd-plist-v1"
-_DIFFD_LAUNCHD_PLIST_GATE_VALUE = "operator-approved-diffd-launchd-plist-v1"
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
@@ -352,9 +350,7 @@ def _add_service_launchd_parser(subparsers: argparse._SubParsersAction, service:
         action="store_true",
         help="Permit public user LaunchAgent plist write when the dedicated plist gate is open.",
     )
-    launchd_plist_parser.add_argument("--operator-reviewed-plist", action="store_true")
-    launchd_plist_parser.add_argument("--reviewer-approved-public-target", action="store_true")
-    launchd_plist_parser.add_argument("--reviewer-approved-no-bootstrap", action="store_true")
+    add_gate_review_args(launchd_plist_parser, GATES[f"{service.name}.launchd.plist"])
     launchd_plist_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     launchd_plist_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
     launchd_gate_parser = launchd_subparsers.add_parser(
@@ -2458,12 +2454,8 @@ def _service_launchd_gate_spec(service: ServiceDefinition) -> GateSpec:
     return GATES[f"{service.name}.launchd.gate"]
 
 
-def _service_launchd_plist_gate_value(service: ServiceDefinition) -> str:
-    return _PUSHD_LAUNCHD_PLIST_GATE_VALUE if service.name == "pushd" else _DIFFD_LAUNCHD_PLIST_GATE_VALUE
-
-
-def _service_launchd_plist_gate_env(service: ServiceDefinition) -> str:
-    return f"PCLOUD_TOOLS_{service.name.upper()}_LAUNCHD_PLIST_GATE"
+def _service_launchd_plist_gate_spec(service: ServiceDefinition) -> GateSpec:
+    return GATES[f"{service.name}.launchd.plist"]
 
 
 def _service_launchd_automation_plist_gate_env(service: ServiceDefinition) -> str:
@@ -2617,23 +2609,24 @@ def _service_launchd_plist_report(
     payload = _service_launchd_plist_payload(paths, service, label=label, entrypoint=entrypoint)
     dev_launchd_root = paths.workspace_root / ".dev-state" / "launchd"
     public_launchd_root = Path.home() / "Library" / "LaunchAgents"
-    plist_gate_env = _service_launchd_plist_gate_env(service)
-    plist_gate_value = _service_launchd_plist_gate_value(service)
-    plist_gate_open = os.environ.get(plist_gate_env) == plist_gate_value
+    plist_gate = validate_gate(_service_launchd_plist_gate_spec(service), args, os.environ)
+    plist_gate_env = plist_gate.spec.env_var
+    plist_gate_value = plist_gate.spec.expected_value
+    plist_gate_open = plist_gate.env_ok
     public_approvals = [
         {
             "name": "operator plist review",
-            "status": "ok" if getattr(args, "operator_reviewed_plist", False) else "pending",
+            "status": "ok" if plist_gate.flag_ok("--operator-reviewed-plist") else "pending",
             "detail": "operator reviewed label, ProgramArguments, working directory, logs, RunAtLoad, and KeepAlive",
         },
         {
             "name": "public target approval",
-            "status": "ok" if getattr(args, "reviewer_approved_public_target", False) else "pending",
+            "status": "ok" if plist_gate.flag_ok("--reviewer-approved-public-target") else "pending",
             "detail": f"reviewer approved writing one service plist under {public_launchd_root}",
         },
         {
             "name": "no-bootstrap approval",
-            "status": "ok" if getattr(args, "reviewer_approved_no_bootstrap", False) else "pending",
+            "status": "ok" if plist_gate.flag_ok("--reviewer-approved-no-bootstrap") else "pending",
             "detail": "reviewer approved plist write only; no launchctl registration in this gate",
         },
         {

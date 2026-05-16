@@ -72,6 +72,28 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="launchd registration",
     ),
+    "pushd.launchd.plist": GateSpec(
+        name="pushd.launchd.plist",
+        env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_PLIST_GATE",
+        expected_value="operator-approved-pushd-launchd-plist-v1",
+        approval_flags=(
+            "--operator-reviewed-plist",
+            "--reviewer-approved-public-target",
+            "--reviewer-approved-no-bootstrap",
+        ),
+        summary="public launchd plist write",
+    ),
+    "diffd.launchd.plist": GateSpec(
+        name="diffd.launchd.plist",
+        env_var="PCLOUD_TOOLS_DIFFD_LAUNCHD_PLIST_GATE",
+        expected_value="operator-approved-diffd-launchd-plist-v1",
+        approval_flags=(
+            "--operator-reviewed-plist",
+            "--reviewer-approved-public-target",
+            "--reviewer-approved-no-bootstrap",
+        ),
+        summary="public launchd plist write",
+    ),
     "pushd.launchd.reload": GateSpec(
         name="pushd.launchd.reload",
         env_var="PCLOUD_TOOLS_PUSHD_LAUNCHD_RELOAD_GATE",

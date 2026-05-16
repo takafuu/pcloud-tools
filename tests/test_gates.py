@@ -70,6 +70,23 @@ def test_launchd_gate_specs_match_existing_public_contracts() -> None:
     )
 
 
+def test_launchd_plist_gate_specs_match_existing_public_contracts() -> None:
+    assert GATES["pushd.launchd.plist"].env_var == "PCLOUD_TOOLS_PUSHD_LAUNCHD_PLIST_GATE"
+    assert GATES["pushd.launchd.plist"].expected_value == "operator-approved-pushd-launchd-plist-v1"
+    assert GATES["pushd.launchd.plist"].approval_flags == (
+        "--operator-reviewed-plist",
+        "--reviewer-approved-public-target",
+        "--reviewer-approved-no-bootstrap",
+    )
+    assert GATES["diffd.launchd.plist"].env_var == "PCLOUD_TOOLS_DIFFD_LAUNCHD_PLIST_GATE"
+    assert GATES["diffd.launchd.plist"].expected_value == "operator-approved-diffd-launchd-plist-v1"
+    assert GATES["diffd.launchd.plist"].approval_flags == (
+        "--operator-reviewed-plist",
+        "--reviewer-approved-public-target",
+        "--reviewer-approved-no-bootstrap",
+    )
+
+
 def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
     assert GATES["pushd.fswatch.resident"].env_var == "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE"
     assert GATES["pushd.fswatch.resident"].expected_value == "operator-approved-fswatch-resident-v1"
