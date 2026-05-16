@@ -154,8 +154,6 @@ _TIMEOUT_POLICIES = (
     "reuse-fake-rclone-cleanup",
     "manual-review",
 )
-_PUSHD_FSWATCH_RESIDENT_GATE_VALUE = "operator-approved-fswatch-resident-v1"
-_DIFFD_API_LONG_POLL_GATE_VALUE = "operator-approved-api-long-poll-v1"
 _DIFFD_API_CATCHUP_GATE_VALUE = "operator-approved-api-catchup-v1"
 _DIFFD_API_CHECKPOINT_GATE_VALUE = "operator-approved-api-checkpoint-v1"
 _PUSHD_LAUNCHD_GATE_VALUE = "operator-approved-pushd-launchd-v1"
@@ -435,9 +433,7 @@ def _add_service_parser(
             "resident-gate", help="Read-only checklist before starting a resident fswatch watcher."
         )
         fswatch_resident_gate_parser.add_argument("--report-path", type=Path)
-        fswatch_resident_gate_parser.add_argument("--operator-reviewed-probe", action="store_true")
-        fswatch_resident_gate_parser.add_argument("--reviewer-approved-queue-policy", action="store_true")
-        fswatch_resident_gate_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        add_gate_review_args(fswatch_resident_gate_parser, GATES["pushd.fswatch.resident"])
         fswatch_resident_gate_parser.add_argument(
             "--json", action="store_true", help="Emit structured JSON output."
         )
@@ -448,9 +444,7 @@ def _add_service_parser(
             "resident-run", help="Run the foreground fswatch resident loop after the dedicated gate opens."
         )
         fswatch_resident_run_parser.add_argument("--report-path", type=Path)
-        fswatch_resident_run_parser.add_argument("--operator-reviewed-probe", action="store_true")
-        fswatch_resident_run_parser.add_argument("--reviewer-approved-queue-policy", action="store_true")
-        fswatch_resident_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        add_gate_review_args(fswatch_resident_run_parser, GATES["pushd.fswatch.resident"])
         fswatch_resident_run_parser.add_argument("--max-events", type=int)
         fswatch_resident_run_parser.add_argument("--execute", action="store_true")
         fswatch_resident_run_parser.add_argument(
@@ -732,10 +726,7 @@ def _add_service_parser(
             "long-poll-gate", help="Read-only checklist before enabling diffd pCloud API long-poll."
         )
         api_poll_long_poll_gate_parser.add_argument("--report-path", type=Path)
-        api_poll_long_poll_gate_parser.add_argument("--operator-reviewed-preview", action="store_true")
-        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-response-policy", action="store_true")
-        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
-        api_poll_long_poll_gate_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        add_gate_review_args(api_poll_long_poll_gate_parser, GATES["diffd.api.long-poll"])
         api_poll_long_poll_gate_parser.add_argument(
             "--json", action="store_true", help="Emit structured JSON output."
         )
@@ -747,10 +738,7 @@ def _add_service_parser(
             help="Run guarded fixture-backed API long-poll processing after the dedicated gate opens.",
         )
         api_poll_long_poll_run_parser.add_argument("--report-path", type=Path)
-        api_poll_long_poll_run_parser.add_argument("--operator-reviewed-preview", action="store_true")
-        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-response-policy", action="store_true")
-        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-credential-policy", action="store_true")
-        api_poll_long_poll_run_parser.add_argument("--reviewer-approved-process-policy", action="store_true")
+        add_gate_review_args(api_poll_long_poll_run_parser, GATES["diffd.api.long-poll"])
         api_poll_long_poll_run_parser.add_argument("--fixture", type=Path)
         api_poll_long_poll_run_parser.add_argument(
             "--live-api",
@@ -3658,13 +3646,13 @@ def _service_launchd_operational_plist_payload(
         program_arguments = _pushd_launchd_resident_program_arguments(entrypoint, report_path)
         environment = {
             "PATH": _LAUNCHD_RESIDENT_PATH,
-            "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": _PUSHD_FSWATCH_RESIDENT_GATE_VALUE,
+            GATES["pushd.fswatch.resident"].env_var: GATES["pushd.fswatch.resident"].expected_value,
         }
     else:
         program_arguments = _diffd_launchd_long_poll_program_arguments(entrypoint, report_path)
         environment = {
             "PATH": _LAUNCHD_RESIDENT_PATH,
-            "PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": _DIFFD_API_LONG_POLL_GATE_VALUE,
+            GATES["diffd.api.long-poll"].env_var: GATES["diffd.api.long-poll"].expected_value,
         }
     payload: dict[str, object] = {
         "Label": label,
@@ -3898,7 +3886,8 @@ def _resident_plist_operational_status(plist_path: Path, service: ServiceDefinit
         }
         if not isinstance(args, list) or not required_args.issubset(set(map(str, args))):
             return "not-operational", "resident ProgramArguments are missing required execution/approval flags"
-        if not isinstance(env, dict) or env.get("PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE") != _PUSHD_FSWATCH_RESIDENT_GATE_VALUE:
+        resident_spec = GATES["pushd.fswatch.resident"]
+        if not isinstance(env, dict) or env.get(resident_spec.env_var) != resident_spec.expected_value:
             return "not-operational", "resident EnvironmentVariables are missing the fswatch resident gate"
         if "/opt/homebrew/bin" not in str(env.get("PATH", "")):
             return "not-operational", "resident PATH does not include /opt/homebrew/bin"
@@ -3915,7 +3904,8 @@ def _resident_plist_operational_status(plist_path: Path, service: ServiceDefinit
         return "not-operational", "long-poll ProgramArguments are missing required execution/approval flags"
     if "--max-iterations" not in args or "1" not in args:
         return "not-operational", "long-poll ProgramArguments must bound live API execution to one iteration"
-    if not isinstance(env, dict) or env.get("PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE") != _DIFFD_API_LONG_POLL_GATE_VALUE:
+    long_poll_spec = GATES["diffd.api.long-poll"]
+    if not isinstance(env, dict) or env.get(long_poll_spec.env_var) != long_poll_spec.expected_value:
         return "not-operational", "long-poll EnvironmentVariables are missing the API long-poll gate"
     if "/opt/homebrew/bin" not in str(env.get("PATH", "")):
         return "not-operational", "long-poll PATH does not include /opt/homebrew/bin"
@@ -4692,6 +4682,7 @@ def _pushd_fswatch_resident_gate_report(args: argparse.Namespace, paths: Runtime
             )
         )
     resident_command = _pushd_fswatch_resident_command(load_result.config, fswatch_bin or "fswatch")
+    resident_gate = validate_gate(GATES["pushd.fswatch.resident"], args, os.environ)
     checks = [
         shadow_check,
         fswatch_check,
@@ -4702,17 +4693,17 @@ def _pushd_fswatch_resident_gate_report(args: argparse.Namespace, paths: Runtime
         },
         {
             "name": "operator probe review",
-            "status": "ok" if getattr(args, "operator_reviewed_probe", False) else "pending",
+            "status": "ok" if resident_gate.flag_ok("--operator-reviewed-probe") else "pending",
             "detail": "operator reviewed pushd fswatch probe output and watch root",
         },
         {
             "name": "queue policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_queue_policy", False) else "pending",
+            "status": "ok" if resident_gate.flag_ok("--reviewer-approved-queue-policy") else "pending",
             "detail": "reviewer approved event-to-queue append policy and manual review handling",
         },
         {
             "name": "process lifecycle approval",
-            "status": "ok" if getattr(args, "reviewer_approved_process_policy", False) else "pending",
+            "status": "ok" if resident_gate.flag_ok("--reviewer-approved-process-policy") else "pending",
             "detail": "reviewer approved timeout, restart, log, and cleanup behavior before resident start",
         },
         {
@@ -4801,7 +4792,7 @@ def _normalize_resident_fswatch_line(line: str, root: Path) -> str:
 
 
 def _resident_gate_open(config: AppConfig) -> bool:
-    return config.pushd_fswatch_resident_gate == _PUSHD_FSWATCH_RESIDENT_GATE_VALUE
+    return config.pushd_fswatch_resident_gate == GATES["pushd.fswatch.resident"].expected_value
 
 
 def _recent_resident_debounce_keys(state_file: Path, *, debounce_seconds: int, now: datetime) -> set[tuple[str, str]]:
@@ -4853,6 +4844,7 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
     resident_command = [str(part) for part in details.get("resident command preview", [])]
     approval_status = str(details.get("resident approval status", "pending"))
     gate_open = _resident_gate_open(config)
+    resident_spec = GATES["pushd.fswatch.resident"]
     state_file = _resident_run_state_file(config)
 
     details.update(
@@ -4864,15 +4856,15 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
                 else "resident run preview only; fswatch process is not started"
             ),
             "resident run gate status": (
-                f"open: {_PUSHD_FSWATCH_RESIDENT_GATE_VALUE}"
+                f"open: {resident_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE={_PUSHD_FSWATCH_RESIDENT_GATE_VALUE}"
+                else f"closed: requires {resident_spec.env_var}={resident_spec.expected_value}"
             ),
             "resident can start": "yes" if gate_open and approval_status == "complete-read-only" else "no",
             "execute requested": "yes" if execute else "no",
             "state writes": "pushd queue and resident run state" if execute else "none",
             "resident state file": str(state_file),
-            "future gate env": f"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE={_PUSHD_FSWATCH_RESIDENT_GATE_VALUE}",
+            "future gate env": f"{resident_spec.env_var}={resident_spec.expected_value}",
             "max events": max_events if max_events is not None else "-",
             "events processed": 0,
             "queue records appended": 0,
@@ -4906,7 +4898,7 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
                 level="error" if execute else "warning",
                 message=(
                     "resident execution requires "
-                    f"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE={_PUSHD_FSWATCH_RESIDENT_GATE_VALUE!r}"
+                    f"{resident_spec.env_var}={resident_spec.expected_value!r}"
                 ),
             )
         )
@@ -5266,6 +5258,7 @@ def _diffd_api_long_poll_gate_report(args: argparse.Namespace, paths: RuntimePat
         "diffid": daemon_state.diffid,
         "limit": load_result.config.diffd_batch_limit,
     }
+    long_poll_gate = validate_gate(GATES["diffd.api.long-poll"], args, os.environ)
     checks = [
         shadow_check,
         {
@@ -5285,22 +5278,22 @@ def _diffd_api_long_poll_gate_report(args: argparse.Namespace, paths: RuntimePat
         },
         {
             "name": "operator preview review",
-            "status": "ok" if getattr(args, "operator_reviewed_preview", False) else "pending",
+            "status": "ok" if long_poll_gate.flag_ok("--operator-reviewed-preview") else "pending",
             "detail": "operator reviewed diffd api-poll preview request shape",
         },
         {
             "name": "response policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_response_policy", False) else "pending",
+            "status": "ok" if long_poll_gate.flag_ok("--reviewer-approved-response-policy") else "pending",
             "detail": "reviewer approved response parsing, skipped records, and cursor mutation policy",
         },
         {
             "name": "credential policy approval",
-            "status": "ok" if getattr(args, "reviewer_approved_credential_policy", False) else "pending",
+            "status": "ok" if long_poll_gate.flag_ok("--reviewer-approved-credential-policy") else "pending",
             "detail": "reviewer approved least-privilege credential handling before any API call",
         },
         {
             "name": "process lifecycle approval",
-            "status": "ok" if getattr(args, "reviewer_approved_process_policy", False) else "pending",
+            "status": "ok" if long_poll_gate.flag_ok("--reviewer-approved-process-policy") else "pending",
             "detail": "reviewer approved timeout, retry, backoff, logs, and cleanup behavior before long-poll",
         },
         {
@@ -5822,7 +5815,7 @@ def _resolve_diff_response_parent_folders(
 
 
 def _api_long_poll_gate_open(config: AppConfig) -> bool:
-    return config.diffd_api_long_poll_gate == _DIFFD_API_LONG_POLL_GATE_VALUE
+    return config.diffd_api_long_poll_gate == GATES["diffd.api.long-poll"].expected_value
 
 
 def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -5844,6 +5837,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     ]
     approval_status = str(details.get("long-poll approval status", "pending"))
     gate_open = _api_long_poll_gate_open(config)
+    long_poll_spec = GATES["diffd.api.long-poll"]
     state_file = _diffd_api_long_poll_run_state_file(config)
     fixture_path = Path(fixture) if fixture is not None else None
     requested_iterations = 1 if max_iterations is None else max_iterations
@@ -5880,14 +5874,14 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 else "long-poll run preview only; live pCloud API is not called"
             ),
             "long-poll run gate status": (
-                f"open: {_DIFFD_API_LONG_POLL_GATE_VALUE}"
+                f"open: {long_poll_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}"
+                else f"closed: requires {long_poll_spec.env_var}={long_poll_spec.expected_value}"
             ),
             "long-poll gate status": (
-                f"open: {_DIFFD_API_LONG_POLL_GATE_VALUE}"
+                f"open: {long_poll_spec.expected_value}"
                 if gate_open
-                else f"closed: requires PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}"
+                else f"closed: requires {long_poll_spec.env_var}={long_poll_spec.expected_value}"
             ),
             "long-poll can start": "yes" if gate_open and approval_status == "complete-read-only" else "no",
             "execute requested": "yes" if execute else "no",
@@ -5915,7 +5909,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "folder cache entries after": len(initial_folder_cache),
             "folder metadata requests": [],
             "folder metadata requests count": 0,
-            "future gate env": f"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE}",
+            "future gate env": f"{long_poll_spec.env_var}={long_poll_spec.expected_value}",
             "max iterations": requested_iterations,
             "catch-up requested": "yes" if catchup_requested else "no",
             "catch-up gate env var": catchup_gate_env,
@@ -5958,7 +5952,7 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
                 level="error" if execute else "warning",
                 message=(
                     "long-poll execution requires "
-                    f"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE={_DIFFD_API_LONG_POLL_GATE_VALUE!r}"
+                    f"{long_poll_spec.env_var}={long_poll_spec.expected_value!r}"
                 ),
             )
         )

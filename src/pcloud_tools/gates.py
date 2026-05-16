@@ -68,6 +68,29 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="launchd bootout/bootstrap reload",
     ),
+    "pushd.fswatch.resident": GateSpec(
+        name="pushd.fswatch.resident",
+        env_var="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE",
+        expected_value="operator-approved-fswatch-resident-v1",
+        approval_flags=(
+            "--operator-reviewed-probe",
+            "--reviewer-approved-queue-policy",
+            "--reviewer-approved-process-policy",
+        ),
+        summary="fswatch resident watcher",
+    ),
+    "diffd.api.long-poll": GateSpec(
+        name="diffd.api.long-poll",
+        env_var="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",
+        expected_value="operator-approved-api-long-poll-v1",
+        approval_flags=(
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+        ),
+        summary="diffd live API long-poll",
+    ),
 }
 
 
