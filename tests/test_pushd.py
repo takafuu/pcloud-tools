@@ -92,6 +92,7 @@ def test_pushd_preview_root_allowlist_still_excludes_dangerous_paths(tmp_path: P
     dangerous_paths = [
         ".venv/secret.txt",
         "node_modules/pkg/index.js",
+        "dev/pcloud_tools/__pycache__/core.pyc",
         ".git/config",
         ".env",
         "dev/.hidden",

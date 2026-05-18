@@ -48,10 +48,20 @@ def _matches_pattern(path: str, pattern: str) -> bool:
 
     if clean_pattern.endswith("/**"):
         prefix = clean_pattern[:-3].rstrip("/")
-        return clean_path == prefix or clean_path.startswith(f"{prefix}/")
+        return (
+            clean_path == prefix
+            or clean_path.startswith(f"{prefix}/")
+            or fnmatch.fnmatch(clean_path, prefix)
+            or fnmatch.fnmatch(clean_path, f"{prefix}/*")
+        )
     if clean_pattern.endswith("/"):
         prefix = clean_pattern.rstrip("/")
-        return clean_path == prefix or clean_path.startswith(f"{prefix}/")
+        return (
+            clean_path == prefix
+            or clean_path.startswith(f"{prefix}/")
+            or fnmatch.fnmatch(clean_path, prefix)
+            or fnmatch.fnmatch(clean_path, f"{prefix}/*")
+        )
 
     if fnmatch.fnmatch(clean_path, clean_pattern) or fnmatch.fnmatch(f"/{clean_path}", f"/{clean_pattern}"):
         return True

@@ -10,6 +10,7 @@ def test_pushd_backfill_preview_classifies_existing_files_without_queue_writes(t
     (workspace / ".pcloud-sync-allowlist").write_text("/\n")
 
     _write_workspace_file(env, "dev/foo.txt", "upload\n")
+    _write_workspace_file(env, "dev/pkg/__pycache__/core.pyc", "cache\n")
     _write_workspace_file(env, ".venv/package.py", "venv\n")
     _write_workspace_file(env, ".git/config", "git\n")
     _write_workspace_file(env, ".env", "SECRET=local\n")
@@ -45,14 +46,14 @@ def test_pushd_backfill_preview_classifies_existing_files_without_queue_writes(t
     assert payload["summary"] == "pushd backfill preview is ready"
     assert details["state writes"] == "none"
     assert details["candidate files"] == 4
-    assert details["candidate paths"] == 7
-    assert details["pruned directories"] == 3
+    assert details["candidate paths"] == 8
+    assert details["pruned directories"] == 4
     assert details["planned uploads"] == 1
     assert details["excluded files"] == 3
     assert details["invalid files"] == 0
     assert planned_paths == {"dev/foo.txt"}
     assert {".env", ".hidden", ".pcloud-sync-allowlist"}.issubset(excluded_paths)
-    assert {".venv/", ".git/", "LLM/"}.issubset(pruned_paths)
+    assert {".venv/", ".git/", "LLM/", "dev/pkg/__pycache__/"}.issubset(pruned_paths)
     assert not queue_file.exists()
 
 
