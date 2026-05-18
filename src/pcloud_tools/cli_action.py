@@ -36,6 +36,7 @@ _ACTION_DISPATCH: dict[str, tuple[str, ...]] = {
     "pushd.preview": ("pushd", "preview"),
     "pushd.policy": ("pushd", "policy"),
     "pushd.run.preview": ("pushd", "run"),
+    "pushd.backfill.preview": ("pushd", "backfill", "preview"),
     "pushd.gate": ("pushd", "gate"),
     "pushd.launchd.gate": ("pushd", "launchd", "gate"),
     "pushd.launchd.status": ("pushd", "launchd", "status"),

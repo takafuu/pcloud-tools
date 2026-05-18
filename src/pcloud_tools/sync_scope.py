@@ -4,22 +4,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from .config import AppConfig, ConfigIssue
+from .manager_ignore import load_manager_ignore_rules
 
 
 class AllowlistError(ValueError):
     """Raised when the allowlist file cannot be normalized."""
-
-
-_UNSAFE_ROOT_ENTRIES = {
-    "apps",
-    "bin",
-    "codex",
-    "config",
-    "dev",
-    "dotfiles",
-    "project",
-    "tools",
-}
 
 
 @dataclass(frozen=True)
@@ -70,6 +59,10 @@ def normalize_allowlist_entries(allowlist_file: Path) -> tuple[str, ...]:
     for raw_line in allowlist_file.read_text().splitlines():
         entry = raw_line.strip()
         if not entry or entry.startswith("#"):
+            continue
+
+        if entry in {".", "/", "./"}:
+            entries.append("/")
             continue
 
         while entry.startswith("./"):
@@ -134,16 +127,62 @@ def default_exclude_rules(config: AppConfig) -> tuple[str, ...]:
     return tuple(rules)
 
 
+def _filter_rules_for_manager_pattern(pattern: str, *, allow: bool) -> tuple[str, ...]:
+    clean = pattern.strip().lstrip("/")
+    if not clean:
+        return ()
+
+    prefix = "+" if allow else "-"
+    if clean.endswith("/**"):
+        body = clean[:-3].rstrip("/")
+        if not body:
+            return ()
+        if "/" in body or body.startswith("**/"):
+            return (f"{prefix} /{body}/**",)
+        return (f"{prefix} /{body}/**", f"{prefix} /**/{body}/**")
+    if clean.endswith("/"):
+        body = clean.rstrip("/")
+        if not body:
+            return ()
+        if "/" in body or body.startswith("**/"):
+            return (f"{prefix} /{body}/**",)
+        return (f"{prefix} /{body}/**", f"{prefix} /**/{body}/**")
+    if clean.startswith("**/"):
+        return (f"{prefix} /{clean}",)
+    if "/" in clean:
+        return (f"{prefix} /{clean}",)
+    return (f"{prefix} /{clean}", f"{prefix} /**/{clean}")
+
+
+def manager_ignore_filter_rules(config: AppConfig) -> tuple[str, ...]:
+    allow_rules: list[str] = []
+    deny_rules: list[str] = []
+    seen: set[str] = set()
+    for rule in load_manager_ignore_rules(config):
+        target = allow_rules if rule.allow else deny_rules
+        for filter_rule in _filter_rules_for_manager_pattern(rule.pattern, allow=rule.allow):
+            if filter_rule not in seen:
+                seen.add(filter_rule)
+                target.append(filter_rule)
+    return tuple([*allow_rules, *deny_rules])
+
+
 def prepare_sync_filter_rules(config: AppConfig, entries: tuple[str, ...]) -> tuple[str, ...]:
     rules: list[str] = []
     seen: set[str] = set()
 
-    for rule in default_exclude_rules(config):
+    for rule in (*manager_ignore_filter_rules(config), *default_exclude_rules(config)):
         if rule not in seen:
             seen.add(rule)
             rules.append(rule)
 
     for entry in entries:
+        if entry == "/":
+            root_rule = "+ /**"
+            if root_rule not in seen:
+                seen.add(root_rule)
+                rules.append(root_rule)
+            continue
         clean_entry = entry[:-1] if entry.endswith("/") else entry
         is_dir = entry.endswith("/")
         parts = clean_entry.split("/")
@@ -166,15 +205,6 @@ def prepare_sync_filter_rules(config: AppConfig, entries: tuple[str, ...]) -> tu
     if final_deny not in seen:
         rules.append(final_deny)
     return tuple(rules)
-
-
-def unsafe_allowlist_entries(entries: tuple[str, ...]) -> tuple[str, ...]:
-    unsafe: list[str] = []
-    for entry in entries:
-        root = entry.strip("/").split("/", 1)[0]
-        if root in _UNSAFE_ROOT_ENTRIES:
-            unsafe.append(entry)
-    return tuple(unsafe)
 
 
 def write_sync_filter_file(config: AppConfig, entries: tuple[str, ...]) -> Path:
@@ -212,18 +242,4 @@ def scope_issues(info: SyncScopeInfo) -> list[ConfigIssue]:
                 message=f"stored sync scope is invalid: {info.baseline.file}",
             )
         )
-
-    if info.allowlist_status == "loaded":
-        unsafe_entries = unsafe_allowlist_entries(info.entries)
-        if unsafe_entries:
-            issues.append(
-                ConfigIssue(
-                    key="PCLOUD_TOOLS_SCOPE_POLICY",
-                    level="warning",
-                    message=(
-                        "allowlist includes source/tool roots outside document-only sync policy: "
-                        + ", ".join(unsafe_entries)
-                    ),
-                )
-            )
     return issues

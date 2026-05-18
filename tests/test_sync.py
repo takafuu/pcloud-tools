@@ -1,6 +1,9 @@
 from __future__ import annotations
 
 from conftest import *
+from pcloud_tools.config import load_config
+from pcloud_tools.runtime import RuntimePaths
+from pcloud_tools.sync_scope import prepare_sync_filter_rules, sync_allowlist_info
 
 
 def test_dev_sync_execute_is_refused_before_remote_execution(tmp_path: Path) -> None:
@@ -11,6 +14,84 @@ def test_dev_sync_execute_is_refused_before_remote_execution(tmp_path: Path) -> 
     assert payload["status"] == "error"
     assert payload["summary"] == "dev mode refuses to execute bisync against a configured remote"
     assert [issue["key"] for issue in payload["issues"]] == ["PCLOUD_TOOLS_DEV_EXECUTION"]
+
+
+def test_root_allowlist_builds_safe_bisync_filter_rules(tmp_path: Path, monkeypatch) -> None:
+    env = _base_env(tmp_path)
+    for key, value in env.items():
+        monkeypatch.setenv(key, value)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / ".pcloud-sync-allowlist").write_text("/\n")
+
+    paths = RuntimePaths(
+        workspace_root=workspace,
+        config_dir=Path(env["PCLOUD_TOOLS_CONFIG_DIR"]),
+        state_dir=Path(env["PCLOUD_TOOLS_STATE_DIR"]),
+        log_dir=Path(env["PCLOUD_TOOLS_LOG_DIR"]),
+    )
+    config = load_config(paths).config
+    info = sync_allowlist_info(config)
+    rules = prepare_sync_filter_rules(config, info.entries)
+
+    assert info.entries == ("/",)
+    assert "+ /**" in rules
+    assert "- /**/.git/**" in rules
+    assert "- /**/.venv/**" in rules
+    assert "- /**/node_modules/**" in rules
+    assert "- /**/tmp/**" in rules
+    assert "- /**/temp/**" in rules
+    assert "- /**/.env" in rules
+    assert "- /LLM/**" in rules
+    assert rules.index("+ /**") < rules.index("- /**")
+
+
+def test_sync_execute_is_refused_when_daemon_mode_is_loaded(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    launchctl = bin_dir / "launchctl"
+    launchctl.write_text(
+        "#!/bin/sh\n"
+        "if [ \"$1\" = \"print\" ]; then\n"
+        "  case \"$2\" in\n"
+        "    *com.takafumi.pcloud-pushd*) exit 0 ;;\n"
+        "  esac\n"
+        "fi\n"
+        "exit 113\n"
+    )
+    launchctl.chmod(0o755)
+    lock_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"]) / "bisync.lock"
+    lock_dir.mkdir(parents=True)
+    (lock_dir / "pid").write_text("999999\n")
+    (lock_dir / "mode").write_text("normal\n")
+    (lock_dir / "started_at").write_text("2026-04-25 00:00:00\n")
+
+    env.update(
+        {
+            "PCLOUD_TOOLS_DEV": "0",
+            "PCLOUD_TOOLS_CORE_DIR": str(workspace),
+            "PCLOUD_TOOLS_ALLOWLIST_FILE": str(workspace / ".pcloud-sync-allowlist"),
+            "PCLOUD_TOOLS_MANAGER_IGNORE_FILE": str(workspace / ".pcloudmanagerignore"),
+            "PATH": f"{bin_dir}:{os.environ.get('PATH', '')}",
+        }
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "sync", "--execute", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 1
+    assert payload["summary"] == "sync execution is refused while daemon mode is loaded"
+    assert payload["issues"][0]["key"] == "PCLOUD_TOOLS_MODE_EXCLUSIVE"
+
+
 def test_sync_background_json_emits_baseline_report(tmp_path: Path) -> None:
     result = _run_cli(tmp_path, "sync", "background", "--json")
 
@@ -21,6 +102,8 @@ def test_sync_background_json_emits_baseline_report(tmp_path: Path) -> None:
     assert payload["status"] in {"ok", "warning"}
     assert isinstance(payload["summary"], str)
     assert payload["summary"]
+
+
 def test_sync_status_marks_old_last_error_as_historical_after_success(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
@@ -89,6 +172,8 @@ def test_resync_preview_exposes_explicit_resync_mode(tmp_path: Path) -> None:
     assert path1_payload["details"]["resync mode"] == "path1"
     assert "--resync-mode" in path1_payload["details"]["command"]
     assert "path1" in path1_payload["details"]["command"]
+
+
 def test_full_resync_preview_exposes_explicit_resync_mode(tmp_path: Path) -> None:
     result = _run_cli(tmp_path, "sync", "full-resync", "--resync-mode", "newer", "--json")
 
@@ -100,7 +185,9 @@ def test_full_resync_preview_exposes_explicit_resync_mode(tmp_path: Path) -> Non
     assert "--resync-mode" in payload["details"]["command"]
     assert "newer" in payload["details"]["command"]
     assert "--filter-from" not in payload["details"]["command"]
-def test_document_only_scope_policy_warns_on_source_roots(tmp_path: Path) -> None:
+
+
+def test_sync_scope_allows_source_roots_when_allowlisted(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     allowlist = workspace / ".pcloud-sync-allowlist"
@@ -118,12 +205,11 @@ def test_document_only_scope_policy_warns_on_source_roots(tmp_path: Path) -> Non
     payload = _payload(result)
     issue_keys = [issue["key"] for issue in payload["issues"]]
     assert result.returncode == 0
-    assert payload["status"] == "warning"
-    assert "PCLOUD_TOOLS_SCOPE_POLICY" in issue_keys
-    policy_issue = next(issue for issue in payload["issues"] if issue["key"] == "PCLOUD_TOOLS_SCOPE_POLICY")
-    assert "dev/" in policy_issue["message"]
-    assert "project/" in policy_issue["message"]
-    assert "tools/" in policy_issue["message"]
+    assert payload["status"] in {"ok", "warning"}
+    assert "PCLOUD_TOOLS_SCOPE_POLICY" not in issue_keys
+    assert payload["details"]["entries"] == ["Documents/", "dev/", "project/", "tools/"]
+
+
 def test_foreground_sync_preview_rejects_stale_and_invalid_locks(tmp_path: Path) -> None:
     for lock_status in ("stale", "invalid"):
         case_path = tmp_path / lock_status

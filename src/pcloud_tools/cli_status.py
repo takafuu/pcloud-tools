@@ -237,7 +237,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
                 _path_entry(config.crypt_mount_dir, "crypt mount directory"),
             ],
             "state policy": "runtime state stays local under the configured state directory",
-            "content policy": "document/media allowlist only; source/tool roots are out of scope",
+            "content policy": "shared allowlist scope; p-core root is allowed when dangerous/generated/private paths are ignored",
         }
     elif args.info_command == "config":
         details = {

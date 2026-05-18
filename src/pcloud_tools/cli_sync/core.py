@@ -73,6 +73,30 @@ def _command_path(name: str) -> str | None:
     return path[0] if path else None
 
 
+_DAEMON_MODE_LABELS = (
+    "com.takafumi.pcloud-pushd",
+    "com.takafumi.pcloud-pushd-executor",
+    "com.takafumi.pcloud-diffd",
+    "com.takafumi.pcloud-diffd-executor",
+)
+
+
+def _daemon_mode_loaded() -> bool:
+    launchctl = _command_path("launchctl")
+    if not launchctl:
+        return False
+    for label in _DAEMON_MODE_LABELS:
+        result = subprocess.run(
+            [launchctl, "print", f"gui/{os.getuid()}/{label}"],
+            check=False,
+            capture_output=True,
+            text=True,
+        )
+        if result.returncode == 0:
+            return True
+    return False
+
+
 def _sync_state_issues(sync_state) -> list[ConfigIssue]:
     if sync_state.state != "sync_error":
         return []
@@ -315,6 +339,47 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
             issues=report_issues(issues),
         )
 
+    if args.execute and paths.dev_mode:
+        return CommandReport(
+            command=command_name,
+            status="error",
+            summary="dev mode refuses to execute bisync against a configured remote",
+            details={
+                **base_details,
+                "core remote": load_result.config.core_remote,
+                "reason": "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime",
+            },
+            issues=report_issues(
+                [
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_DEV_EXECUTION",
+                        level="error",
+                        message="refusing --execute from pcloud-manager-dev",
+                    )
+                ]
+            ),
+        )
+
+    if args.execute and _daemon_mode_loaded():
+        return CommandReport(
+            command=command_name,
+            status="error",
+            summary="sync execution is refused while daemon mode is loaded",
+            details={
+                **base_details,
+                "reason": "bisync and daemon automation are mutually exclusive; switch to maintenance or pause mode first",
+            },
+            issues=report_issues(
+                [
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_MODE_EXCLUSIVE",
+                        level="error",
+                        message="refusing bisync execution while pushd/diffd daemon services are loaded",
+                    )
+                ]
+            ),
+        )
+
     if lock_state.status == "active":
         issues = sort_issues(
             issues
@@ -351,27 +416,6 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
             summary="sync command requires clearing the stale lock first",
             details=base_details,
             issues=report_issues(issues),
-        )
-
-    if args.execute and paths.dev_mode:
-        return CommandReport(
-            command=command_name,
-            status="error",
-            summary="dev mode refuses to execute bisync against a configured remote",
-            details={
-                **base_details,
-                "core remote": load_result.config.core_remote,
-                "reason": "use preview in dev mode; execution requires the public entrypoint or an explicit non-dev runtime",
-            },
-            issues=report_issues(
-                [
-                    ConfigIssue(
-                        key="PCLOUD_TOOLS_DEV_EXECUTION",
-                        level="error",
-                        message="refusing --execute from pcloud-manager-dev",
-                    )
-                ]
-            ),
         )
 
     try:

@@ -127,6 +127,8 @@ def _record_from_item(item: Any, default_action: str = "sync") -> PlanRecord:
 
 def _matches_allowlist(path: str, entries: tuple[str, ...]) -> bool:
     for entry in entries:
+        if entry == "/":
+            return True
         clean_entry = entry[:-1] if entry.endswith("/") else entry
         if entry.endswith("/") and (path == clean_entry or path.startswith(f"{clean_entry}/")):
             return True

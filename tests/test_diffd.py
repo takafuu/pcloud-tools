@@ -53,6 +53,80 @@ def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -
     )
     assert payload["details"]["planned download records"][0]["path"] == "Documents/remote.pdf"
     assert payload["details"]["skipped download record details"][0]["path"] == ""
+
+
+def test_diffd_preview_root_allowlist_plans_p_core_wide_files(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    diffd_dir = state_dir / "diffd"
+    diffd_dir.mkdir(parents=True)
+    (workspace / ".pcloud-sync-allowlist").write_text("/\n")
+    (diffd_dir / "remote-changes.json").write_text(
+        json.dumps(
+            [
+                {"path": "dev/foo.txt", "action": "download"},
+                {"path": "project/foo.txt", "action": "download"},
+            ]
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "diffd", "preview", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["details"]["planned downloads"] == 2
+    assert payload["details"]["skipped download records"] == 0
+    assert [record["path"] for record in payload["details"]["planned download records"]] == [
+        "dev/foo.txt",
+        "project/foo.txt",
+    ]
+
+
+def test_diffd_preview_root_allowlist_still_skips_dangerous_paths(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    diffd_dir = state_dir / "diffd"
+    diffd_dir.mkdir(parents=True)
+    (workspace / ".pcloud-sync-allowlist").write_text("/\n")
+    dangerous_paths = [
+        ".venv/secret.txt",
+        "node_modules/pkg/index.js",
+        ".git/config",
+        ".env",
+        "dev/.hidden",
+        "LLM/private.txt",
+    ]
+    (diffd_dir / "remote-changes.json").write_text(
+        json.dumps([{"path": path, "action": "download"} for path in dangerous_paths])
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "diffd", "preview", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    skipped = payload["details"]["skipped download record details"]
+    assert result.returncode == 0
+    assert payload["details"]["planned downloads"] == 0
+    assert payload["details"]["skipped download records"] == len(dangerous_paths)
+    assert [record["path"] for record in skipped] == dangerous_paths
+    assert {record["reason"] for record in skipped} == {"manager ignore rule"}
+
+
 def test_diffd_preview_applies_allowlist_and_default_excludes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

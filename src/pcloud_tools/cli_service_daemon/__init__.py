@@ -53,6 +53,7 @@ from ..download_suppression import (
 )
 from ..gates import GATES, GateSpec, add_gate_review_args, validate_gate
 from ..io_utils import atomic_write_json
+from ..manager_ignore import manager_ignore_match
 from .api_poll_render import (
     print_api_long_poll_gate_report as _print_api_long_poll_gate_report,
     print_api_long_poll_run_report as _print_api_long_poll_run_report,
@@ -166,6 +167,32 @@ _TIMEOUT_POLICIES = (
 _LAUNCHD_RESIDENT_PATH = "/opt/homebrew/bin:/usr/local/bin:/usr/bin:/bin:/usr/sbin:/sbin"
 _QUEUE_EXECUTOR_START_INTERVAL_SECONDS = 60
 _PUBLIC_QUEUE_EXECUTOR_MAX_RECORDS = 10
+_PUSHD_BACKFILL_DEFAULT_MAX_FILES = 10_000
+_PUSHD_BACKFILL_DEFAULT_SAMPLE_LIMIT = 100
+
+
+def _add_pushd_backfill_parser(subparsers: argparse._SubParsersAction) -> None:
+    backfill_parser = subparsers.add_parser(
+        "backfill", help="Preview queue candidates from existing local files without mutating pushd state."
+    )
+    backfill_subparsers = backfill_parser.add_subparsers(dest="backfill_command")
+    preview_parser = backfill_subparsers.add_parser(
+        "preview", help="Scan existing files and classify which would be uploaded or excluded."
+    )
+    preview_parser.add_argument(
+        "--max-files",
+        type=int,
+        default=_PUSHD_BACKFILL_DEFAULT_MAX_FILES,
+        help="Maximum local files to consider during this read-only preview scan.",
+    )
+    preview_parser.add_argument(
+        "--sample-limit",
+        type=int,
+        default=_PUSHD_BACKFILL_DEFAULT_SAMPLE_LIMIT,
+        help="Maximum planned/excluded/invalid record details to include in the report.",
+    )
+    preview_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    preview_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
 
 def _add_transfer_automation_gate_parser(
@@ -396,6 +423,8 @@ def _add_service_parser(
     _add_service_launchd_parser(service_subparsers, service)
 
     if service.name == "pushd":
+        _add_pushd_backfill_parser(service_subparsers)
+
         fswatch_parser = service_subparsers.add_parser(
             "fswatch", help="Preview pushd fswatch fixture events without starting fswatch."
         )
@@ -930,6 +959,8 @@ def cmd_service_daemon(args: argparse.Namespace, paths: RuntimePaths) -> int | N
         return cmd_service_gate(args, paths, service)
     if args.service_command == "launchd":
         return cmd_service_launchd(args, paths, service)
+    if service.name == "pushd" and args.service_command == "backfill":
+        return cmd_pushd_backfill(args, paths)
     if service.name == "pushd" and args.service_command == "fswatch":
         return cmd_pushd_fswatch(args, paths)
     if service.name == "diffd" and args.service_command == "diff":
@@ -1117,6 +1148,15 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
         ),
     ]
     if service.name == "pushd":
+        actions.append(
+            ReportAction(
+                id="pushd.backfill.preview",
+                label="Preview pushd backfill candidates",
+                command=action_command(paths, "pushd.backfill.preview"),
+                terminal=True,
+                refresh=False,
+            )
+        )
         actions.append(
             ReportAction(
                 id="pushd.fswatch.resident-gate",
@@ -1528,6 +1568,208 @@ def _plan_records(records) -> list[dict[str, str]]:
         {"path": record.path, "action": record.action, "reason": record.reason}
         for record in records
     ]
+
+
+def _pushd_backfill_dir_sort_key(name: str) -> tuple[int, str]:
+    heavy_or_hidden = name.startswith(".") or name in {
+        "node_modules",
+        "venv",
+        "__pycache__",
+        "dist",
+        "build",
+        "target",
+    }
+    return (1 if heavy_or_hidden else 0, name)
+
+
+def _pushd_backfill_path_can_match_scope(scope: SyncScopeInfo, relative_dir: str) -> bool:
+    if scope.allowlist_status != "loaded":
+        return True
+    for entry in scope.entries:
+        if entry == "/":
+            return True
+        clean_entry = entry.strip("/")
+        if entry.endswith("/"):
+            clean_entry = clean_entry.rstrip("/")
+        if (
+            clean_entry == relative_dir
+            or clean_entry.startswith(f"{relative_dir}/")
+            or relative_dir.startswith(f"{clean_entry}/")
+        ):
+            return True
+    return False
+
+
+def _pushd_backfill_candidate_records(
+    config: AppConfig,
+    scope: SyncScopeInfo,
+    *,
+    max_files: int,
+) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...], bool, tuple[ConfigIssue, ...]]:
+    records: list[PlanRecord] = []
+    pruned_records: list[PlanRecord] = []
+    issues: list[ConfigIssue] = []
+    limit_reached = False
+    root = config.core_dir
+
+    def onerror(exc: OSError) -> None:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_BACKFILL_SCAN",
+                level="warning",
+                message=f"cannot scan local backfill path: {exc}",
+            )
+        )
+
+    for dirpath, dirnames, filenames in os.walk(root, topdown=True, onerror=onerror, followlinks=False):
+        kept_dirnames: list[str] = []
+        for dirname in sorted(dirnames, key=_pushd_backfill_dir_sort_key):
+            dir_relative_path = normalize_plan_path((Path(dirpath) / dirname).relative_to(root).as_posix())
+            if not dir_relative_path:
+                continue
+            if not _pushd_backfill_path_can_match_scope(scope, dir_relative_path):
+                pruned_records.append(PlanRecord(f"{dir_relative_path}/", "skip", "outside allowlist"))
+                continue
+            if (ignore_match := manager_ignore_match(config, f"{dir_relative_path}/")) and ignore_match.ignored:
+                pruned_records.append(PlanRecord(f"{dir_relative_path}/", "skip", ignore_match.reason))
+                continue
+            kept_dirnames.append(dirname)
+        dirnames[:] = kept_dirnames
+
+        for name in sorted(filenames):
+            if len(records) >= max_files:
+                limit_reached = True
+                dirnames[:] = []
+                break
+
+            file_path = Path(dirpath) / name
+            try:
+                if not file_path.is_file():
+                    continue
+                relative_path = normalize_plan_path(file_path.relative_to(root).as_posix())
+            except (OSError, ValueError) as exc:
+                issues.append(
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_PUSHD_BACKFILL_SCAN",
+                        level="warning",
+                        message=f"cannot inspect local backfill candidate {file_path}: {exc}",
+                    )
+                )
+                continue
+            if not relative_path:
+                continue
+            records.append(PlanRecord(path=relative_path, action="upload", reason="backfill preview"))
+
+        if limit_reached:
+            break
+
+    return tuple(records), tuple(pruned_records), limit_reached, tuple(issues)
+
+
+def _pushd_backfill_preview_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    state = read_service_daemon_state(load_result.config, "pushd")
+    max_files = getattr(args, "max_files", _PUSHD_BACKFILL_DEFAULT_MAX_FILES)
+    sample_limit = getattr(args, "sample_limit", _PUSHD_BACKFILL_DEFAULT_SAMPLE_LIMIT)
+    issues = list(load_result.issues) + list(state.issues)
+
+    if max_files < 1:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_BACKFILL_MAX_FILES",
+                level="error",
+                message="--max-files must be at least 1",
+            )
+        )
+        max_files = 1
+    if sample_limit < 0:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_BACKFILL_SAMPLE_LIMIT",
+                level="error",
+                message="--sample-limit must be zero or greater",
+            )
+        )
+        sample_limit = 0
+
+    scope = sync_allowlist_info(load_result.config)
+    records, pruned_records, limit_reached, scan_issues = _pushd_backfill_candidate_records(
+        load_result.config,
+        scope,
+        max_files=max_files,
+    )
+    issues.extend(scan_issues)
+    plan = build_pushd_plan_from_records(
+        load_result.config,
+        state.queue_file,
+        records,
+    )
+    issues.extend(plan.issues)
+    issues.extend(scope_issues(scope))
+    if limit_reached:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_BACKFILL_SCAN_LIMIT",
+                level="warning",
+                message=f"backfill preview stopped after {max_files} files; raise --max-files to scan more",
+            )
+        )
+
+    sampled_planned = plan.upload_records[:sample_limit]
+    sampled_excluded = plan.excluded_records[:sample_limit]
+    sampled_invalid = plan.invalid_records[:sample_limit]
+    details: dict[str, object] = {
+        "planned action": "preview pushd backfill candidates",
+        "implementation status": "read-only backfill preview; queue and daemon state are not mutated",
+        "state writes": "none",
+        "queue file": str(state.queue_file),
+        "core dir": str(load_result.config.core_dir),
+        "scan scope": "existing local files only; directories are not queued",
+        "scan limit": max_files,
+        "scan limit reached": "yes" if limit_reached else "no",
+        "record sample limit": sample_limit,
+        "candidate files": plan.total,
+        "candidate paths": plan.total + len(pruned_records),
+        "pruned directories": len(pruned_records),
+        "planned uploads": plan.upload_count,
+        "excluded files": plan.excluded_count,
+        "invalid files": plan.invalid_count,
+        "planned upload records": _plan_records(sampled_planned),
+        "excluded file records": _plan_records(sampled_excluded),
+        "invalid file records": _plan_records(sampled_invalid),
+        "pruned directory records": _plan_records(pruned_records[:sample_limit]),
+        "omitted planned upload records": max(0, plan.upload_count - len(sampled_planned)),
+        "omitted excluded file records": max(0, plan.excluded_count - len(sampled_excluded)),
+        "omitted invalid file records": max(0, plan.invalid_count - len(sampled_invalid)),
+        "omitted pruned directory records": max(0, len(pruned_records) - sample_limit),
+        "automatic queue/change consumption": "no",
+        "automatic real transfer execution": "no",
+        "normal sync/resync": "no",
+        "listing cache operations": "no",
+        **_scope_details(scope),
+    }
+
+    issues = sort_issues(issues)
+    return CommandReport(
+        command="pushd backfill preview",
+        status=status_from_issues(issues),
+        summary=(
+            "pushd backfill preview is partial"
+            if limit_reached
+            else "pushd backfill preview is ready"
+        ),
+        details=details,
+        issues=report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
+def cmd_pushd_backfill(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
+    if args.backfill_command == "preview":
+        report = _pushd_backfill_preview_report(args, paths)
+        print_report(report, args)
+        return exit_code_for_report(report)
+    return None
 
 
 def _scope_details(scope: SyncScopeInfo) -> dict[str, object]:
@@ -9169,6 +9411,8 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
     _add_service_launchd_parser(subparsers, service)
 
     if service.name == "pushd":
+        _add_pushd_backfill_parser(subparsers)
+
         fswatch_parser = subparsers.add_parser(
             "fswatch", help="Preview pushd fswatch fixture events without starting fswatch."
         )

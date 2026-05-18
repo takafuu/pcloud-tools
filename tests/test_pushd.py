@@ -43,6 +43,84 @@ def test_pushd_preview_builds_allowlisted_queue_plan(tmp_path: Path) -> None:
     assert payload["details"]["plan summary"] == "upload: 1; missing-local: 0; excluded: 3; invalid: 1"
     assert payload["details"]["planned upload records"][0]["path"] == "Documents/report.pdf"
     assert payload["details"]["excluded queue records"][1]["reason"] == "manager ignore rule"
+
+
+def test_pushd_preview_root_allowlist_plans_p_core_wide_files(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (workspace / ".pcloud-sync-allowlist").write_text("/\n")
+    _write_workspace_file(env, "dev/foo.txt", "dev\n")
+    _write_workspace_file(env, "project/foo.txt", "project\n")
+    (pushd_dir / "queue.json").write_text(
+        json.dumps(
+            [
+                {"path": "dev/foo.txt", "action": "upload"},
+                {"path": "project/foo.txt", "action": "upload"},
+            ]
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "pushd", "preview", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["details"]["planned uploads"] == 2
+    assert payload["details"]["excluded queue items"] == 0
+    assert [record["path"] for record in payload["details"]["planned upload records"]] == [
+        "dev/foo.txt",
+        "project/foo.txt",
+    ]
+
+
+def test_pushd_preview_root_allowlist_still_excludes_dangerous_paths(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (workspace / ".pcloud-sync-allowlist").write_text("/\n")
+    dangerous_paths = [
+        ".venv/secret.txt",
+        "node_modules/pkg/index.js",
+        ".git/config",
+        ".env",
+        "dev/.hidden",
+        "LLM/private.txt",
+    ]
+    for path in dangerous_paths:
+        _write_workspace_file(env, path, "local\n")
+    (pushd_dir / "queue.json").write_text(
+        json.dumps([{"path": path, "action": "upload"} for path in dangerous_paths])
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "pushd", "preview", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    excluded = payload["details"]["excluded queue records"]
+    assert result.returncode == 0
+    assert payload["details"]["planned uploads"] == 0
+    assert payload["details"]["excluded queue items"] == len(dangerous_paths)
+    assert [record["path"] for record in excluded] == dangerous_paths
+    assert {record["reason"] for record in excluded} == {"manager ignore rule"}
+
+
 def test_pushd_preview_uses_manager_ignore_exceptions_for_dot_samples(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
