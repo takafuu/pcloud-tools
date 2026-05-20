@@ -1,6 +1,13 @@
 from __future__ import annotations
 
 from conftest import *
+from datetime import timedelta
+from types import SimpleNamespace
+
+from pcloud_tools.service_daemon_plan import (
+    annotate_missing_local_upload_records,
+    prune_stale_missing_local_upload_records,
+)
 
 
 def test_pushd_preview_builds_allowlisted_queue_plan(tmp_path: Path) -> None:
@@ -1378,3 +1385,169 @@ def test_pushd_missing_local_uploads_are_stale_and_do_not_block_downloads(tmp_pa
     assert json.loads(queue_file.read_text()) == [
         {"path": "Documents/existing.txt", "action": "upload", "reason": "fswatch"}
     ]
+
+
+def _missing_local_test_config(env: dict[str, str], ttl_seconds: int = 600) -> SimpleNamespace:
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    return SimpleNamespace(
+        core_dir=workspace,
+        state_dir=state_dir,
+        allowlist_file=workspace / ".pcloud-sync-allowlist",
+        manager_ignore_file=workspace / ".pcloudmanagerignore",
+        default_excludes=(".DS_Store", "**/.DS_Store"),
+        pushd_missing_local_prune_ttl_seconds=ttl_seconds,
+    )
+
+
+def test_pushd_missing_local_cleanup_annotates_fresh_records_without_pruning(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    queue_file = state_dir / "pushd" / "queue.json"
+    queue_file.parent.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/existing.txt", "local\n")
+    observed_at = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
+    enqueued_at = "2026-05-20T07:55:00+00:00"
+    present_record = {
+        "path": "Documents/existing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "enqueued_at": enqueued_at,
+    }
+    excluded_record = {
+        "path": "Documents/.DS_Store",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": "2026-05-20T07:00:00+00:00",
+    }
+    invalid_record = {"path": "../bad", "action": "upload", "missing_since": "2026-05-20T07:00:00+00:00"}
+    queue_file.write_text(
+        json.dumps(
+            [
+                "Documents/legacy-missing.txt",
+                {
+                    "path": "Documents/object-missing.txt",
+                    "action": "upload",
+                    "reason": "fswatch",
+                    "enqueued_at": enqueued_at,
+                },
+                present_record,
+                excluded_record,
+                invalid_record,
+            ]
+        )
+    )
+
+    result = annotate_missing_local_upload_records(
+        _missing_local_test_config(env),
+        queue_file,
+        observed_at=observed_at,
+    )
+
+    queue_payload = json.loads(queue_file.read_text())
+    assert result.before_count == 5
+    assert result.after_count == 5
+    assert result.annotated_count == 2
+    assert result.pruned_count == 0
+    assert queue_payload[0] == {
+        "path": "Documents/legacy-missing.txt",
+        "action": "upload",
+        "reason": "-",
+        "missing_since": observed_at.isoformat(),
+    }
+    assert queue_payload[1]["path"] == "Documents/object-missing.txt"
+    assert queue_payload[1]["enqueued_at"] == enqueued_at
+    assert queue_payload[1]["missing_since"] == observed_at.isoformat()
+    assert queue_payload[2] == present_record
+    assert queue_payload[3] == excluded_record
+    assert queue_payload[4] == invalid_record
+
+
+def test_pushd_missing_local_cleanup_prunes_only_stale_missing_uploads(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    queue_file = state_dir / "pushd" / "queue.json"
+    queue_file.parent.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/present.txt", "local\n")
+    observed_at = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
+    fresh_since = (observed_at - timedelta(seconds=300)).isoformat()
+    stale_since = (observed_at - timedelta(seconds=900)).isoformat()
+    present_record = {
+        "path": "Documents/present.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": stale_since,
+    }
+    fresh_missing_record = {
+        "path": "Documents/fresh-missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": fresh_since,
+    }
+    stale_missing_record = {
+        "path": "Documents/stale-missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": stale_since,
+    }
+    delete_record = {
+        "path": "Documents/deleted.txt",
+        "action": "delete",
+        "reason": "fswatch:Removed",
+        "missing_since": stale_since,
+    }
+    rename_record = {
+        "path": "Documents/renamed.txt",
+        "action": "rename",
+        "reason": "fswatch:Renamed",
+        "missing_since": stale_since,
+    }
+    excluded_record = {
+        "path": "Documents/.DS_Store",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": stale_since,
+    }
+    invalid_record = {"path": "../bad", "action": "upload", "missing_since": stale_since}
+    queue_file.write_text(
+        json.dumps(
+            [
+                present_record,
+                fresh_missing_record,
+                stale_missing_record,
+                {"path": "Documents/new-missing.txt", "action": "upload", "reason": "fswatch"},
+                delete_record,
+                rename_record,
+                excluded_record,
+                invalid_record,
+            ]
+        )
+    )
+
+    result = prune_stale_missing_local_upload_records(
+        _missing_local_test_config(env, ttl_seconds=600),
+        queue_file,
+        observed_at=observed_at,
+    )
+
+    queue_payload = json.loads(queue_file.read_text())
+    assert result.before_count == 8
+    assert result.after_count == 7
+    assert result.annotated_count == 1
+    assert result.pruned_count == 1
+    assert result.fresh_missing_count == 2
+    assert result.stale_missing_count == 1
+    assert present_record in queue_payload
+    assert fresh_missing_record in queue_payload
+    assert stale_missing_record not in queue_payload
+    assert {
+        "path": "Documents/new-missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": observed_at.isoformat(),
+    } in queue_payload
+    assert delete_record in queue_payload
+    assert rename_record in queue_payload
+    assert excluded_record in queue_payload
+    assert invalid_record in queue_payload

@@ -185,6 +185,26 @@ GATES: dict[str, GateSpec] = {
         ),
         summary="pushd excluded queue record cleanup",
     ),
+    "pushd.trash.apply": GateSpec(
+        name="pushd.trash.apply",
+        env_var="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_GATE",
+        expected_value="operator-approved-pushd-trash-apply-v1",
+        approval_flags=(
+            "--operator-reviewed-trash-candidates",
+            "--reviewer-approved-remote-trash-move",
+        ),
+        summary="pushd remote trash move",
+    ),
+    "pushd.trash.purge": GateSpec(
+        name="pushd.trash.purge",
+        env_var="PCLOUD_TOOLS_PUSHD_TRASH_PURGE_GATE",
+        expected_value="operator-approved-pushd-trash-purge-v1",
+        approval_flags=(
+            "--operator-reviewed-trash-status",
+            "--reviewer-approved-permanent-delete",
+        ),
+        summary="pushd remote trash permanent purge",
+    ),
     "transfer.execution": GateSpec(
         name="transfer.execution",
         env_var="PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE",

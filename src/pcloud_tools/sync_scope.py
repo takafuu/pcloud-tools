@@ -37,6 +37,18 @@ def sync_filter_file(config: AppConfig) -> Path:
     return config.state_dir / "bisync.filter"
 
 
+def _normalize_filter_path(value: object) -> str:
+    path = str(value or "").strip().replace("\\", "/")
+    while path.startswith("./"):
+        path = path[2:]
+    while path.startswith("/"):
+        path = path[1:]
+    parts = [part for part in path.split("/") if part]
+    if any(part in {".", ".."} for part in parts):
+        return ""
+    return "/".join(parts)
+
+
 def sync_scope_baseline_info(config: AppConfig) -> ScopeBaseline:
     scope_file = sync_scope_mode_file(config)
     if not scope_file.exists():
@@ -127,6 +139,15 @@ def default_exclude_rules(config: AppConfig) -> tuple[str, ...]:
     return tuple(rules)
 
 
+def hard_safety_filter_rules(config: AppConfig) -> tuple[str, ...]:
+    root = str(config.remote_trash_root or "").strip().rstrip("/")
+    remote = str(config.core_remote or "").strip().rstrip("/")
+    relative = ".pcloud-manager-trash"
+    if remote and root.startswith(f"{remote}/"):
+        relative = _normalize_filter_path(root[len(remote) + 1:]) or relative
+    return (f"- /{relative}/**", f"- /**/{relative}/**")
+
+
 def _filter_rules_for_manager_pattern(pattern: str, *, allow: bool) -> tuple[str, ...]:
     clean = pattern.strip().lstrip("/")
     if not clean:
@@ -171,7 +192,7 @@ def prepare_sync_filter_rules(config: AppConfig, entries: tuple[str, ...]) -> tu
     rules: list[str] = []
     seen: set[str] = set()
 
-    for rule in (*manager_ignore_filter_rules(config), *default_exclude_rules(config)):
+    for rule in (*hard_safety_filter_rules(config), *manager_ignore_filter_rules(config), *default_exclude_rules(config)):
         if rule not in seen:
             seen.add(rule)
             rules.append(rule)

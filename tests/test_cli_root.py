@@ -148,7 +148,7 @@ def test_info_reports_runtime_paths_and_redacted_config(tmp_path: Path) -> None:
     assert config_payload["details"]["pCloud API token"] == "set (redacted)"
     assert "secret-token" not in config.stdout
     assert config_payload["details"]["gate env values"] == "redacted from info; use gates/status commands for gate state"
-def test_top_level_status_and_doctor_surface_pushd_missing_local_warning(tmp_path: Path) -> None:
+def test_top_level_status_and_doctor_surface_pushd_missing_local_details(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -213,23 +213,23 @@ def test_top_level_status_and_doctor_surface_pushd_missing_local_warning(tmp_pat
 
     assert status.returncode == 0
     assert status_payload["status"] == "warning"
-    assert status_payload["details"]["push"] == "queued=2; planned=1; stale=1; manual-review=0"
+    assert status_payload["details"]["push"] == "queued=2; planned=1; missing-local=1; manual-review=0"
     assert status_payload["details"]["push review"] == "pcloud-manager pushd status"
     assert status_payload["details"]["push cleanup"] == "pcloud-manager action pushd.queue.prune-missing-local"
-    assert "pushd warning: missing-local=1" in status_payload["summary"]
-    assert "PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL" in issue_keys
-    assert "push: queued=2; planned=1; stale=1; manual-review=0" in status_human.stdout
+    assert "pushd warning: missing-local=1" not in status_payload["summary"]
+    assert "PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL" not in issue_keys
+    assert "push: queued=2; planned=1; missing-local=1; manual-review=0" in status_human.stdout
     assert "push cleanup: pcloud-manager action pushd.queue.prune-missing-local" in status_human.stdout
     assert doctor.returncode == 0
     assert doctor_payload["status"] == "warning"
-    assert doctor_payload["details"]["summary"] == "queue warning"
-    assert doctor_payload["details"]["suspected cause"] == "pushd queue has missing local upload records"
-    assert doctor_payload["details"]["push warning"] == "missing local upload records=1"
+    assert doctor_payload["details"]["summary"] != "queue warning"
+    assert doctor_payload["details"]["suspected cause"] != "pushd queue has missing local upload records"
+    assert doctor_payload["details"]["push missing local detail"] == "missing local upload records=1"
     assert doctor_human.returncode == 0
     assert "next:" in doctor_human.stdout
     assert "checks:" in doctor_human.stdout
     assert "push cleanup: pcloud-manager action pushd.queue.prune-missing-local" not in doctor_human.stdout
-    assert "ignore stale push records: pcloud-manager action pushd.queue.prune-missing-local" in doctor_human.stdout
+    assert "ignore missing local push records: pcloud-manager action pushd.queue.prune-missing-local" in doctor_human.stdout
     assert "config dir:" not in doctor_human.stdout
     assert doctor_detail.returncode == 0
     assert "config dir:" in doctor_detail.stdout

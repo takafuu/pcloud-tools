@@ -77,8 +77,49 @@ class DryRunStateResult:
     cursor: str
 
 
+@dataclass(frozen=True)
+class MissingLocalQueueCleanupResult:
+    file: Path
+    before_count: int
+    after_count: int
+    annotated_count: int
+    pruned_count: int
+    fresh_missing_count: int
+    stale_missing_count: int
+    issue: ConfigIssue | None = None
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _coerce_utc_datetime(value: datetime | str | None) -> datetime:
+    if value is None:
+        return datetime.now(timezone.utc)
+    if isinstance(value, str):
+        normalized = value.strip()
+        if normalized.endswith("Z"):
+            normalized = f"{normalized[:-1]}+00:00"
+        value = datetime.fromisoformat(normalized)
+    if value.tzinfo is None:
+        return value.replace(tzinfo=timezone.utc)
+    return value.astimezone(timezone.utc)
+
+
+def _parse_utc_datetime(value: object) -> datetime | None:
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        return _coerce_utc_datetime(value)
+    except ValueError:
+        return None
+
+
+def _pushd_missing_local_prune_ttl_seconds(config: AppConfig) -> int:
+    try:
+        return max(0, int(getattr(config, "pushd_missing_local_prune_ttl_seconds", 600)))
+    except (TypeError, ValueError):
+        return 600
 
 
 def _read_json_list(path: Path, key_prefix: str) -> tuple[list[Any], ConfigIssue | None]:
@@ -253,6 +294,211 @@ def remove_plan_records(path: Path, key_prefix: str, target_path: str, *, write:
     return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
 
 
+def remove_plan_record_exact(
+    path: Path,
+    key_prefix: str,
+    target_path: str,
+    target_action: str,
+    *,
+    target_reason: str | None = None,
+    write: bool = True,
+    max_records: int | None = 1,
+) -> PlanUpdateResult:
+    payload, issue = _read_json_list(path, key_prefix)
+    if issue:
+        return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
+    normalized_target = normalize_plan_path(target_path)
+    normalized_action = str(target_action or "").strip()
+    updated: list[Any] = []
+    removed = 0
+    for item in payload:
+        record = _record_from_item(item, "upload")
+        matches = (
+            record.path == normalized_target
+            and record.action == normalized_action
+            and (target_reason is None or record.reason == target_reason)
+            and (max_records is None or removed < max_records)
+        )
+        if matches:
+            removed += 1
+            continue
+        updated.append(item)
+    if write:
+        atomic_write_json(path, updated)
+    return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
+
+
+def _configured_trash_relative_root(config: AppConfig) -> str:
+    root = str(getattr(config, "remote_trash_root", "") or "").strip().rstrip("/")
+    remote = str(getattr(config, "core_remote", "") or "").strip().rstrip("/")
+    if remote and root.startswith(f"{remote}/"):
+        return normalize_plan_path(root[len(remote) + 1:]) or ".pcloud-manager-trash"
+    return ".pcloud-manager-trash"
+
+
+def _is_configured_trash_path(config: AppConfig, path: str) -> bool:
+    root = _configured_trash_relative_root(config)
+    clean = normalize_plan_path(path)
+    return clean == root or clean.startswith(f"{root}/")
+
+
+def _is_planned_pushd_upload_record(config: AppConfig, queue_file: Path, record: PlanRecord) -> bool:
+    if record.action != "upload":
+        return False
+    plan = build_pushd_plan_from_records(config, queue_file, (record,), total=1)
+    return bool(plan.upload_records)
+
+
+def _queue_item_missing_since(item: object) -> datetime | None:
+    if not isinstance(item, dict):
+        return None
+    return _parse_utc_datetime(item.get("missing_since"))
+
+
+def _queue_item_with_missing_since(item: object, record: PlanRecord, missing_since: str) -> object:
+    if isinstance(item, dict):
+        updated = dict(item)
+        updated["missing_since"] = missing_since
+        return updated
+    payload = _record_payload(record.path, record.action, record.reason)
+    payload["missing_since"] = missing_since
+    return payload
+
+
+def annotate_missing_local_upload_records(
+    config: AppConfig,
+    queue_file: Path,
+    key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = True,
+) -> MissingLocalQueueCleanupResult:
+    payload, issue = _read_json_list(queue_file, key_prefix)
+    if issue:
+        return MissingLocalQueueCleanupResult(
+            file=queue_file,
+            before_count=0,
+            after_count=0,
+            annotated_count=0,
+            pruned_count=0,
+            fresh_missing_count=0,
+            stale_missing_count=0,
+            issue=issue,
+        )
+
+    now = _coerce_utc_datetime(observed_at)
+    missing_since = now.isoformat()
+    updated: list[object] = []
+    annotated_count = 0
+    fresh_missing_count = 0
+    for item in payload:
+        record = _record_from_item(item, "upload")
+        if (
+            _is_planned_pushd_upload_record(config, queue_file, record)
+            and not (config.core_dir / record.path).exists()
+        ):
+            fresh_missing_count += 1
+            if _queue_item_missing_since(item) is None:
+                updated.append(_queue_item_with_missing_since(item, record, missing_since))
+                annotated_count += 1
+                continue
+        updated.append(item)
+
+    if write and updated != payload:
+        atomic_write_json(queue_file, updated)
+    return MissingLocalQueueCleanupResult(
+        file=queue_file,
+        before_count=len(payload),
+        after_count=len(updated),
+        annotated_count=annotated_count,
+        pruned_count=0,
+        fresh_missing_count=fresh_missing_count,
+        stale_missing_count=0,
+    )
+
+
+def prune_stale_missing_local_upload_records(
+    config: AppConfig,
+    queue_file: Path,
+    key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = True,
+) -> MissingLocalQueueCleanupResult:
+    payload, issue = _read_json_list(queue_file, key_prefix)
+    if issue:
+        return MissingLocalQueueCleanupResult(
+            file=queue_file,
+            before_count=0,
+            after_count=0,
+            annotated_count=0,
+            pruned_count=0,
+            fresh_missing_count=0,
+            stale_missing_count=0,
+            issue=issue,
+        )
+
+    now = _coerce_utc_datetime(observed_at)
+    ttl_seconds = _pushd_missing_local_prune_ttl_seconds(config)
+    updated: list[object] = []
+    annotated_count = 0
+    pruned_count = 0
+    fresh_missing_count = 0
+    stale_missing_count = 0
+    for item in payload:
+        record = _record_from_item(item, "upload")
+        if not _is_planned_pushd_upload_record(config, queue_file, record):
+            updated.append(item)
+            continue
+        if (config.core_dir / record.path).exists():
+            updated.append(item)
+            continue
+
+        missing_since = _queue_item_missing_since(item)
+        if missing_since is None:
+            updated.append(_queue_item_with_missing_since(item, record, now.isoformat()))
+            annotated_count += 1
+            fresh_missing_count += 1
+            continue
+
+        if (now - missing_since).total_seconds() >= ttl_seconds:
+            pruned_count += 1
+            stale_missing_count += 1
+            continue
+
+        fresh_missing_count += 1
+        updated.append(item)
+
+    if write and updated != payload:
+        atomic_write_json(queue_file, updated)
+    return MissingLocalQueueCleanupResult(
+        file=queue_file,
+        before_count=len(payload),
+        after_count=len(updated),
+        annotated_count=annotated_count,
+        pruned_count=pruned_count,
+        fresh_missing_count=fresh_missing_count,
+        stale_missing_count=stale_missing_count,
+    )
+
+
+def cleanup_missing_local_upload_records_for_executor_start(
+    config: AppConfig,
+    queue_file: Path,
+    key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = True,
+) -> MissingLocalQueueCleanupResult:
+    return prune_stale_missing_local_upload_records(
+        config,
+        queue_file,
+        key_prefix,
+        observed_at=observed_at,
+        write=write,
+    )
+
+
 def record_dry_run_state(
     state: ServiceDaemonState,
     service_name: str,
@@ -314,6 +560,8 @@ def build_pushd_plan_from_records(
     for record in records:
         if not record.path:
             invalid.append(record)
+        elif _is_configured_trash_path(config, record.path):
+            excluded.append(PlanRecord(record.path, record.action, "remote trash root"))
         elif scope.allowlist_status != "loaded" or not _matches_allowlist(record.path, scope.entries):
             excluded.append(PlanRecord(record.path, record.action, "outside allowlist"))
         elif _matches_exclude(record.path, config.default_excludes):
@@ -383,6 +631,8 @@ def build_diffd_plan_from_records(
     for record in (*remote_records, *pending_records):
         if not record.path:
             skipped_records.append(record)
+        elif _is_configured_trash_path(config, record.path):
+            skipped_records.append(PlanRecord(record.path, record.action, "remote trash root"))
         elif scope.allowlist_status != "loaded" or not _matches_allowlist(record.path, scope.entries):
             skipped_records.append(PlanRecord(record.path, record.action, "outside allowlist"))
         elif _matches_exclude(record.path, config.default_excludes):

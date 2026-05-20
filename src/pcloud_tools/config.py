@@ -53,6 +53,9 @@ class AppConfig:
     allowlist_file: Path
     manager_ignore_file: Path
     default_excludes: tuple[str, ...]
+    remote_trash_root: str
+    remote_trash_index_file: Path
+    remote_trash_warn_bytes: int
     autosync_label: str
     autosync_plist: Path
     indexer_bin: Path
@@ -67,6 +70,7 @@ class AppConfig:
     sync_migration_gate: str
     transfer_exec_timeout_seconds: int
     download_suppression_ttl_seconds: int
+    pushd_missing_local_prune_ttl_seconds: int
     pushd_debounce_seconds: int
     pushd_queue_limit: int
     diffd_poll_interval_seconds: int
@@ -119,6 +123,9 @@ CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("allowlist_file", "PCLOUD_TOOLS_ALLOWLIST_FILE", "path", "{home}/p-core/.pcloud-sync-allowlist", "{workspace_root}/.pcloud-sync-allowlist"),
     FieldSpec("manager_ignore_file", "PCLOUD_TOOLS_MANAGER_IGNORE_FILE", "path", "{home}/p-core/.pcloudmanagerignore", "{workspace_root}/.pcloudmanagerignore"),
     FieldSpec("default_excludes", "PCLOUD_TOOLS_DEFAULT_EXCLUDES", "csv", "config/dotfiles/.ssh/agent/**,.DS_Store,**/.DS_Store"),
+    FieldSpec("remote_trash_root", "PCLOUD_TOOLS_REMOTE_TRASH_ROOT", "str", "pcloud:core/.pcloud-manager-trash"),
+    FieldSpec("remote_trash_index_file", "PCLOUD_TOOLS_REMOTE_TRASH_INDEX_FILE", "path", "{base_state_dir}/pushd/trash-index.sqlite"),
+    FieldSpec("remote_trash_warn_bytes", "PCLOUD_TOOLS_REMOTE_TRASH_WARN_BYTES", "int", "5368709120"),
     FieldSpec("autosync_label", "PCLOUD_TOOLS_AUTOSYNC_LABEL", "str", "com.takafumi.pcloud-bisync", "com.example.pcloud-bisync.dev"),
     FieldSpec("autosync_plist", "PCLOUD_TOOLS_AUTOSYNC_PLIST", "path", "{home}/Library/LaunchAgents/com.takafumi.pcloud-bisync.plist", "{workspace_root}/.dev-state/com.example.pcloud-bisync.dev.plist"),
     FieldSpec("indexer_bin", "PCLOUD_TOOLS_INDEXER_BIN", "path", "{home}/.zsh/functions/pcloud-indexer.py", "{workspace_root}/scripts/pcloud-indexer.py"),
@@ -133,6 +140,7 @@ CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("sync_migration_gate", "PCLOUD_TOOLS_SYNC_MIGRATION_GATE", "str", ""),
     FieldSpec("transfer_exec_timeout_seconds", "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", "int", "5"),
     FieldSpec("download_suppression_ttl_seconds", "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS", "int", "86400"),
+    FieldSpec("pushd_missing_local_prune_ttl_seconds", "PCLOUD_TOOLS_PUSHD_MISSING_LOCAL_PRUNE_TTL_SECONDS", "int", "600"),
     FieldSpec("pushd_debounce_seconds", "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", "int", "3"),
     FieldSpec("pushd_queue_limit", "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT", "int", "1000"),
     FieldSpec("diffd_poll_interval_seconds", "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", "int", "60"),
@@ -328,6 +336,7 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
     for key, value in (
         ("PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", config.transfer_exec_timeout_seconds),
         ("PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS", config.download_suppression_ttl_seconds),
+        ("PCLOUD_TOOLS_PUSHD_MISSING_LOCAL_PRUNE_TTL_SECONDS", config.pushd_missing_local_prune_ttl_seconds),
         ("PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", config.pushd_debounce_seconds),
         ("PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", config.diffd_poll_interval_seconds),
         ("PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS", config.pcloud_api_timeout_seconds),
@@ -356,6 +365,50 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
                 key="PCLOUD_TOOLS_CORE_REMOTE",
                 level="error",
                 message="core remote must contain ':'",
+            )
+        )
+    remote_trash_root = config.remote_trash_root.strip().rstrip("/")
+    core_remote = config.core_remote.strip().rstrip("/")
+    if ":" not in remote_trash_root:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_REMOTE_TRASH_ROOT",
+                level="error",
+                message="remote trash root must contain ':'",
+            )
+        )
+    elif not remote_trash_root.startswith(f"{core_remote}/"):
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_REMOTE_TRASH_ROOT",
+                level="error",
+                message="remote trash root must be under the configured core remote",
+            )
+        )
+    else:
+        trash_relative = remote_trash_root[len(core_remote) + 1:].strip("/")
+        if not trash_relative:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_REMOTE_TRASH_ROOT",
+                    level="error",
+                    message="remote trash root must not be the core remote root",
+                )
+            )
+        if any(part in {"", ".", ".."} for part in trash_relative.split("/")):
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_REMOTE_TRASH_ROOT",
+                    level="error",
+                    message="remote trash root contains an unsafe path component",
+                )
+            )
+    if config.remote_trash_warn_bytes < 0:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_REMOTE_TRASH_WARN_BYTES",
+                level="error",
+                message=f"value must be >= 0: {config.remote_trash_warn_bytes}",
             )
         )
     if not (config.pcloud_api_base_url.startswith("https://") or config.pcloud_api_base_url.startswith("http://")):
@@ -521,6 +574,8 @@ def render_manager_ignore_template() -> str:
         "**/.*\n"
         "\n"
         "# Secrets/state stay local by default\n"
+        ".pcloud-manager-trash/**\n"
+        "**/.pcloud-manager-trash/**\n"
         ".env\n"
         "**/.env\n"
         ".ssh/\n"

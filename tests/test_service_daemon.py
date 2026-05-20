@@ -59,7 +59,7 @@ def test_service_daemon_pid_zero_is_invalid_not_running(tmp_path: Path) -> None:
     assert payload["details"]["process state"] == "not recorded"
     assert payload["details"]["pid"] == "-"
     assert payload["summary"] == (
-        "pushd: not recorded; queued: 0; planned: 0; stale: 0; manual-review: 0; launchd: not_loaded"
+        "pushd: not recorded; queued: 0; planned: 0; missing-local: 0; manual-review: 0; launchd: not_loaded"
     )
     assert "PCLOUD_TOOLS_PUSHD_PID" in [issue["key"] for issue in payload["issues"]]
 def test_service_daemon_status_summarizes_last_transfer_state(tmp_path: Path) -> None:

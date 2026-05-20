@@ -150,7 +150,13 @@ def parse_diff_response_fixture(path: Path, initial_folder_paths: dict[str, str]
 
 
 def diff_changes_to_records(changes: tuple[DiffdRemoteChange, ...]) -> tuple[PlanRecord, ...]:
-    return tuple(
-        PlanRecord(path=change.path, action="download", reason=f"diff:{change.event}")
-        for change in changes
-    )
+    records: list[PlanRecord] = []
+    for change in changes:
+        event = change.event.strip().lower().replace("_", "-")
+        action = "download"
+        if "delete" in event or "remove" in event:
+            action = "delete"
+        elif "rename" in event or "move" in event:
+            action = "rename"
+        records.append(PlanRecord(path=change.path, action=action, reason=f"diff:{change.event}"))
+    return tuple(records)

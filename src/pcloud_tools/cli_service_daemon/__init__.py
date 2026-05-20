@@ -13,7 +13,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -97,6 +97,16 @@ from .transfer_render import (
 )
 from ..output import CommandReport, ReportAction, render_report
 from ..rclone_config import load_rclone_pcloud_credentials, rclone_config_path
+from ..remote_trash import (
+    build_trash_paths,
+    configured_trash_relative_root,
+    is_configured_trash_path,
+    list_index_records,
+    metadata_payload,
+    read_index_record,
+    update_index_record,
+    write_index_record,
+)
 from ..pushd_events import InvalidPushdEvent, fswatch_events_to_records, parse_fswatch_event_line, parse_fswatch_fixture
 from ..runtime import RuntimePaths, action_entrypoint_command, detect_runtime_paths
 from ..service_daemon_plan import (
@@ -111,8 +121,10 @@ from ..service_daemon_plan import (
     build_pushd_plan_from_records,
     clear_plan_records,
     normalize_plan_path,
+    cleanup_missing_local_upload_records_for_executor_start,
     record_dry_run_state,
     record_payloads,
+    remove_plan_record_exact,
     remove_plan_records,
 )
 from ..service_daemon_state import ServiceDaemonState, read_service_daemon_state
@@ -193,6 +205,55 @@ def _add_pushd_backfill_parser(subparsers: argparse._SubParsersAction) -> None:
     )
     preview_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     preview_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+
+def _add_pushd_trash_parser(subparsers: argparse._SubParsersAction) -> None:
+    trash_parser = subparsers.add_parser(
+        "trash",
+        help="Inspect and apply remote-trash handling for manual-review delete/rename queue records.",
+    )
+    trash_subparsers = trash_parser.add_subparsers(dest="trash_command")
+
+    status_parser = trash_subparsers.add_parser(
+        "status", help="Read-only status for the remote trash root and local trash index."
+    )
+    status_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    status_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+    search_parser = trash_subparsers.add_parser(
+        "search", help="Search the local trash index and fallback metadata by path or object id."
+    )
+    search_parser.add_argument("query", nargs="?", default="", help="Path, filename, object id, or metadata text.")
+    search_parser.add_argument("--limit", type=int, default=50, help="Maximum matching index rows to return.")
+    search_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    search_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+    apply_parser = trash_subparsers.add_parser(
+        "apply", help="Preview or execute rclone moveto for manual-review delete/rename queue records."
+    )
+    apply_parser.add_argument("--path", help="Limit apply candidates to one relative queue path.")
+    apply_parser.add_argument("--limit", type=int, default=1, help="Maximum candidates to apply in one command.")
+    apply_parser.add_argument("--execute", action="store_true", help="Run guarded rclone moveto and update trash state.")
+    add_gate_review_args(apply_parser, GATES["pushd.trash.apply"])
+    apply_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    apply_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+    purge_parser = trash_subparsers.add_parser(
+        "purge", help="Preview or permanently delete objects that are already under the remote trash root."
+    )
+    purge_parser.add_argument("--older-than", help="Only purge index entries older than a duration such as 30d.")
+    purge_parser.add_argument("--limit", type=int, default=100, help="Maximum trash objects to purge.")
+    purge_parser.add_argument("--execute", action="store_true", help="Run guarded permanent remote delete.")
+    add_gate_review_args(purge_parser, GATES["pushd.trash.purge"])
+    purge_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    purge_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+    restore_parser = trash_subparsers.add_parser(
+        "restore-preview", help="Preview a planned restore target and conflict status without mutating state."
+    )
+    restore_parser.add_argument("id", help="Trash object id from the local index.")
+    restore_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    restore_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
 
 def _add_transfer_automation_gate_parser(
@@ -424,6 +485,7 @@ def _add_service_parser(
 
     if service.name == "pushd":
         _add_pushd_backfill_parser(service_subparsers)
+        _add_pushd_trash_parser(service_subparsers)
 
         fswatch_parser = service_subparsers.add_parser(
             "fswatch", help="Preview pushd fswatch fixture events without starting fswatch."
@@ -961,6 +1023,8 @@ def cmd_service_daemon(args: argparse.Namespace, paths: RuntimePaths) -> int | N
         return cmd_service_launchd(args, paths, service)
     if service.name == "pushd" and args.service_command == "backfill":
         return cmd_pushd_backfill(args, paths)
+    if service.name == "pushd" and args.service_command == "trash":
+        return cmd_pushd_trash(args, paths)
     if service.name == "pushd" and args.service_command == "fswatch":
         return cmd_pushd_fswatch(args, paths)
     if service.name == "diffd" and args.service_command == "diff":
@@ -1153,6 +1217,33 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
                 id="pushd.backfill.preview",
                 label="Preview pushd backfill candidates",
                 command=action_command(paths, "pushd.backfill.preview"),
+                terminal=True,
+                refresh=False,
+            )
+        )
+        actions.append(
+            ReportAction(
+                id="pushd.trash.status.refresh",
+                label="Refresh pushd trash status",
+                command=action_command(paths, "pushd.trash.status.refresh"),
+                terminal=False,
+                refresh=True,
+            )
+        )
+        actions.append(
+            ReportAction(
+                id="pushd.trash.search",
+                label="Search pushd trash index",
+                command=action_command(paths, "pushd.trash.search"),
+                terminal=True,
+                refresh=False,
+            )
+        )
+        actions.append(
+            ReportAction(
+                id="pushd.trash.apply.preview",
+                label="Preview pushd trash apply",
+                command=action_command(paths, "pushd.trash.apply.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -1510,27 +1601,13 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
         + last_run_issues
         + plan_issues
     )
-    if service.name == "pushd" and int(plan_details.get("missing local upload records", 0) or 0) > 0:
-        issues = sort_issues(
-            [
-                *issues,
-                ConfigIssue(
-                    key="PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL",
-                    level="warning",
-                    message=(
-                        "pushd queue has upload records whose local source file is missing; "
-                        "review or ignore them from the queue cleanup action"
-                    ),
-                ),
-            ]
-        )
     queued_label = "queued" if service.name == "pushd" else "remote"
     queued_count = plan_details.get("pending queue items", plan_details.get("remote changes", state.queue_length))
     planned_count = plan_details.get("planned uploads", plan_details.get("planned downloads", 0))
     missing_count = plan_details.get("missing local upload records", 0) if service.name == "pushd" else 0
     manual_count = plan_details.get("manual review transfer records", 0)
     if service.name == "pushd":
-        plan_summary_fragment = f"planned: {planned_count}; stale: {missing_count}; manual-review: {manual_count}"
+        plan_summary_fragment = f"planned: {planned_count}; missing-local: {missing_count}; manual-review: {manual_count}"
     else:
         plan_summary_fragment = f"planned: {planned_count}; manual-review: {manual_count}"
     return CommandReport(
@@ -8737,12 +8814,34 @@ def _transfer_executor_run_report(
 ) -> CommandReport:
     execute = getattr(args, "execute", False)
     consume_on_success = getattr(args, "consume_on_success", False)
+    startup_cleanup_details: dict[str, object] = {"enabled": "no"}
+    startup_cleanup_issues: list[ConfigIssue] = []
+    if service.name == "pushd" and execute:
+        load_result = load_config(paths)
+        state = read_service_daemon_state(load_result.config, "pushd")
+        cleanup = cleanup_missing_local_upload_records_for_executor_start(
+            load_result.config,
+            state.queue_file,
+        )
+        update_issue = _state_update_issue(cleanup.issue)
+        if update_issue:
+            startup_cleanup_issues.append(update_issue)
+        startup_cleanup_details = {
+            "enabled": "yes",
+            "queue file": str(cleanup.file),
+            "before": cleanup.before_count,
+            "after": cleanup.after_count,
+            "annotated": cleanup.annotated_count,
+            "pruned": cleanup.pruned_count,
+            "fresh missing": cleanup.fresh_missing_count,
+            "stale missing": cleanup.stale_missing_count,
+        }
     preview_report = _service_transfer_report(paths, service, transfer_command="run", execute=False)
     preview_details = dict(preview_report.details)
     manual_review_count = int(preview_details.get("manual review transfer records") or 0)
     planned_commands = preview_details.get("planned transfer commands")
     planned_command_count = len(planned_commands) if isinstance(planned_commands, list) else 0
-    issues = _config_issues_from_report(preview_report)
+    issues = [*_config_issues_from_report(preview_report), *startup_cleanup_issues]
 
     manual_review_blocked = execute and manual_review_count > 0
     if manual_review_blocked:
@@ -8758,9 +8857,9 @@ def _transfer_executor_run_report(
         )
 
     transfer_report = preview_report
-    if execute and not manual_review_blocked:
+    if execute and not manual_review_blocked and not has_errors(startup_cleanup_issues):
         transfer_report = _service_transfer_report(paths, service, transfer_command="run", execute=True)
-        issues = _config_issues_from_report(transfer_report)
+        issues = [*_config_issues_from_report(transfer_report), *startup_cleanup_issues]
 
     transfer_errors = any(issue.level == "error" for issue in transfer_report.issues)
     consume_report: CommandReport | None = None
@@ -8807,6 +8906,7 @@ def _transfer_executor_run_report(
         "consume status": consume_report.status if consume_report else "-",
         "consume state writes": consume_state_writes,
         "records consumed": consume_details.get("records to remove", 0) if consume_report else 0,
+        "missing local startup cleanup": startup_cleanup_details,
         "blocked operations": [
             "real rclone/pCloud transfer automation",
             "normal sync/resync",
@@ -8937,6 +9037,635 @@ def _plan_record_from_args(args: argparse.Namespace, default_action: str, key: s
     if not reason:
         reason = "manual"
     return PlanRecord(path=path, action=action or default_action, reason=reason), issues
+
+
+def _trash_action_candidate(record: PlanRecord, config: AppConfig) -> tuple[bool, str]:
+    action = record.action.strip().lower().replace("_", "-")
+    if is_configured_trash_path(record.path, remote_trash_root=config.remote_trash_root, core_remote=config.core_remote):
+        return False, "path is under remote trash root"
+    if "delete" in action or "remove" in action:
+        return True, "local delete"
+    if "rename" in action or "move" in action:
+        if not (config.core_dir / record.path).exists():
+            return True, "rename old path"
+        return False, "rename path still exists locally"
+    return False, "not a delete/rename action"
+
+
+def _configured_trash_paths(config: AppConfig, record: PlanRecord):
+    paths = build_trash_paths(record.path)
+    configured_root = configured_trash_relative_root(config.remote_trash_root, config.core_remote)
+    if configured_root == ".pcloud-manager-trash":
+        return paths
+    object_path = paths.object_path.replace(".pcloud-manager-trash", configured_root, 1)
+    metadata_path = f"{object_path}.json"
+    return replace(paths, object_path=object_path, metadata_path=metadata_path)
+
+
+def _pushd_trash_candidate_records(config: AppConfig, state: ServiceDaemonState) -> tuple[list[dict[str, object]], list[ConfigIssue]]:
+    plan, scope = build_pushd_plan(config, state)
+    issues = list(plan.issues) + scope_issues(scope)
+    candidates: list[dict[str, object]] = []
+    for record in plan.upload_records:
+        is_candidate, reason = _trash_action_candidate(record, config)
+        if not is_candidate:
+            continue
+        trash_paths = _configured_trash_paths(config, record)
+        candidates.append(
+            {
+                "path": record.path,
+                "action": record.action,
+                "reason": record.reason,
+                "trash reason": reason,
+                "item_id": trash_paths.item_id,
+                "original_name": trash_paths.display_name,
+                "remote_source": _remote_path(config.core_remote, record.path),
+                "trash_object": _remote_path(config.core_remote, trash_paths.object_path),
+                "trash_metadata": _remote_path(config.core_remote, trash_paths.metadata_path),
+                "trash_object_path": trash_paths.object_path,
+                "trash_metadata_path": trash_paths.metadata_path,
+                "created_at": trash_paths.created_at,
+            }
+        )
+    return candidates, issues
+
+
+def _trash_index_search(config: AppConfig, query: str, *, limit: int) -> tuple[list[dict[str, object]], ConfigIssue | None]:
+    records = list_index_records(config.remote_trash_index_file)
+    normalized_query = query.strip().lower()
+    matches: list[dict[str, object]] = []
+    for record in records:
+        haystack = " ".join(
+            [
+                record.item_id,
+                record.original_path,
+                record.display_name,
+                record.object_path,
+                record.status,
+                json.dumps(record.metadata_payload, ensure_ascii=False, sort_keys=True),
+            ]
+        ).lower()
+        if normalized_query and normalized_query not in haystack:
+            continue
+        matches.append(
+            {
+                "item_id": record.item_id,
+                "original_path": record.original_path,
+                "display_name": record.display_name,
+                "object_path": record.object_path,
+                "metadata_path": record.metadata_path,
+                "operation": record.operation,
+                "created_at": record.created_at,
+                "updated_at": record.updated_at,
+                "status": record.status,
+            }
+        )
+        if len(matches) >= limit:
+            break
+    return matches, None
+
+
+def _trash_remote_sidecar_search(
+    config: AppConfig,
+    query: str,
+    *,
+    limit: int,
+) -> tuple[list[dict[str, object]], list[ConfigIssue]]:
+    normalized_query = query.strip().lower()
+    list_command = [_preview_rclone_bin(config), "lsf", "--recursive", config.remote_trash_root]
+    try:
+        listed = subprocess.run(list_command, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        return [], [
+            ConfigIssue(
+                key="PCLOUD_TOOLS_REMOTE_TRASH_SEARCH",
+                level="warning",
+                message=f"cannot scan remote trash metadata: {exc}",
+            )
+        ]
+    if listed.returncode != 0:
+        return [], [
+            ConfigIssue(
+                key="PCLOUD_TOOLS_REMOTE_TRASH_SEARCH",
+                level="warning",
+                message=f"remote trash metadata scan failed with exit {listed.returncode}: {listed.stderr.strip()}",
+            )
+        ]
+    configured_root = configured_trash_relative_root(config.remote_trash_root, config.core_remote)
+    matches: list[dict[str, object]] = []
+    issues: list[ConfigIssue] = []
+    for raw_line in listed.stdout.splitlines():
+        relative = normalize_plan_path(raw_line.rstrip("/"))
+        if not relative:
+            continue
+        object_path = normalize_plan_path(f"{configured_root}/{relative}")
+        if not raw_line.endswith(".json"):
+            if normalized_query and normalized_query not in raw_line.lower() and normalized_query not in object_path.lower():
+                continue
+            matches.append(
+                {
+                    "item_id": "-",
+                    "original_path": "-",
+                    "display_name": Path(relative).name,
+                    "object_path": object_path,
+                    "metadata_path": "-",
+                    "operation": "remote-filename-match",
+                    "created_at": "-",
+                    "updated_at": "-",
+                    "status": "remote-sidecar-fallback",
+                }
+            )
+        else:
+            sidecar_remote = f"{config.remote_trash_root.rstrip('/')}/{relative}"
+            try:
+                sidecar = subprocess.run(
+                    [_preview_rclone_bin(config), "cat", sidecar_remote],
+                    check=False,
+                    capture_output=True,
+                    text=True,
+                )
+            except OSError as exc:
+                issues.append(
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_REMOTE_TRASH_SEARCH",
+                        level="warning",
+                        message=f"cannot read remote trash sidecar {sidecar_remote}: {exc}",
+                    )
+                )
+                continue
+            if sidecar.returncode != 0:
+                issues.append(
+                    ConfigIssue(
+                        key="PCLOUD_TOOLS_REMOTE_TRASH_SEARCH",
+                        level="warning",
+                        message=f"remote trash sidecar read failed for {sidecar_remote}",
+                    )
+                )
+                continue
+            try:
+                payload = json.loads(sidecar.stdout or "{}")
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(payload, dict):
+                continue
+            haystack = json.dumps(payload, ensure_ascii=False, sort_keys=True).lower()
+            if normalized_query and normalized_query not in haystack and normalized_query not in relative.lower():
+                continue
+            matches.append(
+                {
+                    "item_id": str(payload.get("item_id") or payload.get("id") or "-"),
+                    "original_path": str(payload.get("original_path") or "-"),
+                    "display_name": str(payload.get("display_name") or payload.get("original_name") or Path(relative).name),
+                    "object_path": str(payload.get("object_path") or payload.get("trash_object_path") or object_path.removesuffix(".json")),
+                    "metadata_path": str(payload.get("metadata_path") or object_path),
+                    "operation": str(payload.get("operation") or "-"),
+                    "created_at": str(payload.get("created_at") or payload.get("trashed_at") or "-"),
+                    "updated_at": "-",
+                    "status": "remote-sidecar-fallback",
+                }
+            )
+        if len(matches) >= limit:
+            break
+    return matches, issues
+
+
+def _run_rclone_json(command: list[str], key: str) -> tuple[dict[str, object], ConfigIssue | None]:
+    try:
+        result = subprocess.run(command, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        return {}, ConfigIssue(key=key, level="warning", message=f"cannot run {' '.join(command)}: {exc}")
+    if result.returncode != 0:
+        return {}, ConfigIssue(
+            key=key,
+            level="warning",
+            message=f"{' '.join(command)} exited {result.returncode}: {result.stderr.strip()}",
+        )
+    try:
+        payload = json.loads(result.stdout or "{}")
+    except json.JSONDecodeError as exc:
+        return {}, ConfigIssue(key=key, level="warning", message=f"cannot parse rclone JSON output: {exc}")
+    return payload if isinstance(payload, dict) else {}, None
+
+
+def _trash_status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    issues = list(load_result.issues)
+    index_records = list_index_records(config.remote_trash_index_file)
+    active_records = [record for record in index_records if record.status == "active"]
+    size_command = [_preview_rclone_bin(config), "size", "--json", config.remote_trash_root]
+    size_payload, size_issue = _run_rclone_json(size_command, "PCLOUD_TOOLS_REMOTE_TRASH_SIZE")
+    if size_issue:
+        issues.append(size_issue)
+    bytes_count = int(size_payload.get("bytes", 0) or 0)
+    objects_count = int(size_payload.get("count", 0) or 0)
+    if config.remote_trash_warn_bytes and bytes_count >= config.remote_trash_warn_bytes:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_REMOTE_TRASH_WARN_BYTES",
+                level="warning",
+                message=f"remote trash size {bytes_count} bytes exceeds warning threshold {config.remote_trash_warn_bytes}",
+            )
+        )
+    created = [record.created_at for record in active_records]
+    details = {
+        "planned action": "inspect remote trash status",
+        "remote trash root": config.remote_trash_root,
+        "index file": str(config.remote_trash_index_file),
+        "indexed records": len(index_records),
+        "indexed active records": len(active_records),
+        "rclone size command": size_command,
+        "trash object count": objects_count,
+        "trash bytes": bytes_count,
+        "warning threshold bytes": config.remote_trash_warn_bytes,
+        "oldest indexed item": min(created) if created else "-",
+        "newest indexed item": max(created) if created else "-",
+        "state writes": "none",
+    }
+    issues = sort_issues(issues)
+    return CommandReport(
+        command="pushd trash status",
+        status=status_from_issues(issues),
+        summary="pushd remote trash status is ready",
+        details=details,
+        issues=report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
+def _trash_search_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    limit = max(1, int(getattr(args, "limit", 50) or 50))
+    query = str(getattr(args, "query", "") or "")
+    matches, search_issue = _trash_index_search(config, query, limit=limit)
+    issues = list(load_result.issues)
+    if search_issue:
+        issues.append(search_issue)
+    fallback_matches: list[dict[str, object]] = []
+    if len(matches) < limit:
+        fallback_matches, fallback_issues = _trash_remote_sidecar_search(config, query, limit=limit - len(matches))
+        issues.extend(fallback_issues)
+        matches.extend(fallback_matches)
+    details = {
+        "planned action": "search remote trash local index and sidecar fallback",
+        "query": query,
+        "limit": limit,
+        "index file": str(config.remote_trash_index_file),
+        "matches": matches,
+        "match count": len(matches),
+        "remote fallback matches": len(fallback_matches),
+        "state writes": "none",
+    }
+    issues = sort_issues(issues)
+    return CommandReport(
+        command="pushd trash search",
+        status=status_from_issues(issues),
+        summary=f"pushd remote trash search found {len(matches)} item(s)",
+        details=details,
+        issues=report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
+def _trash_rclone_bin(paths: RuntimePaths, config: AppConfig) -> tuple[str | None, ConfigIssue | None]:
+    if not paths.dev_mode:
+        return _resolve_real_rclone_bin(config)
+    raw_bin = config.rclone_bin.strip()
+    if not raw_bin:
+        return None, ConfigIssue(key="PCLOUD_TOOLS_RCLONE_BIN", level="error", message="rclone binary is required")
+    configured = Path(raw_bin).expanduser()
+    if not configured.is_absolute():
+        return None, ConfigIssue(key="PCLOUD_TOOLS_RCLONE_BIN", level="error", message="dev rclone binary must be absolute")
+    try:
+        resolved = configured.resolve(strict=True)
+    except OSError as exc:
+        return None, ConfigIssue(key="PCLOUD_TOOLS_RCLONE_BIN", level="error", message=f"cannot resolve rclone executable {configured}: {exc}")
+    if not resolved.is_file() or not resolved.stat().st_mode & 0o111:
+        return None, ConfigIssue(key="PCLOUD_TOOLS_RCLONE_BIN", level="error", message=f"rclone path is not executable: {resolved}")
+    return str(resolved), None
+
+
+def _write_trash_metadata_temp(config: AppConfig, candidate: dict[str, object]) -> Path:
+    metadata_dir = config.state_dir / "pushd" / "trash-metadata"
+    metadata_dir.mkdir(parents=True, exist_ok=True)
+    item_id = str(candidate["item_id"])
+    path = metadata_dir / f"{item_id}.json"
+    payload = metadata_payload(
+        build_trash_paths(str(candidate["path"]), short_id=str(candidate["item_id"]).rsplit("-", 1)[-1]),
+        operation=str(candidate["action"]),
+        extra={
+            "reason": candidate.get("reason", "-"),
+            "trash_reason": candidate.get("trash reason", "-"),
+            "remote_source": candidate.get("remote_source", "-"),
+        },
+    )
+    payload["item_id"] = candidate["item_id"]
+    payload["id"] = candidate["item_id"]
+    payload["object_path"] = candidate["trash_object_path"]
+    payload["trash_object_path"] = candidate["trash_object_path"]
+    payload["metadata_path"] = candidate["trash_metadata_path"]
+    payload["created_at"] = candidate["created_at"]
+    payload["trashed_at"] = candidate["created_at"]
+    payload["original_name"] = candidate["original_name"]
+    payload["reason"] = candidate.get("reason", "-")
+    payload["source"] = "pushd queue"
+    payload["size"] = candidate.get("size")
+    atomic_write_json(path, payload, ensure_ascii=False, sort_keys=True)
+    return path
+
+
+def _remote_source_exists_for_trash_apply(rclone_bin: str, remote_source: object) -> ConfigIssue | None:
+    command = [rclone_bin, "lsjson", "--stat", str(remote_source)]
+    try:
+        completed = subprocess.run(command, check=False, capture_output=True, text=True)
+    except OSError as exc:
+        return ConfigIssue(
+            key="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_SOURCE",
+            level="error",
+            message=f"cannot check remote trash source {remote_source}: {exc}",
+        )
+    if completed.returncode != 0:
+        return ConfigIssue(
+            key="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_SOURCE",
+            level="error",
+            message=f"remote trash source does not exist or cannot be read: {remote_source}",
+        )
+    return None
+
+
+def _execute_trash_apply(
+    args: argparse.Namespace,
+    paths: RuntimePaths,
+    config: AppConfig,
+    state: ServiceDaemonState,
+    candidates: list[dict[str, object]],
+) -> tuple[list[dict[str, object]], list[ConfigIssue]]:
+    issues: list[ConfigIssue] = []
+    rclone_bin, rclone_issue = _trash_rclone_bin(paths, config)
+    if rclone_issue:
+        return [], [rclone_issue]
+    assert rclone_bin is not None
+    results: list[dict[str, object]] = []
+    for candidate in candidates:
+        source_issue = None if paths.dev_mode else _remote_source_exists_for_trash_apply(
+            rclone_bin,
+            candidate["remote_source"],
+        )
+        if source_issue:
+            issues.append(source_issue)
+            results.append(
+                {
+                    "candidate": candidate,
+                    "commands": [],
+                    "steps": [],
+                    "queue records removed": 0,
+                    "index updated": "no",
+                }
+            )
+            continue
+        metadata_file = _write_trash_metadata_temp(config, candidate)
+        commands = [
+            [rclone_bin, "moveto", str(candidate["remote_source"]), str(candidate["trash_object"])],
+            [rclone_bin, "copyto", str(metadata_file), str(candidate["trash_metadata"])],
+        ]
+        candidate_result: dict[str, object] = {"candidate": candidate, "commands": commands, "steps": []}
+        failed = False
+        for command in commands:
+            try:
+                completed = subprocess.run(command, check=False, capture_output=True, text=True)
+            except OSError as exc:
+                failed = True
+                candidate_result["steps"].append({"command": command, "returncode": None, "stderr": str(exc)})
+                issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_EXEC", level="error", message=f"trash command could not start for {candidate['path']}: {exc}"))
+                break
+            step = {
+                "command": command,
+                "returncode": completed.returncode,
+                "stdout": completed.stdout.strip(),
+                "stderr": completed.stderr.strip(),
+            }
+            candidate_result["steps"].append(step)
+            if completed.returncode != 0:
+                failed = True
+                issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_EXEC", level="error", message=f"trash command failed for {candidate['path']} with exit {completed.returncode}"))
+                break
+        if not failed:
+            payload = json.loads(metadata_file.read_text())
+            write_index_record(config.remote_trash_index_file, payload)
+            result = remove_plan_record_exact(
+                state.queue_file,
+                "PCLOUD_TOOLS_PUSHD_QUEUE",
+                str(candidate["path"]),
+                str(candidate["action"]),
+                target_reason=str(candidate["reason"]),
+            )
+            update_issue = _state_update_issue(result.issue)
+            if update_issue:
+                issues.append(update_issue)
+            candidate_result["queue records removed"] = result.before_count - result.after_count
+            candidate_result["index updated"] = "yes"
+        else:
+            candidate_result["queue records removed"] = 0
+            candidate_result["index updated"] = "no"
+        results.append(candidate_result)
+    return results, issues
+
+
+def _trash_apply_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    state = read_service_daemon_state(config, "pushd")
+    candidates, candidate_issues = _pushd_trash_candidate_records(config, state)
+    target_path = normalize_plan_path(getattr(args, "path", "") or "")
+    if target_path:
+        candidates = [candidate for candidate in candidates if candidate["path"] == target_path]
+    limit = max(1, int(getattr(args, "limit", 1) or 1))
+    selected = candidates[:limit]
+    execute = bool(getattr(args, "execute", False))
+    gate = validate_gate(GATES["pushd.trash.apply"], args, os.environ)
+    issues = list(load_result.issues) + list(state.issues) + candidate_issues
+    results: list[dict[str, object]] = []
+    if execute:
+        if not gate.complete:
+            if not gate.env_ok:
+                issues.append(ConfigIssue(key=gate.spec.env_var, level="error", message=f"pushd trash apply requires {gate.spec.env_var}={gate.spec.expected_value}"))
+            for flag in gate.missing_flags:
+                issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_APPROVAL", level="error", message=f"pushd trash apply requires {flag}"))
+        if not selected:
+            issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_APPLY_CANDIDATES", level="error", message="no remote trash candidates selected"))
+        if not has_errors(issues):
+            results, execute_issues = _execute_trash_apply(args, paths, config, state, selected)
+            issues.extend(execute_issues)
+    details = {
+        "planned action": "execute pushd remote trash moves" if execute else "preview pushd remote trash moves",
+        "remote trash root": config.remote_trash_root,
+        "queue file": str(state.queue_file),
+        "candidate count": len(candidates),
+        "selected candidate count": len(selected),
+        "candidate details": selected,
+        "trash apply gate env var": gate.spec.env_var,
+        "trash apply gate accepted value": gate.spec.expected_value,
+        "trash apply gate env honored": "yes" if gate.env_ok else "no",
+        "trash apply approval flags honored": "yes" if gate.flags_ok else "no",
+        "state writes": "remote trash, sidecar metadata, local index, and matching pushd queue record" if execute and not has_errors(issues) else "none",
+        "results": results,
+        "automatic permanent delete": "no",
+        "real_transfer gates reused": "no",
+    }
+    issues = sort_issues(issues)
+    summary = "pushd remote trash apply completed" if execute and not has_errors(issues) else "pushd remote trash apply preview is ready"
+    if execute and has_errors(issues):
+        summary = "pushd remote trash apply refused"
+    return CommandReport(
+        command="pushd trash apply",
+        status=status_from_issues(issues),
+        summary=summary,
+        details=details,
+        issues=report_issues(issues),
+        actions=_service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
+def _duration_seconds(value: str | None) -> int | None:
+    if not value:
+        return None
+    text = value.strip().lower()
+    unit = text[-1]
+    number_text = text[:-1] if unit in {"s", "m", "h", "d"} else text
+    try:
+        number = int(number_text)
+    except ValueError:
+        return None
+    multiplier = {"s": 1, "m": 60, "h": 3600, "d": 86400}.get(unit, 1)
+    return max(0, number * multiplier)
+
+
+def _trash_purge_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    execute = bool(getattr(args, "execute", False))
+    gate = validate_gate(GATES["pushd.trash.purge"], args, os.environ)
+    limit = max(1, int(getattr(args, "limit", 100) or 100))
+    older_seconds = _duration_seconds(getattr(args, "older_than", None))
+    now = datetime.now(timezone.utc)
+    candidates = []
+    for record in list_index_records(config.remote_trash_index_file, status="active"):
+        if older_seconds is not None:
+            try:
+                created_at = datetime.fromisoformat(record.created_at)
+                if created_at.tzinfo is None:
+                    created_at = created_at.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+            if (now - created_at).total_seconds() < older_seconds:
+                continue
+        candidates.append(record)
+        if len(candidates) >= limit:
+            break
+    issues = list(load_result.issues)
+    results: list[dict[str, object]] = []
+    if execute:
+        if not gate.complete:
+            if not gate.env_ok:
+                issues.append(ConfigIssue(key=gate.spec.env_var, level="error", message=f"pushd trash purge requires {gate.spec.env_var}={gate.spec.expected_value}"))
+            for flag in gate.missing_flags:
+                issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_PURGE_APPROVAL", level="error", message=f"pushd trash purge requires {flag}"))
+        rclone_bin, rclone_issue = _trash_rclone_bin(paths, config)
+        if rclone_issue:
+            issues.append(rclone_issue)
+            rclone_bin = None
+        if not has_errors(issues) and rclone_bin:
+            for record in candidates:
+                item_results = []
+                failed = False
+                for remote_path in (record.object_path, record.metadata_path):
+                    command = [rclone_bin, "deletefile", _remote_path(config.core_remote, remote_path)]
+                    completed = subprocess.run(command, check=False, capture_output=True, text=True)
+                    item_results.append({"command": command, "returncode": completed.returncode, "stderr": completed.stderr.strip()})
+                if completed.returncode != 0:
+                        failed = True
+                        issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_PURGE_EXEC", level="error", message=f"trash purge failed for {remote_path} with exit {completed.returncode}"))
+                        break
+                if not failed:
+                    update_index_record(config.remote_trash_index_file, record.item_id, status="purged")
+                results.append({"item_id": record.item_id, "steps": item_results, "purged": not failed})
+    details = {
+        "planned action": "execute permanent remote trash purge" if execute else "preview permanent remote trash purge",
+        "candidate count": len(candidates),
+        "candidate details": [{"item_id": r.item_id, "original_path": r.original_path, "object_path": r.object_path, "metadata_path": r.metadata_path, "created_at": r.created_at} for r in candidates],
+        "older than": getattr(args, "older_than", None) or "-",
+        "limit": limit,
+        "purge gate env var": gate.spec.env_var,
+        "purge gate accepted value": gate.spec.expected_value,
+        "state writes": "remote trash deletefile and local index status" if execute and not has_errors(issues) else "none",
+        "results": results,
+    }
+    issues = sort_issues(issues)
+    summary = "pushd remote trash purge completed" if execute and not has_errors(issues) else "pushd remote trash purge preview is ready"
+    if execute and has_errors(issues):
+        summary = "pushd remote trash purge refused"
+    return CommandReport("pushd trash purge", status_from_issues(issues), summary, details, report_issues(issues), _service_actions(paths, _SERVICES["pushd"]))
+
+
+def _trash_restore_preview_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    load_result = load_config(paths)
+    config = load_result.config
+    item_id = str(getattr(args, "id", ""))
+    record = read_index_record(config.remote_trash_index_file, item_id)
+    issues = list(load_result.issues)
+    details: dict[str, object] = {"item_id": item_id, "state writes": "none"}
+    if record is None:
+        issues.append(ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_RESTORE_ITEM", level="error", message=f"trash item not found in local index: {item_id}"))
+    else:
+        restore_path = config.core_dir / record.original_path
+        details.update(
+            {
+                "original_path": record.original_path,
+                "trash_object": _remote_path(config.core_remote, record.object_path),
+                "restore_local_path": str(restore_path),
+                "restore_remote_path": _remote_path(config.core_remote, record.original_path),
+                "local conflict": "yes" if restore_path.exists() else "no",
+                "implementation status": "restore preview only; no local or remote writes",
+            }
+        )
+    issues = sort_issues(issues)
+    return CommandReport(
+        "pushd trash restore-preview",
+        status_from_issues(issues),
+        "pushd remote trash restore preview is ready" if not has_errors(issues) else "pushd remote trash restore preview cannot run",
+        details,
+        report_issues(issues),
+        _service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
+def _pushd_trash_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    command = getattr(args, "trash_command", None)
+    if command == "status":
+        return _trash_status_report(args, paths)
+    if command == "search":
+        return _trash_search_report(args, paths)
+    if command == "apply":
+        return _trash_apply_report(args, paths)
+    if command == "purge":
+        return _trash_purge_report(args, paths)
+    if command == "restore-preview":
+        return _trash_restore_preview_report(args, paths)
+    return CommandReport(
+        "pushd trash",
+        "error",
+        "pushd trash command is invalid",
+        {"planned action": "none"},
+        report_issues([ConfigIssue(key="PCLOUD_TOOLS_PUSHD_TRASH_COMMAND", level="error", message="trash command must be status, search, apply, purge, or restore-preview")]),
+        _service_actions(paths, _SERVICES["pushd"]),
+    )
+
+
+def cmd_pushd_trash(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    report = _pushd_trash_report(args, paths)
+    print_report(report, args)
+    return exit_code_for_report(report)
 
 
 def _pushd_queue_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
@@ -9412,6 +10141,7 @@ def _standalone_main(service_name: str, argv: list[str] | None = None) -> int:
 
     if service.name == "pushd":
         _add_pushd_backfill_parser(subparsers)
+        _add_pushd_trash_parser(subparsers)
 
         fswatch_parser = subparsers.add_parser(
             "fswatch", help="Preview pushd fswatch fixture events without starting fswatch."

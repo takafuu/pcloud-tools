@@ -36,6 +36,8 @@ def test_root_allowlist_builds_safe_bisync_filter_rules(tmp_path: Path, monkeypa
     assert info.entries == ("/",)
     assert "+ /**" in rules
     assert "- /**/.git/**" in rules
+    assert "- /.pcloud-manager-trash/**" in rules
+    assert "- /**/.pcloud-manager-trash/**" in rules
     assert "- /**/.venv/**" in rules
     assert "- /**/node_modules/**" in rules
     assert "- /**/tmp/**" in rules

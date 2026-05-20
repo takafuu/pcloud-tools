@@ -407,23 +407,10 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
         *pushd_plan.issues,
         *diffd_plan.issues,
     ]
-    if missing_uploads:
-        issues.append(
-            ConfigIssue(
-                key="PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL",
-                level="warning",
-                message=(
-                    "pushd queue has upload records whose local source file is missing; "
-                    "review with `pcloud-manager pushd status` or ignore them with "
-                    "`pcloud-manager action pushd.queue.prune-missing-local`"
-                ),
-            )
-        )
-
     details: dict[str, object] = {
         "push": (
             f"queued={pushd_plan.total}; planned={len(planned_uploads)}; "
-            f"stale={len(missing_uploads)}; manual-review={len(manual_uploads)}"
+            f"missing-local={len(missing_uploads)}; manual-review={len(manual_uploads)}"
         ),
         "pull": (
             f"pending={diffd_plan.pending_download_count}; remote={diffd_plan.remote_change_count}; "
@@ -443,7 +430,7 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
     if missing_uploads:
         details.update(
             {
-                "push warning": f"missing local upload records={len(missing_uploads)}",
+                "push missing local detail": f"missing local upload records={len(missing_uploads)}",
                 "push review": "pcloud-manager pushd status",
                 "push cleanup": "pcloud-manager action pushd.queue.prune-missing-local",
             }
@@ -452,21 +439,14 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
 
 
 def _queue_warning_summary(queue_details: dict[str, object]) -> str:
-    missing = int(queue_details.get("push missing local", 0) or 0)
-    if missing > 0:
-        return f"pushd warning: missing-local={missing}"
     return ""
 
 
 def _doctor_operational_summary(queue_details: dict[str, object]) -> str:
-    if int(queue_details.get("push missing local", 0) or 0) > 0:
-        return "queue warning"
     return ""
 
 
 def _doctor_operational_suspected_cause(queue_details: dict[str, object]) -> str:
-    if int(queue_details.get("push missing local", 0) or 0) > 0:
-        return "pushd queue has missing local upload records"
     return "-"
 
 
@@ -639,7 +619,7 @@ def _doctor_next_actions(report: CommandReport) -> list[tuple[str, str]]:
     if details.get("push review"):
         actions.append(("review push queue", str(details["push review"])))
     if details.get("push cleanup"):
-        actions.append(("ignore stale push records", str(details["push cleanup"])))
+        actions.append(("ignore missing local push records", str(details["push cleanup"])))
     actions.append(("full diagnostics", "pcloud-manager doctor --detail"))
     return actions
 
@@ -654,8 +634,8 @@ def _doctor_check_rows(report: CommandReport) -> list[tuple[str, str]]:
         ("push", str(details.get("push", "-"))),
         ("pull", str(details.get("pull", "-"))),
     ]
-    if details.get("push warning"):
-        rows.append(("push warning", str(details["push warning"])))
+    if details.get("push missing local detail"):
+        rows.append(("push missing local", str(details["push missing local detail"])))
     return rows
 
 

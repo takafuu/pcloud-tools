@@ -161,6 +161,37 @@ def test_diffd_preview_applies_allowlist_and_default_excludes(tmp_path: Path) ->
     assert skipped[0]["reason"] == "default exclude"
     assert skipped[1]["reason"] == "manager ignore rule"
     assert skipped[2]["reason"] == "outside allowlist"
+
+
+def test_diffd_delete_events_do_not_become_download_transfer_commands(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    diffd_dir = state_dir / "diffd"
+    diffd_dir.mkdir(parents=True)
+    (diffd_dir / "remote-changes.json").write_text(
+        json.dumps([{"path": "Documents/deleted-remote.txt", "action": "delete", "reason": "diff:deletefile"}])
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "diffd", "transfer", "preview", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["details"]["planned downloads"] == 0
+    assert payload["details"]["planned transfer commands"] == []
+    assert payload["details"]["manual review transfer records"] == 1
+    assert payload["details"]["manual review transfer record details"][0]["path"] == "Documents/deleted-remote.txt"
+    assert "delete action" in payload["details"]["manual review transfer record details"][0]["reason"]
+
+
 def test_diffd_diff_fixture_preview_is_read_only(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

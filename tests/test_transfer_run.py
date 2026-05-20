@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from conftest import *
+from datetime import timedelta
+from types import SimpleNamespace
+
+from pcloud_tools.service_daemon_plan import cleanup_missing_local_upload_records_for_executor_start
 
 
 def test_transfer_automation_run_is_guarded_and_consumes_successes(tmp_path: Path) -> None:
@@ -552,6 +556,74 @@ def test_transfer_executor_run_executes_and_consumes_dev_state_only(tmp_path: Pa
     assert len(fake_calls) == 2
     assert json.loads((pushd_dir / "queue.json").read_text()) == []
     assert json.loads((diffd_dir / "remote-changes.json").read_text()) == []
+
+
+def test_transfer_executor_start_missing_local_cleanup_prunes_before_planning(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/present-upload.pdf", "upload\n")
+    observed_at = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
+    stale_since = (observed_at - timedelta(seconds=601)).isoformat()
+    queue_file = pushd_dir / "queue.json"
+    stale_missing_record = {
+        "path": "Documents/stale-missing.pdf",
+        "action": "upload",
+        "reason": "test",
+        "missing_since": stale_since,
+    }
+    queue_file.write_text(
+        json.dumps(
+            [
+                stale_missing_record,
+                {"path": "Documents/present-upload.pdf", "action": "upload", "reason": "test"},
+            ]
+        )
+    )
+    config = SimpleNamespace(
+        core_dir=Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]),
+        state_dir=state_dir,
+        allowlist_file=Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / ".pcloud-sync-allowlist",
+        manager_ignore_file=Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / ".pcloudmanagerignore",
+        default_excludes=(".DS_Store", "**/.DS_Store"),
+        pushd_missing_local_prune_ttl_seconds=600,
+    )
+
+    cleanup = cleanup_missing_local_upload_records_for_executor_start(
+        config,
+        queue_file,
+        observed_at=observed_at,
+    )
+    run = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "executor-run",
+            "--execute",
+            "--consume-on-success",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(run)
+    assert cleanup.pruned_count == 1
+    assert cleanup.after_count == 1
+    assert run.returncode == 0
+    assert payload["summary"] == "pushd transfer executor tick completed"
+    assert payload["details"]["records consumed"] == 1
+    assert "present-upload.pdf" in fake_log.read_text()
+    assert "stale-missing.pdf" not in fake_log.read_text()
+    assert json.loads(queue_file.read_text()) == []
 def test_pushd_upload_success_records_upload_origin_journal(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])

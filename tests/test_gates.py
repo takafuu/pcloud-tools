@@ -107,6 +107,18 @@ def test_resident_and_api_gate_specs_match_existing_public_contracts() -> None:
     assert GATES["pushd.queue.prune-excluded"].approval_flags == (
         "--reviewer-approved-excluded-record-cleanup",
     )
+    assert GATES["pushd.trash.apply"].env_var == "PCLOUD_TOOLS_PUSHD_TRASH_APPLY_GATE"
+    assert GATES["pushd.trash.apply"].expected_value == "operator-approved-pushd-trash-apply-v1"
+    assert GATES["pushd.trash.apply"].approval_flags == (
+        "--operator-reviewed-trash-candidates",
+        "--reviewer-approved-remote-trash-move",
+    )
+    assert GATES["pushd.trash.purge"].env_var == "PCLOUD_TOOLS_PUSHD_TRASH_PURGE_GATE"
+    assert GATES["pushd.trash.purge"].expected_value == "operator-approved-pushd-trash-purge-v1"
+    assert GATES["pushd.trash.purge"].approval_flags == (
+        "--operator-reviewed-trash-status",
+        "--reviewer-approved-permanent-delete",
+    )
     assert GATES["transfer.execution"].env_var == "PCLOUD_TOOLS_TRANSFER_EXECUTION_GATE"
     assert GATES["transfer.execution"].expected_value == "dev-fake-rclone"
     assert GATES["transfer.execution"].approval_flags == ()
