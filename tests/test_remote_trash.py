@@ -11,13 +11,15 @@ from pcloud_tools.remote_trash import (
     build_trash_paths,
     build_unique_trash_paths,
     is_trash_path,
-    is_trash_root_path,
     list_index_records,
+    metadata_from_payload,
     metadata_payload,
     normalize_original_path,
+    read_metadata_file,
     read_index_record,
     sanitize_display_filename,
     update_index_record,
+    write_metadata_file,
     write_index_record,
 )
 
@@ -55,6 +57,62 @@ def test_build_path_helpers_share_timestamp_and_short_id_layout() -> None:
     )
 
 
+def test_custom_trash_root_is_supported_for_paths_and_metadata_index(tmp_path) -> None:
+    timestamp = datetime(2026, 12, 31, 23, 59, 1, tzinfo=timezone.utc)
+    paths = build_trash_paths(
+        "Documents/report.pdf",
+        timestamp,
+        short_id="feedface",
+        trash_root="_manager-trash",
+    )
+    payload = metadata_payload(paths, operation="delete")
+    db_path = tmp_path / "remote-trash.sqlite3"
+
+    written = write_index_record(db_path, payload, trash_root="_manager-trash")
+    updated = update_index_record(db_path, paths.item_id, status="purged")
+
+    assert paths.object_path == "_manager-trash/objects/2026/12/31/20261231T235901000000Z-feedface__report.pdf"
+    assert paths.metadata_path == (
+        "_manager-trash/objects/2026/12/31/20261231T235901000000Z-feedface__report.pdf.json"
+    )
+    assert written.object_path.startswith("_manager-trash/")
+    assert updated.status == "purged"
+
+
+def test_custom_trash_root_rejects_cross_root_metadata_and_original_paths(tmp_path) -> None:
+    timestamp = datetime(2026, 12, 31, 23, 59, 1, tzinfo=timezone.utc)
+    default_paths = build_trash_paths("Documents/report.pdf", timestamp, short_id="feedface")
+    default_payload = metadata_payload(default_paths, operation="delete")
+
+    with pytest.raises(ValueError, match="outside trash root"):
+        metadata_from_payload(default_payload, trash_root="_manager-trash")
+    with pytest.raises(ValueError, match="cannot manage its own trash path"):
+        build_trash_paths("_manager-trash/objects/item", timestamp, short_id="feedface", trash_root="_manager-trash")
+
+    custom_paths = build_trash_paths(
+        "Documents/report.pdf",
+        timestamp,
+        short_id="feedface",
+        trash_root="_manager-trash",
+    )
+    metadata_path = tmp_path / "metadata.json"
+    write_metadata_file(metadata_path, metadata_payload(custom_paths, operation="delete"), trash_root="_manager-trash")
+    assert read_metadata_file(metadata_path, trash_root="_manager-trash")["object_path"].startswith("_manager-trash/")
+
+
+def test_update_index_record_uses_existing_record_root_after_config_changes(tmp_path) -> None:
+    timestamp = datetime(2026, 12, 31, 23, 59, 1, tzinfo=timezone.utc)
+    db_path = tmp_path / "remote-trash.sqlite3"
+    paths = build_trash_paths("Documents/report.pdf", timestamp, short_id="feedface")
+    payload = metadata_payload(paths, operation="delete")
+    write_index_record(db_path, payload)
+
+    updated = update_index_record(db_path, paths.item_id, status="purged")
+
+    assert updated.status == "purged"
+    assert updated.object_path.startswith(f"{TRASH_ROOT}/")
+
+
 def test_duplicate_safe_ids_are_retried_when_candidate_paths_exist() -> None:
     timestamp = datetime(2026, 5, 20, 10, 0, 0, tzinfo=timezone.utc)
     first = build_trash_paths("Documents/delete-me.txt", timestamp, short_id="11111111")
@@ -86,8 +144,6 @@ def test_unsafe_display_names_preserve_unicode_and_extension_without_being_autho
 
 
 def test_trash_root_detection_rejects_managing_trash_contents() -> None:
-    assert is_trash_root_path(TRASH_ROOT)
-    assert is_trash_root_path(f"/{TRASH_ROOT}/")
     assert is_trash_path(f"{TRASH_ROOT}/objects/2026/05/20/item")
     assert not is_trash_path(f"Documents/{TRASH_ROOT}/objects/item")
     assert normalize_original_path("Documents/report.pdf") == "Documents/report.pdf"

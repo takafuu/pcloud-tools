@@ -282,7 +282,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
     },
     "diffd": {
         "summary": [
-            "diffd polls pCloud /diff and appends allowlisted remote-change records.",
+            "diffd polls pCloud /diff and appends in-scope remote-change records.",
             "Current live launchd state is bounded API one-shot; automatic download transfer remains closed.",
         ],
         "commands": [
@@ -330,7 +330,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
     },
     "sync": {
         "summary": [
-            "sync handles rclone bisync, autosync state, allowlist scope, and lock diagnostics.",
+            "sync handles rclone bisync, autosync state, sync scope, and lock diagnostics.",
             "Daemon validation must not trigger normal sync/resync or listing cache operations.",
         ],
         "commands": [

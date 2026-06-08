@@ -299,13 +299,14 @@ def test_pushd_status_reports_running_resident_heartbeat(tmp_path: Path) -> None
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     pushd_dir = state_dir / "pushd"
     pushd_dir.mkdir(parents=True)
+    current_pid = os.getpid()
     _write_workspace_file(env, "Documents/upload.pdf", "upload\n")
     (pushd_dir / "queue.json").write_text("[]")
     (pushd_dir / "fswatch-resident-last-run.json").write_text(
         json.dumps(
             {
                 "status": "running",
-                "pid": 12345,
+                "pid": current_pid,
                 "started_at": "2026-05-07T10:00:00+00:00",
                 "updated_at": "2026-05-07T10:01:00+00:00",
                 "last_raw_event": "/tmp/root/Documents/live.txt",
@@ -332,9 +333,92 @@ def test_pushd_status_reports_running_resident_heartbeat(tmp_path: Path) -> None
     payload = _payload(result)
     assert result.returncode == 0
     assert payload["details"]["last resident run status"] == "running"
-    assert payload["details"]["last resident run pid"] == 12345
+    assert payload["details"]["last resident run pid"] == current_pid
     assert payload["details"]["last resident run updated at"] == "2026-05-07T10:01:00+00:00"
     assert payload["details"]["last resident run last normalized event"] == "Documents/live.txt"
+
+
+def test_pushd_status_warns_when_running_resident_state_is_stale(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text("[]")
+    (pushd_dir / "fswatch-resident-last-run.json").write_text(
+        json.dumps(
+            {
+                "status": "running",
+                "pid": 99999999,
+                "started_at": "2026-05-07T10:00:00+00:00",
+                "updated_at": "2026-05-07T10:01:00+00:00",
+                "appended_records": [],
+                "duplicate_records": [],
+                "debounce_records": [],
+                "queue_limit_records": [],
+                "excluded_records": [],
+                "invalid_records": [],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "pushd", "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["details"]["last resident run status"] == "stale"
+    assert "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_LAST_RUN_STATUS" in [
+        issue["key"] for issue in payload["issues"]
+    ]
+
+
+def test_pushd_status_warns_when_last_resident_failed(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text("[]")
+    (pushd_dir / "fswatch-resident-last-run.json").write_text(
+        json.dumps(
+            {
+                "status": "failed",
+                "returncode": -11,
+                "finished_at": "2026-06-03T14:14:44+00:00",
+                "appended_records": [],
+                "duplicate_records": [],
+                "debounce_records": [],
+                "queue_limit_records": [],
+                "excluded_records": [],
+                "invalid_records": [],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "pushd", "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    assert payload["details"]["last resident run status"] == "failed"
+    assert "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_LAST_RUN_STATUS" in [
+        issue["key"] for issue in payload["issues"]
+    ]
+
+
 def test_service_daemon_status_xbar_is_concise_and_safe(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from conftest import *
+from pcloud_tools.remote_trash import build_trash_paths, metadata_payload, read_index_record, write_index_record
 
 
 def _install_trash_rclone(env: dict[str, str]) -> Path:
@@ -16,7 +17,7 @@ def _install_trash_rclone(env: dict[str, str]) -> Path:
         "  size) printf '{\"bytes\":123,\"count\":2}\\n'; exit 0 ;;\n"
         "  moveto) [ \"$TRASH_RCLONE_FAIL_MOVETO\" = \"1\" ] && exit 44; exit 0 ;;\n"
         "  copyto) exit 0 ;;\n"
-        "  deletefile) exit 0 ;;\n"
+        "  deletefile) case \"$2\" in *fail-object*) exit 55 ;; esac; exit 0 ;;\n"
         "  lsjson) exit 0 ;;\n"
         "  lsf) printf '%s\\n' 'objects/2026/05/20/remoteid__通知書.pdf' 'objects/2026/05/20/remoteid__通知書.pdf.json'; exit 0 ;;\n"
         "  cat) printf '%s\\n' '{\"schema_version\":\"pcloud-tools-remote-trash.v1\",\"item_id\":\"remoteid\",\"original_path\":\"受信/通知書.pdf\",\"object_path\":\".pcloud-manager-trash/objects/2026/05/20/remoteid__通知書.pdf\",\"metadata_path\":\".pcloud-manager-trash/objects/2026/05/20/remoteid__通知書.pdf.json\",\"display_name\":\"通知書.pdf\",\"operation\":\"delete\",\"created_at\":\"2026-05-20T00:00:00+00:00\"}'; exit 0 ;;\n"
@@ -91,6 +92,51 @@ def test_pushd_trash_apply_preview_selects_delete_and_missing_rename_only(tmp_pa
     assert not (pushd_dir / "trash-index.sqlite").exists()
 
 
+def test_top_level_trash_status_and_actions_use_trash_command(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    _use_default_dev_state_dir(env)
+    _install_trash_rclone(env)
+
+    status = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "trash", "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    action = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "action", "trash.apply.preview"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    legacy = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "pushd", "trash", "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    status_payload = _payload(status)
+    legacy_payload = _payload(legacy)
+    action_ids = [item["id"] for item in status_payload["actions"]]
+
+    assert status.returncode == 0
+    assert status_payload["command"] == "trash status"
+    assert "trash.apply.preview" in action_ids
+    assert "pushd.trash.apply.preview" not in action_ids
+    assert all(not action_id.startswith("pushd.") for action_id in action_ids)
+    assert action.returncode == 0
+    assert "trash apply:" in action.stdout
+    assert legacy.returncode == 0
+    assert legacy_payload["command"] == "pushd trash status"
+
+
 def test_pushd_trash_apply_execute_uses_dedicated_gate_and_consumes_exact_record(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
@@ -163,6 +209,53 @@ def test_pushd_trash_apply_execute_uses_dedicated_gate_and_consumes_exact_record
     assert log_lines[0].startswith("moveto pcloud:core/Documents/delete-me.txt ")
     assert log_lines[1].startswith("copyto ")
     assert (state_dir / "pushd" / "trash-index.sqlite").exists()
+
+
+def test_pushd_trash_apply_honors_configured_remote_trash_root(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    log = _install_trash_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    (pushd_dir / "queue.json").write_text(
+        json.dumps([{"path": "Documents/delete-me.txt", "action": "delete", "reason": "fswatch:Removed"}])
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "trash",
+            "apply",
+            "--execute",
+            "--operator-reviewed-trash-candidates",
+            "--reviewer-approved-remote-trash-move",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=_trash_apply_gate_env(env) | {"PCLOUD_TOOLS_REMOTE_TRASH_ROOT": "pcloud:core/_manager-trash"},
+    )
+
+    payload = _payload(result)
+    log_text = log.read_text()
+    queue_payload = json.loads((pushd_dir / "queue.json").read_text())
+    item_id = payload["details"]["results"][0]["candidate"]["item_id"]
+    index_record = read_index_record(state_dir / "pushd" / "trash-index.sqlite", item_id)
+    metadata_files = list((state_dir / "pushd" / "trash-metadata").glob("*.json"))
+
+    assert result.returncode == 0
+    assert payload["details"]["candidate details"][0]["trash_object"].startswith("pcloud:core/_manager-trash/")
+    assert " pcloud:core/_manager-trash/objects/" in log_text
+    assert queue_payload == []
+    assert index_record is not None
+    assert index_record.object_path.startswith("_manager-trash/")
+    assert metadata_files
+    assert json.loads(metadata_files[0].read_text(encoding="utf-8"))["object_path"].startswith("_manager-trash/")
 
 
 def test_pushd_trash_apply_failure_retains_queue_record(tmp_path: Path) -> None:
@@ -337,3 +430,45 @@ def test_pushd_trash_status_restore_preview_and_purge_are_read_only_or_dedicated
     assert purge_payload["summary"] == "pushd remote trash purge completed"
     assert purge_payload["details"]["results"][0]["purged"] is True
     assert any(line.startswith("deletefile pcloud:core/.pcloud-manager-trash/objects/") for line in log.read_text().splitlines())
+
+
+def test_pushd_trash_purge_failure_keeps_record_and_continues_next_candidate(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    _install_trash_rclone(env)
+    index_file = state_dir / "pushd" / "trash-index.sqlite"
+    first_paths = build_trash_paths("Documents/fail-object.txt", short_id="fail1111")
+    second_paths = build_trash_paths("Documents/ok-object.txt", short_id="ok222222")
+    write_index_record(index_file, metadata_payload(first_paths, operation="delete"))
+    write_index_record(index_file, metadata_payload(second_paths, operation="delete"))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "trash",
+            "purge",
+            "--execute",
+            "--operator-reviewed-trash-status",
+            "--reviewer-approved-permanent-delete",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=_trash_purge_gate_env(env),
+    )
+
+    payload = _payload(result)
+    results = payload["details"]["results"]
+
+    assert result.returncode == 1
+    assert results[0]["item_id"] == first_paths.item_id
+    assert results[0]["purged"] is False
+    assert results[1]["item_id"] == second_paths.item_id
+    assert results[1]["purged"] is True
+    assert read_index_record(index_file, first_paths.item_id).status == "active"
+    assert read_index_record(index_file, second_paths.item_id).status == "purged"

@@ -1,13 +1,22 @@
 from __future__ import annotations
 
 from conftest import *
-from datetime import timedelta
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 from pcloud_tools.service_daemon_plan import (
     annotate_missing_local_upload_records,
+    cleanup_stale_missing_local_upload_records,
+    force_prune_missing_local_upload_records,
     prune_stale_missing_local_upload_records,
 )
+
+
+def _assert_utc_iso_datetime(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value)
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timedelta(0)
+    return parsed
 
 
 def test_pushd_preview_builds_allowlisted_queue_plan(tmp_path: Path) -> None:
@@ -642,10 +651,89 @@ def test_pushd_fswatch_resident_run_executes_fake_fswatch_in_dev_state(tmp_path:
     assert payload["details"]["resident can start"] == "yes"
     assert payload["details"]["state writes"] == "pushd queue and resident run state"
     assert payload["details"]["queue records appended"] == 1
-    assert queue_payload == [
-        {"path": "Documents/from-fswatch.txt", "action": "upload", "reason": "fswatch"}
-    ]
+    assert queue_payload[0]["path"] == "Documents/from-fswatch.txt"
+    assert queue_payload[0]["action"] == "upload"
+    assert queue_payload[0]["reason"] == "fswatch"
+    _assert_utc_iso_datetime(queue_payload[0]["enqueued_at"])
     assert resident_state["appended_records"] == queue_payload
+
+
+def test_pushd_fswatch_resident_run_reports_unbounded_fswatch_failure(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "operator-approved-fswatch-resident-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / "Documents").mkdir()
+    (workspace / "Documents" / "from-failed-fswatch.txt").write_text("hello\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    fswatch = bin_dir / "fswatch"
+    fswatch.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/from-failed-fswatch.txt\"\n"
+        "printf 'simulated fswatch crash\\n' >&2\n"
+        "kill -TERM $$\n"
+    )
+    fswatch.chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    shadow_report = tmp_path / "shadow-validation-fswatch-run-failed.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-fswatch-run-failed" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "fswatch",
+            "resident-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-probe",
+            "--reviewer-approved-queue-policy",
+            "--reviewer-approved-process-policy",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    queue_payload = json.loads((state_dir / "pushd" / "queue.json").read_text())
+    resident_state = json.loads((state_dir / "pushd" / "fswatch-resident-last-run.json").read_text())
+
+    assert result.returncode == 1
+    assert payload["status"] == "error"
+    assert payload["summary"] == "pushd fswatch resident run failed"
+    assert payload["details"]["queue records appended"] == 1
+    assert payload["details"]["process result"]["returncode"] == -15
+    assert "PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_EXIT" in [issue["key"] for issue in payload["issues"]]
+    assert any("killed by signal 15" in issue["message"] for issue in payload["issues"])
+    assert queue_payload[0]["path"] == "Documents/from-failed-fswatch.txt"
+    assert resident_state["status"] == "failed"
+    assert resident_state["returncode"] == -15
+
+
 def test_pushd_fswatch_resident_run_excludes_hidden_temp_paths(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,
@@ -722,9 +810,10 @@ def test_pushd_fswatch_resident_run_excludes_hidden_temp_paths(tmp_path: Path) -
         "manager ignore rule",
         "partial transfer file",
     ]
-    assert queue_payload == [
-        {"path": "Documents/final-upload.txt", "action": "upload", "reason": "fswatch"}
-    ]
+    assert queue_payload[0]["path"] == "Documents/final-upload.txt"
+    assert queue_payload[0]["action"] == "upload"
+    assert queue_payload[0]["reason"] == "fswatch"
+    _assert_utc_iso_datetime(queue_payload[0]["enqueued_at"])
 def test_pushd_fswatch_resident_run_debounces_same_run_upload_events(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,
@@ -796,9 +885,10 @@ def test_pushd_fswatch_resident_run_debounces_same_run_upload_events(tmp_path: P
     assert payload["details"]["duplicate events skipped"] == 0
     assert payload["details"]["debounce events skipped"] == 1
     assert payload["details"]["queue limit skips"] == 0
-    assert queue_payload == [
-        {"path": "Documents/from-fswatch.txt", "action": "upload", "reason": "fswatch"}
-    ]
+    assert queue_payload[0]["path"] == "Documents/from-fswatch.txt"
+    assert queue_payload[0]["action"] == "upload"
+    assert queue_payload[0]["reason"] == "fswatch"
+    _assert_utc_iso_datetime(queue_payload[0]["enqueued_at"])
     assert resident_state["debounce_records"] == [
         {"path": "Documents/from-fswatch.txt", "action": "upload", "reason": "recent resident append"}
     ]
@@ -1125,6 +1215,7 @@ def test_pushd_queue_add_and_clear_are_preview_first_dev_state_writes(tmp_path: 
     )
     assert add.returncode == 0
     assert json.loads(queue_file.read_text())[0]["path"] == "Documents/manual.pdf"
+    _assert_utc_iso_datetime(json.loads(queue_file.read_text())[0]["enqueued_at"])
     assert _payload(add)["summary"] == "pushd queue record appended"
 
     preview_remove = subprocess.run(
@@ -1387,6 +1478,46 @@ def test_pushd_missing_local_uploads_are_stale_and_do_not_block_downloads(tmp_pa
     ]
 
 
+def test_pushd_queue_prune_missing_local_preserves_delete_record_with_same_path(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    queue_file = state_dir / "pushd" / "queue.json"
+    queue_file.parent.mkdir(parents=True)
+    delete_record = {"path": "Documents/x.pdf", "action": "delete", "reason": "fswatch:Removed"}
+    queue_file.write_text(
+        json.dumps(
+            [
+                {"path": "Documents/x.pdf", "action": "upload", "reason": "fswatch:Updated"},
+                delete_record,
+            ]
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "queue",
+            "prune-missing-local",
+            "--reviewer-approved-missing-local-cleanup",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["details"]["queue items removed"] == 1
+    assert json.loads(queue_file.read_text()) == [delete_record]
+
+
 def _missing_local_test_config(env: dict[str, str], ttl_seconds: int = 600) -> SimpleNamespace:
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -1525,7 +1656,7 @@ def test_pushd_missing_local_cleanup_prunes_only_stale_missing_uploads(tmp_path:
         )
     )
 
-    result = prune_stale_missing_local_upload_records(
+    result = cleanup_stale_missing_local_upload_records(
         _missing_local_test_config(env, ttl_seconds=600),
         queue_file,
         observed_at=observed_at,
@@ -1551,3 +1682,104 @@ def test_pushd_missing_local_cleanup_prunes_only_stale_missing_uploads(tmp_path:
     assert rename_record in queue_payload
     assert excluded_record in queue_payload
     assert invalid_record in queue_payload
+
+
+def test_pushd_prune_stale_missing_local_upload_records_does_not_annotate(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    queue_file = state_dir / "pushd" / "queue.json"
+    queue_file.parent.mkdir(parents=True)
+    observed_at = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
+    fresh_since = (observed_at - timedelta(seconds=300)).isoformat()
+    stale_since = (observed_at - timedelta(seconds=900)).isoformat()
+    fresh_missing_record = {
+        "path": "Documents/fresh-missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": fresh_since,
+    }
+    stale_missing_record = {
+        "path": "Documents/stale-missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": stale_since,
+    }
+    new_missing_record = {
+        "path": "Documents/new-missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+    }
+    queue_file.write_text(json.dumps([fresh_missing_record, stale_missing_record, new_missing_record]))
+
+    result = prune_stale_missing_local_upload_records(
+        _missing_local_test_config(env, ttl_seconds=600),
+        queue_file,
+        observed_at=observed_at,
+    )
+
+    queue_payload = json.loads(queue_file.read_text())
+    assert result.before_count == 3
+    assert result.after_count == 2
+    assert result.annotated_count == 0
+    assert result.pruned_count == 1
+    assert result.fresh_missing_count == 2
+    assert result.stale_missing_count == 1
+    assert fresh_missing_record in queue_payload
+    assert stale_missing_record not in queue_payload
+    assert new_missing_record in queue_payload
+    assert "missing_since" not in new_missing_record
+
+
+def test_pushd_force_prune_missing_local_upload_records_ignores_ttl(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    queue_file = state_dir / "pushd" / "queue.json"
+    queue_file.parent.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/present.txt", "local\n")
+    present_record = {
+        "path": "Documents/present.txt",
+        "action": "upload",
+        "reason": "fswatch",
+    }
+    missing_upload_record = {
+        "path": "Documents/missing.txt",
+        "action": "upload",
+        "reason": "fswatch",
+        "missing_since": "2026-05-20T07:59:59+00:00",
+    }
+    delete_record = {
+        "path": "Documents/deleted.txt",
+        "action": "delete",
+        "reason": "fswatch:Removed",
+    }
+    excluded_record = {
+        "path": "Documents/.DS_Store",
+        "action": "upload",
+        "reason": "fswatch",
+    }
+    queue_file.write_text(
+        json.dumps(
+            [
+                present_record,
+                missing_upload_record,
+                delete_record,
+                excluded_record,
+                {"path": "../bad", "action": "upload"},
+            ]
+        )
+    )
+
+    result = force_prune_missing_local_upload_records(
+        _missing_local_test_config(env, ttl_seconds=600),
+        queue_file,
+    )
+
+    queue_payload = json.loads(queue_file.read_text())
+    assert result.before_count == 5
+    assert result.after_count == 4
+    assert result.pruned_count == 1
+    assert present_record in queue_payload
+    assert missing_upload_record not in queue_payload
+    assert delete_record in queue_payload
+    assert excluded_record in queue_payload
+    assert {"path": "../bad", "action": "upload"} in queue_payload

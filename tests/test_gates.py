@@ -312,7 +312,7 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
                     "sync lock active": "no",
                     "scope status": "loaded",
                     "scope entries": 4,
-                    "last resync scope": "allowlist",
+                    "last resync scope": "scope-file",
                     "allowlist": str(workspace / ".pcloud-sync-allowlist"),
                     "autosync state": "active",
                     "autosync runs": "7",

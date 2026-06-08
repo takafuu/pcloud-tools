@@ -48,7 +48,7 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
     sync_scope_parser = sync_subparsers.add_parser("scope")
     sync_scope_parser.add_argument("--filter", action="store_true", help="Include the generated bisync filter rules.")
     sync_scope_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
-    sync_check_parser = sync_subparsers.add_parser("check-allowlist")
+    sync_check_parser = sync_subparsers.add_parser("check-scope", help="Check that the sync scope file is readable.")
     sync_check_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     sync_progress_parser = sync_subparsers.add_parser("progress")
     sync_progress_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
@@ -166,6 +166,11 @@ def add_sync_parser(subparsers: argparse._SubParsersAction) -> None:
         help="Run the rclone bisync command instead of only previewing it.",
     )
     track_renames_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    sync_subparsers.metavar = (
+        "{status,scope,check-scope,progress,background,enable-autosync,disable-autosync,"
+        "autosync-plist,autosync-gate,autosync-run,migration-gate,migration-run,"
+        "clear-stale-lock,resync,full-resync,track-renames}"
+    )
 
 
 def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
@@ -199,41 +204,6 @@ def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
         return cmd_sync_execution(args, paths, args.sync_command)
     if args.sync_command == "scope":
         return cmd_sync_scope(args, paths)
-    if args.sync_command == "check-allowlist":
-        return cmd_sync_check_allowlist(args, paths)
-    return None
-
-def cmd_sync(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
-    if args.sync_command is None:
-        return cmd_sync_execution(args, paths, "normal")
-    if args.sync_command == "status":
-        return cmd_sync_status(args, paths)
-    if args.sync_command == "progress":
-        return cmd_sync_progress(args, paths)
-    if args.sync_command == "background":
-        return cmd_sync_background(args, paths)
-    if args.sync_command == "clear-stale-lock":
-        return cmd_sync_clear_stale_lock(args, paths)
-    if args.sync_command == "enable-autosync":
-        return cmd_sync_autosync(args, paths, "enable-autosync")
-    if args.sync_command == "disable-autosync":
-        return cmd_sync_autosync(args, paths, "disable-autosync")
-    if args.sync_command == "autosync-plist":
-        return cmd_sync_autosync_plist(args, paths)
-    if args.sync_command == "autosync-gate":
-        return cmd_sync_autosync_gate(args, paths)
-    if args.sync_command == "autosync-run":
-        return cmd_sync_autosync_run(args, paths)
-    if args.sync_command == "migration-gate":
-        return cmd_sync_migration_gate(args, paths)
-    if args.sync_command == "migration-run":
-        return cmd_sync_migration_run(args, paths)
-    if args.sync_command == "_run":
-        return cmd_sync_internal_run(args, paths)
-    if args.sync_command in {"resync", "full-resync", "track-renames"}:
-        return cmd_sync_execution(args, paths, args.sync_command)
-    if args.sync_command == "scope":
-        return cmd_sync_scope(args, paths)
-    if args.sync_command == "check-allowlist":
+    if args.sync_command in {"check-scope", "check-allowlist"}:
         return cmd_sync_check_allowlist(args, paths)
     return None

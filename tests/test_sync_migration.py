@@ -123,7 +123,7 @@ def test_sync_migration_gate_can_use_saved_sync_status_report(tmp_path: Path) ->
                     "sync lock started": "-",
                     "scope status": "loaded",
                     "scope entries": 4,
-                    "last resync scope": "allowlist",
+                    "last resync scope": "scope-file",
                     "allowlist": str(workspace / ".pcloud-sync-allowlist"),
                     "autosync state": "active",
                     "autosync runs": "7",
@@ -207,7 +207,7 @@ def test_sync_migration_gate_blocks_saved_status_target_root_mismatch(tmp_path: 
                     "sync lock active": "no",
                     "scope status": "loaded",
                     "scope entries": 4,
-                    "last resync scope": "allowlist",
+                    "last resync scope": "scope-file",
                     "allowlist": "/Users/takafumi/p-core/.pcloud-sync-allowlist",
                 },
             }
@@ -286,7 +286,7 @@ def test_sync_migration_run_refuses_without_execution_gate(tmp_path: Path) -> No
                     "sync lock active": "no",
                     "scope status": "loaded",
                     "scope entries": 4,
-                    "last resync scope": "allowlist",
+                    "last resync scope": "scope-file",
                 },
             }
         )
@@ -387,7 +387,7 @@ def test_sync_migration_run_refuses_with_rclone_bisync_lock(tmp_path: Path) -> N
                     "sync lock active": "no",
                     "scope status": "loaded",
                     "scope entries": 4,
-                    "last resync scope": "allowlist",
+                    "last resync scope": "scope-file",
                 },
             }
         )
@@ -477,7 +477,7 @@ def test_sync_migration_run_executes_fake_rclone_in_dev_state(tmp_path: Path) ->
                     "sync lock active": "no",
                     "scope status": "loaded",
                     "scope entries": 4,
-                    "last resync scope": "allowlist",
+                    "last resync scope": "scope-file",
                 },
             }
         )
@@ -517,6 +517,7 @@ def test_sync_migration_run_executes_fake_rclone_in_dev_state(tmp_path: Path) ->
     assert payload["status"] in {"ok", "warning"}
     assert payload["summary"] == "sync migration run completed"
     assert payload["details"]["sync/resync can run"] == "yes"
+    assert payload["details"]["scope mode"] == "scope-file"
     assert payload["details"]["state writes"] == "sync logs, lock, status, and migration run state"
     assert "bisync" in log.read_text()
     assert "SUCCESS mode=normal" in status_log

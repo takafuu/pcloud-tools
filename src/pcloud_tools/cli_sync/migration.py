@@ -37,7 +37,13 @@ from ..sync_runtime import (
     sync_last_error_status,
 )
 from ..sync_scope import scope_issues, sync_allowlist_info
-from .core import _command_path, _readable_baseline, _saved_shadow_report_check, _sync_status_actions
+from .core import (
+    _command_path,
+    _readable_baseline,
+    _readable_sync_scope_mode,
+    _saved_shadow_report_check,
+    _sync_status_actions,
+)
 
 def _rclone_cache_dir() -> Path:
     raw = os.environ.get("XDG_CACHE_HOME", "").strip()
@@ -659,7 +665,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
             )
             details.update(
                 {
-                    "scope mode": plan.scope_mode,
+                    "scope mode": _readable_sync_scope_mode(plan.scope_mode),
                     "planned sync command": list(plan.command),
                     "rclone log": str(plan.rclone_log),
                     "stdout log": str(plan.stdout_log),

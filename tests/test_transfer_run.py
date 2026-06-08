@@ -2,9 +2,6 @@ from __future__ import annotations
 
 from conftest import *
 from datetime import timedelta
-from types import SimpleNamespace
-
-from pcloud_tools.service_daemon_plan import cleanup_missing_local_upload_records_for_executor_start
 
 
 def test_transfer_automation_run_is_guarded_and_consumes_successes(tmp_path: Path) -> None:
@@ -103,7 +100,9 @@ def test_transfer_automation_run_is_guarded_and_consumes_successes(tmp_path: Pat
     assert refused_payload["details"]["state writes"] == "none"
     assert refused_payload["details"]["automatic real transfer execution"] == "no"
     assert refused_payload["details"]["automatic queue/change consumption"] == "no"
-    assert json.loads((pushd_dir / "queue.json").read_text())[0]["path"] == "Documents/auto-upload.txt"
+    assert json.loads((pushd_dir / "queue.json").read_text()) == [
+        {"path": "Documents/auto-upload.txt", "action": "upload", "reason": "test"}
+    ]
     assert not (pushd_dir / "last-transfer.json").exists()
     assert diffd.returncode == 0
     assert diffd_payload["summary"] == "diffd transfer automation-run completed"
@@ -582,20 +581,6 @@ def test_transfer_executor_start_missing_local_cleanup_prunes_before_planning(tm
             ]
         )
     )
-    config = SimpleNamespace(
-        core_dir=Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]),
-        state_dir=state_dir,
-        allowlist_file=Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / ".pcloud-sync-allowlist",
-        manager_ignore_file=Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"]) / ".pcloudmanagerignore",
-        default_excludes=(".DS_Store", "**/.DS_Store"),
-        pushd_missing_local_prune_ttl_seconds=600,
-    )
-
-    cleanup = cleanup_missing_local_upload_records_for_executor_start(
-        config,
-        queue_file,
-        observed_at=observed_at,
-    )
     run = subprocess.run(
         [
             sys.executable,
@@ -616,13 +601,92 @@ def test_transfer_executor_start_missing_local_cleanup_prunes_before_planning(tm
     )
 
     payload = _payload(run)
-    assert cleanup.pruned_count == 1
-    assert cleanup.after_count == 1
     assert run.returncode == 0
     assert payload["summary"] == "pushd transfer executor tick completed"
+    assert payload["details"]["missing local startup cleanup"]["enabled"] == "yes"
+    assert payload["details"]["missing local startup cleanup"]["pruned"] == 1
+    assert payload["details"]["missing local startup cleanup"]["after"] == 1
     assert payload["details"]["records consumed"] == 1
     assert "present-upload.pdf" in fake_log.read_text()
     assert "stale-missing.pdf" not in fake_log.read_text()
+    assert json.loads(queue_file.read_text()) == []
+
+
+def test_transfer_automation_run_missing_local_cleanup_prunes_before_planning(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    real_log = _install_real_rclone_stub(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/present-upload.pdf", "upload\n")
+    queue_file = pushd_dir / "queue.json"
+    queue_file.write_text(
+        json.dumps(
+            [
+                {
+                    "path": "Documents/stale-missing.pdf",
+                    "action": "upload",
+                    "reason": "test",
+                    "missing_since": "2000-01-01T00:00:00+00:00",
+                },
+                {"path": "Documents/present-upload.pdf", "action": "upload", "reason": "test"},
+            ]
+        )
+    )
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-automation-cleanup" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-automation-cleanup.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "automation-run",
+            "--report-path",
+            str(shadow_report),
+            "--execute",
+            "--consume-on-success",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env
+        | {
+            "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "operator-approved-real-transfer-v1",
+            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE": "operator-approved-real-transfer-automation-v1",
+            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE": "operator-approved-real-transfer-automation-run-v1",
+        },
+    )
+
+    payload = _payload(result)
+    real_log_text = real_log.read_text()
+
+    assert result.returncode == 0
+    assert payload["summary"] == "pushd transfer automation-run completed"
+    assert payload["details"]["missing local startup cleanup"]["enabled"] == "yes"
+    assert payload["details"]["missing local startup cleanup"]["pruned"] == 1
+    assert payload["details"]["planned transfer command count"] == 1
+    assert payload["details"]["records consumed"] == 1
+    assert "present-upload.pdf" in real_log_text
+    assert "stale-missing.pdf" not in real_log_text
     assert json.loads(queue_file.read_text()) == []
 def test_pushd_upload_success_records_upload_origin_journal(tmp_path: Path) -> None:
     env = _base_env(tmp_path)

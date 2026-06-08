@@ -160,7 +160,7 @@ def test_diffd_preview_applies_allowlist_and_default_excludes(tmp_path: Path) ->
     skipped = payload["details"]["skipped download record details"]
     assert skipped[0]["reason"] == "default exclude"
     assert skipped[1]["reason"] == "manager ignore rule"
-    assert skipped[2]["reason"] == "outside allowlist"
+    assert skipped[2]["reason"] == "outside sync scope"
 
 
 def test_diffd_delete_events_do_not_become_download_transfer_commands(tmp_path: Path) -> None:

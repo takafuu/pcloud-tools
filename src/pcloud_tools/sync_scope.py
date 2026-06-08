@@ -8,7 +8,7 @@ from .manager_ignore import load_manager_ignore_rules
 
 
 class AllowlistError(ValueError):
-    """Raised when the allowlist file cannot be normalized."""
+    """Raised when the sync scope file cannot be normalized."""
 
 
 @dataclass(frozen=True)
@@ -63,9 +63,9 @@ def sync_scope_baseline_info(config: AppConfig) -> ScopeBaseline:
 
 def normalize_allowlist_entries(allowlist_file: Path) -> tuple[str, ...]:
     if not allowlist_file.exists():
-        raise AllowlistError(f"sync allowlist not found: {allowlist_file}")
+        raise AllowlistError(f"sync scope file not found: {allowlist_file}")
     if not allowlist_file.is_file():
-        raise AllowlistError(f"sync allowlist is not a file: {allowlist_file}")
+        raise AllowlistError(f"sync scope path is not a file: {allowlist_file}")
 
     entries: list[str] = []
     for raw_line in allowlist_file.read_text().splitlines():
@@ -84,11 +84,11 @@ def normalize_allowlist_entries(allowlist_file: Path) -> tuple[str, ...]:
 
         normalized = entry[:-1] if entry.endswith("/") else entry
         if not normalized:
-            raise AllowlistError(f"invalid allowlist entry in {allowlist_file}: {raw_line}")
+            raise AllowlistError(f"invalid sync scope entry in {allowlist_file}: {raw_line}")
 
         for part in normalized.split("/"):
             if part in {".", ".."}:
-                raise AllowlistError(f"invalid allowlist entry in {allowlist_file}: {raw_line}")
+                raise AllowlistError(f"invalid sync scope entry in {allowlist_file}: {raw_line}")
 
         if entry.endswith("/"):
             normalized = f"{normalized}/"
@@ -96,7 +96,7 @@ def normalize_allowlist_entries(allowlist_file: Path) -> tuple[str, ...]:
         entries.append(normalized)
 
     if not entries:
-        raise AllowlistError(f"sync allowlist is empty: {allowlist_file}")
+        raise AllowlistError(f"sync scope file is empty: {allowlist_file}")
     return tuple(entries)
 
 

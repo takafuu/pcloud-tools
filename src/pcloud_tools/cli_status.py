@@ -108,7 +108,7 @@ def _config_summary(paths: RuntimePaths) -> dict[str, str]:
         "core dir": str(config.core_dir),
         "state dir": str(config.state_dir),
         "log dir": str(config.log_dir),
-        "allowlist": str(config.allowlist_file),
+        "sync scope file": str(config.allowlist_file),
         "manager ignore": str(config.manager_ignore_file),
         "core remote": config.core_remote,
         "vault layer": "enabled" if config.enable_vault_layer else "disabled",
@@ -227,7 +227,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
                 _path_entry(paths.config_dir, "config directory"),
                 _path_entry(paths.env_file, "env file"),
                 _path_entry(config.core_dir, "local sync root"),
-                _path_entry(config.allowlist_file, "allowlist file"),
+                _path_entry(config.allowlist_file, "sync scope file"),
                 _path_entry(config.manager_ignore_file, "manager ignore file"),
                 _path_entry(config.state_dir, "runtime state directory"),
                 _path_entry(config.log_dir, "runtime log directory"),
@@ -237,7 +237,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
                 _path_entry(config.crypt_mount_dir, "crypt mount directory"),
             ],
             "state policy": "runtime state stays local under the configured state directory",
-            "content policy": "shared allowlist scope; p-core root is allowed when dangerous/generated/private paths are ignored",
+            "content policy": "shared sync scope; p-core root is allowed when dangerous/generated/private paths are ignored",
         }
     elif args.info_command == "config":
         details = {
@@ -248,9 +248,9 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "remote": config.remote,
             "vault remote": config.vault_remote,
             "crypt remote": config.crypt_remote,
-            "allowlist file": str(config.allowlist_file),
-            "allowlist status": scope_info.allowlist_status,
-            "allowlist entries": list(scope_info.entries),
+            "sync scope file": str(config.allowlist_file),
+            "sync scope status": scope_info.allowlist_status,
+            "sync scope entries": list(scope_info.entries),
             "manager ignore file": str(config.manager_ignore_file),
             "default excludes": list(config.default_excludes),
             "state dir": str(config.state_dir),
@@ -286,9 +286,9 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "log dir": str(config.log_dir),
             "core dir": str(config.core_dir),
             "core remote": config.core_remote,
-            "allowlist": str(config.allowlist_file),
-            "allowlist status": scope_info.allowlist_status,
-            "allowlist entries": scope_info.allowlist_count,
+            "sync scope file": str(config.allowlist_file),
+            "sync scope status": scope_info.allowlist_status,
+            "sync scope entries": scope_info.allowlist_count,
             "manager ignore": str(config.manager_ignore_file),
             "filter file": str(sync_filter_file(config)),
             "autosync state": autosync.state,
@@ -299,7 +299,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "daemon state dir": str(config.state_dir / "daemon"),
             "log policy": "logs stay local; reports redact pCloud API tokens",
             "sensitive data policy": "secrets are read on demand and redacted in info output",
-            "content policy": "document/media allowlist only; normal sync/resync remains separately gated",
+            "content policy": "sync scope file controls the outer roots; normal sync/resync remains separately gated",
         }
 
     return CommandReport(
@@ -496,7 +496,7 @@ def _doctor_suspected_cause(
     progress,
 ) -> str:
     if scope_info.allowlist_status != "loaded":
-        return f"allowlist {scope_info.allowlist_status}"
+        return f"sync scope {scope_info.allowlist_status}"
     if lock_state.status in {"stale", "invalid"}:
         return f"sync lock is {lock_state.status}"
     if listing_recovery.can_recover:
@@ -742,7 +742,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         allowlist_missing = not load_result.config.allowlist_file.exists()
         repair_allowlist_file(load_result.config, paths)
         if allowlist_missing and load_result.config.allowlist_file.exists():
-            repaired_items.append(f"allowlist file: {load_result.config.allowlist_file}")
+            repaired_items.append(f"sync scope file: {load_result.config.allowlist_file}")
         ignore_missing = not load_result.config.manager_ignore_file.exists()
         repair_manager_ignore_file(load_result.config)
         if ignore_missing and load_result.config.manager_ignore_file.exists():
@@ -792,7 +792,7 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "env file": f"{'present' if paths.env_file.exists() else 'missing'} ({paths.env_file})",
         "config source": load_result.source,
         "core dir": str(config.core_dir),
-        "allowlist": str(config.allowlist_file),
+        "sync scope file": str(config.allowlist_file),
         "manager ignore": str(config.manager_ignore_file),
         "core remote": config.core_remote,
         "vault layer": "enabled" if config.enable_vault_layer else "disabled",

@@ -736,6 +736,7 @@ def test_pushd_launchd_resident_plist_write_is_gated_and_does_not_bootstrap(tmp_
         "operator-approved-fswatch-resident-v1"
     )
     assert "/opt/homebrew/bin" in plist_payload["EnvironmentVariables"]["PATH"]
+    assert plist_payload["KeepAlive"] is True
     assert not launchctl_log.exists()
 def test_pushd_launchd_reload_is_gated_and_uses_fake_launchctl(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
@@ -1030,6 +1031,7 @@ def test_diffd_launchd_operational_plist_and_reload_are_gated(tmp_path: Path) ->
     assert "1" in plist_payload["ProgramArguments"]
     assert "--execute" in plist_payload["ProgramArguments"]
     assert plist_payload["StartInterval"] == 60
+    assert plist_payload["KeepAlive"] is False
     assert opened_payload["details"]["start interval seconds"] == 60
     assert plist_payload["EnvironmentVariables"]["PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE"] == (
         "operator-approved-api-long-poll-v1"

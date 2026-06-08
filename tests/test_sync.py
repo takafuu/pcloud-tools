@@ -106,6 +106,32 @@ def test_sync_background_json_emits_baseline_report(tmp_path: Path) -> None:
     assert payload["summary"]
 
 
+def test_sync_check_scope_is_primary_name_with_legacy_alias(tmp_path: Path) -> None:
+    scope_result = _run_cli(tmp_path / "scope", "sync", "check-scope", "--json")
+    legacy_result = _run_cli(tmp_path / "legacy", "sync", "check-allowlist", "--json")
+
+    scope_payload = _payload(scope_result)
+    legacy_payload = _payload(legacy_result)
+
+    assert scope_result.returncode == 0
+    assert scope_payload["command"] == "sync check-scope"
+    assert scope_payload["summary"].startswith("sync scope loaded")
+    assert "scope file" in scope_payload["details"]
+    assert "allowlist" not in scope_payload["details"]
+
+    assert legacy_result.returncode == 0
+    assert legacy_payload["command"] == "sync check-allowlist"
+    assert legacy_payload["summary"] == scope_payload["summary"]
+
+
+def test_sync_help_hides_legacy_check_allowlist_alias(tmp_path: Path) -> None:
+    result = _run_cli(tmp_path, "sync", "--help")
+
+    assert result.returncode == 0
+    assert "check-scope" in result.stdout
+    assert "check-allowlist" not in result.stdout
+
+
 def test_sync_status_marks_old_last_error_as_historical_after_success(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])

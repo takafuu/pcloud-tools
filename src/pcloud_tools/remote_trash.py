@@ -105,22 +105,33 @@ def format_trash_timestamp(timestamp: datetime) -> str:
     return _coerce_timestamp(timestamp).strftime("%Y%m%dT%H%M%S%fZ")
 
 
-def normalize_original_path(path: object) -> str:
+def normalize_trash_root(path: object) -> str:
+    normalized = normalize_plan_path(path)
+    return normalized or TRASH_ROOT
+
+
+def is_trash_path(path: object, *, trash_root: str = TRASH_ROOT) -> bool:
+    normalized = normalize_plan_path(path)
+    root = normalize_trash_root(trash_root)
+    return normalized == root or normalized.startswith(f"{root}/")
+
+
+def trash_root_from_object_path(path: object) -> str:
+    normalized = normalize_plan_path(path)
+    marker = f"/{TRASH_OBJECTS_DIR}/"
+    root, separator, _rest = normalized.partition(marker)
+    if separator and root:
+        return root
+    return TRASH_ROOT
+
+
+def normalize_original_path(path: object, *, trash_root: str = TRASH_ROOT) -> str:
     normalized = normalize_plan_path(path)
     if not normalized:
         raise ValueError("remote trash original path must not be empty or unsafe")
-    if is_trash_path(normalized):
+    if is_trash_path(normalized, trash_root=trash_root):
         raise ValueError(f"remote trash cannot manage its own trash path: {normalized}")
     return normalized
-
-
-def is_trash_root_path(path: object) -> bool:
-    return normalize_plan_path(path) == TRASH_ROOT
-
-
-def is_trash_path(path: object) -> bool:
-    normalized = normalize_plan_path(path)
-    return normalized == TRASH_ROOT or normalized.startswith(f"{TRASH_ROOT}/")
 
 
 def sanitize_display_filename(original_relative_path: object, *, fallback: str = "item") -> str:
@@ -167,14 +178,24 @@ def new_trash_identity(
     return TrashIdentity(timestamp=timestamp, short_id=_validate_short_id(generated_short_id))
 
 
-def build_object_path(original_relative_path: object, timestamp: datetime, short_id: str) -> str:
+def build_object_path(
+    original_relative_path: object,
+    timestamp: datetime,
+    short_id: str,
+    *,
+    trash_root: str = TRASH_ROOT,
+) -> str:
     identity = new_trash_identity(timestamp, short_id=short_id)
-    original_path = normalize_original_path(original_relative_path)
+    original_path = normalize_original_path(original_relative_path, trash_root=trash_root)
     display_name = sanitize_display_filename(original_path)
+    return _object_path_from_parts(identity, display_name, trash_root=trash_root)
+
+
+def _object_path_from_parts(identity: TrashIdentity, display_name: str, *, trash_root: str = TRASH_ROOT) -> str:
     year, month, day = identity.date_parts
     return "/".join(
         (
-            TRASH_ROOT,
+            normalize_trash_root(trash_root),
             TRASH_OBJECTS_DIR,
             year,
             month,
@@ -184,8 +205,14 @@ def build_object_path(original_relative_path: object, timestamp: datetime, short
     )
 
 
-def build_metadata_path(original_relative_path: object, timestamp: datetime, short_id: str) -> str:
-    return f"{build_object_path(original_relative_path, timestamp, short_id)}.json"
+def build_metadata_path(
+    original_relative_path: object,
+    timestamp: datetime,
+    short_id: str,
+    *,
+    trash_root: str = TRASH_ROOT,
+) -> str:
+    return f"{build_object_path(original_relative_path, timestamp, short_id, trash_root=trash_root)}.json"
 
 
 def build_trash_paths(
@@ -194,16 +221,18 @@ def build_trash_paths(
     *,
     short_id: str | None = None,
     short_id_factory: Callable[[], str] | None = None,
+    trash_root: str = TRASH_ROOT,
 ) -> TrashPaths:
     identity = new_trash_identity(timestamp, short_id=short_id, short_id_factory=short_id_factory)
-    original_path = normalize_original_path(original_relative_path)
+    original_path = normalize_original_path(original_relative_path, trash_root=trash_root)
     display_name = sanitize_display_filename(original_path)
+    object_path = _object_path_from_parts(identity, display_name, trash_root=trash_root)
     return TrashPaths(
         item_id=identity.item_id,
         original_path=original_path,
         display_name=display_name,
-        object_path=build_object_path(original_path, identity.timestamp, identity.short_id),
-        metadata_path=build_metadata_path(original_path, identity.timestamp, identity.short_id),
+        object_path=object_path,
+        metadata_path=f"{object_path}.json",
         created_at=_coerce_timestamp(identity.timestamp).isoformat(),
     )
 
@@ -230,6 +259,7 @@ def build_unique_trash_paths(
     short_id_factory: Callable[[], str] | None = None,
     exists: Callable[[str], bool] | None = None,
     max_attempts: int = 100,
+    trash_root: str = TRASH_ROOT,
 ) -> TrashPaths:
     exists = exists or (lambda _path: False)
     last_paths: TrashPaths | None = None
@@ -238,6 +268,7 @@ def build_unique_trash_paths(
             original_relative_path,
             timestamp,
             short_id_factory=short_id_factory,
+            trash_root=trash_root,
         )
         last_paths = paths
         if not exists(paths.object_path) and not exists(paths.metadata_path):
@@ -276,7 +307,7 @@ def metadata_payload(
     return payload
 
 
-def metadata_from_payload(payload: dict[str, Any]) -> TrashMetadata:
+def metadata_from_payload(payload: dict[str, Any], *, trash_root: str = TRASH_ROOT) -> TrashMetadata:
     schema_version = str(payload.get("schema_version", ""))
     if schema_version != TRASH_SCHEMA_VERSION:
         raise ValueError(f"unsupported remote trash metadata schema: {schema_version}")
@@ -292,12 +323,12 @@ def metadata_from_payload(payload: dict[str, Any]) -> TrashMetadata:
     missing = [key for key in required if not payload.get(key)]
     if missing:
         raise ValueError(f"remote trash metadata missing required keys: {', '.join(missing)}")
-    original_path = normalize_original_path(payload["original_path"])
+    original_path = normalize_original_path(payload["original_path"], trash_root=trash_root)
     object_path = normalize_plan_path(payload["object_path"])
     metadata_path = normalize_plan_path(payload["metadata_path"])
-    if not is_trash_path(object_path):
+    if not is_trash_path(object_path, trash_root=trash_root):
         raise ValueError(f"remote trash object path is outside trash root: {object_path}")
-    if not is_trash_path(metadata_path):
+    if not is_trash_path(metadata_path, trash_root=trash_root):
         raise ValueError(f"remote trash metadata path is outside trash root: {metadata_path}")
     return TrashMetadata(
         schema_version=schema_version,
@@ -312,16 +343,16 @@ def metadata_from_payload(payload: dict[str, Any]) -> TrashMetadata:
     )
 
 
-def write_metadata_file(path: Path, payload: dict[str, Any]) -> Path:
-    metadata_from_payload(payload)
+def write_metadata_file(path: Path, payload: dict[str, Any], *, trash_root: str = TRASH_ROOT) -> Path:
+    metadata_from_payload(payload, trash_root=trash_root)
     return atomic_write_json(path, payload, sort_keys=True)
 
 
-def read_metadata_file(path: Path) -> dict[str, Any]:
+def read_metadata_file(path: Path, *, trash_root: str = TRASH_ROOT) -> dict[str, Any]:
     payload = json.loads(path.read_text(encoding="utf-8"))
     if not isinstance(payload, dict):
         raise ValueError(f"remote trash metadata must be a JSON object: {path}")
-    metadata_from_payload(payload)
+    metadata_from_payload(payload, trash_root=trash_root)
     return payload
 
 
@@ -361,8 +392,9 @@ def write_index_record(
     *,
     status: str = "active",
     updated_at: str | None = None,
+    trash_root: str = TRASH_ROOT,
 ) -> TrashIndexRecord:
-    metadata = metadata_from_payload(payload)
+    metadata = metadata_from_payload(payload, trash_root=trash_root)
     updated_at = updated_at or datetime.now(timezone.utc).isoformat()
     metadata_json = json.dumps(metadata.payload, ensure_ascii=False, sort_keys=True)
     init_index(db_path)
@@ -464,11 +496,13 @@ def update_index_record(
     payload = dict(existing.metadata_payload)
     if metadata_payload_update:
         payload.update(metadata_payload_update)
+    payload_trash_root = trash_root_from_object_path(payload.get("object_path", existing.object_path))
     return write_index_record(
         db_path,
         payload,
         status=status or existing.status,
         updated_at=updated_at or datetime.now(timezone.utc).isoformat(),
+        trash_root=payload_trash_root,
     )
 
 

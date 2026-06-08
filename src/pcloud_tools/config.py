@@ -493,7 +493,7 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
             ConfigIssue(
                 key="PCLOUD_TOOLS_ALLOWLIST_FILE",
                 level="error",
-                message=f"allowlist file does not exist: {config.allowlist_file}",
+                message=f"sync scope file does not exist: {config.allowlist_file}",
             )
         )
     elif not config.allowlist_file.is_file():
@@ -501,7 +501,7 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
             ConfigIssue(
                 key="PCLOUD_TOOLS_ALLOWLIST_FILE",
                 level="error",
-                message=f"allowlist path is not a file: {config.allowlist_file}",
+                message=f"sync scope path is not a file: {config.allowlist_file}",
             )
         )
     if config.manager_ignore_file.exists() and not config.manager_ignore_file.is_file():
@@ -543,11 +543,11 @@ def repair_env_file(paths: RuntimePaths) -> Path:
 def render_allowlist_template(paths: RuntimePaths) -> str:
     if paths.dev_mode:
         return (
-            "# Starter allowlist for pcloud-tools development.\n"
+            "# Starter sync scope file for pcloud-tools development.\n"
             "# Keep this path separate from /Users/takafumi/p-core/Documents.\n"
             "dev-fixtures/Documents/\n"
         )
-    return "# Starter allowlist for pcloud-tools\nDocuments/\n"
+    return "# Starter sync scope file for pcloud-tools\nDocuments/\n"
 
 
 def repair_allowlist_file(config: AppConfig, paths: RuntimePaths) -> Path:

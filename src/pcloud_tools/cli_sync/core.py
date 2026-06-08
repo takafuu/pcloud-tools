@@ -187,12 +187,19 @@ def _sync_status_actions(paths: RuntimePaths, lock_status: str) -> list[ReportAc
     return actions
 
 
+def _readable_sync_scope_mode(mode: str) -> str:
+    if mode == "allowlist":
+        return "scope-file"
+    return mode
+
+
 def _readable_baseline(info_file: Path, mode: str, status: str) -> str:
+    readable_mode = _readable_sync_scope_mode(mode)
     if status == "defaulted":
-        return f"{mode} (default)"
+        return f"{readable_mode} (default)"
     if status == "invalid":
         return f"invalid ({info_file})"
-    return mode
+    return readable_mode
 
 
 def _sync_status_report(paths: RuntimePaths) -> CommandReport:
@@ -211,7 +218,7 @@ def _sync_status_report(paths: RuntimePaths) -> CommandReport:
         "running": "yes" if sync_state.state == "syncing" else "no",
         "config source": load_result.source,
         "state dir": str(load_result.config.state_dir),
-        "allowlist": str(load_result.config.allowlist_file),
+        "sync scope file": str(load_result.config.allowlist_file),
         "scope status": scope_info.allowlist_status,
         "scope entries": scope_info.allowlist_count,
         "last resync scope": _readable_baseline(
@@ -443,7 +450,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
 
     details: dict[str, object] = {
         **base_details,
-        "scope mode": plan.scope_mode,
+        "scope mode": _readable_sync_scope_mode(plan.scope_mode),
         "command": list(plan.command),
         "rclone log": str(plan.rclone_log),
         "stdout log": str(plan.stdout_log),
@@ -506,7 +513,7 @@ def _sync_scope_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
     info = sync_allowlist_info(config)
     issues = sort_issues(list(load_result.issues) + scope_issues(info))
     details: dict[str, object] = {
-        "scope mode": "allowlist",
+        "scope mode": _readable_sync_scope_mode("allowlist"),
         "scope source": str(info.allowlist_file),
         "scope status": info.allowlist_status,
         "scope entries": info.allowlist_count if info.allowlist_status == "loaded" else 0,
@@ -525,7 +532,7 @@ def _sync_scope_report(args: argparse.Namespace, paths: RuntimePaths) -> Command
     return CommandReport(
         command="sync scope",
         status=status_from_issues(issues),
-        summary="allowlist scope is ready" if not issues else "allowlist scope needs attention",
+        summary="sync scope is ready" if not issues else "sync scope needs attention",
         details=details,
         issues=report_issues(issues),
     )
@@ -538,24 +545,26 @@ def cmd_sync_scope(args: argparse.Namespace, paths: RuntimePaths) -> int:
 
 
 def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    """Build the sync scope check report; check-allowlist is only a legacy alias."""
     load_result = load_config(paths)
     info = sync_allowlist_info(load_result.config)
     issues = sort_issues(list(load_result.issues) + scope_issues(info))
     details: dict[str, object] = {
-        "file": str(info.allowlist_file),
-        "status": info.allowlist_status,
-        "entries": info.allowlist_count,
+        "scope file": str(info.allowlist_file),
+        "scope status": info.allowlist_status,
+        "scope entries": info.allowlist_count,
     }
     if info.allowlist_message != "-":
         details["reason"] = info.allowlist_message
 
     summary = (
-        f"allowlist loaded ({info.allowlist_count} entries)"
+        f"sync scope loaded ({info.allowlist_count} entries)"
         if info.allowlist_status == "loaded" and not issues
-        else f"allowlist {info.allowlist_status}"
+        else f"sync scope {info.allowlist_status}"
     )
+    command = "sync check-allowlist" if args.sync_command == "check-allowlist" else "sync check-scope"
     return CommandReport(
-        command="sync check-allowlist",
+        command=command,
         status=status_from_issues(issues),
         summary=summary,
         details=details,
@@ -564,6 +573,7 @@ def _sync_check_allowlist_report(args: argparse.Namespace, paths: RuntimePaths) 
 
 
 def cmd_sync_check_allowlist(args: argparse.Namespace, paths: RuntimePaths) -> int:
+    """Run the primary check-scope command or its legacy check-allowlist alias."""
     report = _sync_check_allowlist_report(args, paths)
     print(render_report(report, as_json=args.json))
     return exit_code_for_report(report)
