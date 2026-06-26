@@ -5294,6 +5294,15 @@ def _invalid_diff_details(invalid_changes) -> list[dict[str, str]]:
     return [{"raw": change.raw, "reason": change.reason} for change in invalid_changes]
 
 
+def _is_noop_remote_delete_record(config: AppConfig, record: PlanRecord) -> bool:
+    action = record.action.strip().lower().replace("_", "-")
+    if "delete" not in action and "remove" not in action:
+        return False
+    if not record.path:
+        return False
+    return not (config.core_dir / record.path).exists()
+
+
 def _diffd_diff_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     fixture = Path(args.fixture)
@@ -6287,6 +6296,8 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
             "retry_policy": "manual retry or future scheduler retry only",
             "backoff_seconds": config.diffd_poll_interval_seconds,
             "appended_records": [],
+            "noop_delete_records": [],
+            "coalesced_existing_remote_change_records": 0,
             "skipped_records": [],
             "invalid_records": [],
         }
@@ -6344,8 +6355,41 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     iterations_processed = int(details.get("iterations processed", requested_iterations) or 0)
     started_at = datetime.now(timezone.utc).isoformat()
     appended_records: list[dict[str, str]] = []
+    noop_delete_records: list[dict[str, str]] = []
+    coalesced_record_count = 0
     skipped_records = record_payloads(plan.skipped_records)
     for record in plan.download_records:
+        if _is_noop_remote_delete_record(config, record):
+            preview_remove = remove_plan_records(
+                plan.remote_changes_file,
+                "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES",
+                record.path,
+                write=False,
+            )
+            if preview_remove.issue:
+                issues.append(preview_remove.issue)
+                continue
+            removed_count = preview_remove.before_count - preview_remove.after_count
+            if removed_count > 0:
+                remove_result = remove_plan_records(
+                    plan.remote_changes_file,
+                    "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES",
+                    record.path,
+                    write=True,
+                )
+                if remove_result.issue:
+                    issues.append(remove_result.issue)
+                    continue
+                removed_count = remove_result.before_count - remove_result.after_count
+            coalesced_record_count += removed_count
+            noop_delete_records.append(
+                {
+                    "path": record.path,
+                    "action": record.action,
+                    "reason": "remote delete has no local target",
+                }
+            )
+            continue
         update = append_plan_record(plan.remote_changes_file, "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES", record)
         if update.issue:
             issues.append(update.issue)
@@ -6381,6 +6425,8 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         "parsed_diff_changes": len(parsed.changes),
         "invalid_diff_changes": len(parsed.invalid),
         "appended_records": appended_records,
+        "noop_delete_records": noop_delete_records,
+        "coalesced_existing_remote_change_records": coalesced_record_count,
         "skipped_records": skipped_records,
         "invalid_records": _invalid_diff_details(parsed.invalid),
     }
@@ -6406,8 +6452,11 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
         {
             "iterations processed": iterations_processed,
             "download records appended": len(appended_records),
+            "noop remote delete records": len(noop_delete_records),
+            "coalesced existing remote-change records": coalesced_record_count,
             "skipped download records": len(skipped_records),
             "appended record details": appended_records,
+            "noop remote delete record details": noop_delete_records,
             "skipped record details": skipped_records,
             "written diffid": written_diffid,
             "process result": run_state,
@@ -7154,6 +7203,59 @@ def _notify_abnormal_transfer_results(
     if journal_changed:
         _write_chat_notify_journal(journal_path, journal)
     return notifications, issues
+
+
+def _send_deduped_chat_notification(
+    config: AppConfig,
+    service: ServiceDefinition,
+    dedupe_key: str,
+    message: str,
+    *,
+    path: str,
+) -> tuple[dict[str, object], ConfigIssue | None]:
+    journal_path = config.state_dir / service.name / "chat-notify-journal.json"
+    journal = _read_chat_notify_journal(journal_path)
+    dedupe_seconds = _chat_notify_dedupe_seconds()
+    suppressed = False
+    if config.chat_notify_enabled:
+        suppressed = _update_chat_notify_journal(
+            journal,
+            dedupe_key,
+            message,
+            dedupe_seconds=dedupe_seconds,
+        )
+        _write_chat_notify_journal(journal_path, journal)
+    if suppressed:
+        return (
+            {
+                "path": path,
+                "notification message": message,
+                "attempted": False,
+                "enabled": config.chat_notify_enabled,
+                "command": list(build_chat_notify_command(config, message)),
+                "returncode": "-",
+                "stdout": "",
+                "stderr": "",
+                "issue": "-",
+                "suppressed": True,
+                "suppression reason": "dedupe cooldown",
+                "dedupe seconds": dedupe_seconds,
+                "dedupe key": dedupe_key,
+            },
+            None,
+        )
+    notify_result = send_chat_notification(config, message)
+    return (
+        {
+            "path": path,
+            "notification message": message,
+            "suppressed": False,
+            "dedupe seconds": dedupe_seconds,
+            "dedupe key": dedupe_key,
+            **notify_result.as_dict(),
+        },
+        notify_result.issue,
+    )
 
 
 def _chat_notify_dedupe_seconds() -> int:
@@ -8456,14 +8558,34 @@ def _transfer_automation_run_report(
         issues.extend(consume_issues)
     elif execute and runnable and planned_command_count == 0 and not has_errors(issues):
         transfer_results = []
-    elif execute and manual_review_records:
-        notify_result = send_chat_notification(
-            load_result.config,
-            f"pcloud-manager {service.name}: automation blocked by manual-review records ({len(manual_review_records)})",
+    elif (
+        execute
+        and manual_review_records
+        and real_gate_open
+        and automation_gate_open
+        and automation_run_gate_open
+        and shadow_check.get("status") == "ok"
+        and consume_on_success
+        and max_records > 0
+        and rclone_bin is not None
+        and not rclone_issue
+    ):
+        manual_review_count = len(manual_review_records)
+        direction_label = "アップロード" if service.name == "pushd" else "ダウンロード"
+        message = (
+            f"pcloud-manager {service.name}: 確認待ちの変更が {manual_review_count}件あるため、"
+            f"自動{direction_label}を停止しました"
         )
-        notify_details.append({"message": "manual-review records present", **notify_result.as_dict()})
-        if notify_result.issue:
-            issues.append(notify_result.issue)
+        notify_result, notify_issue = _send_deduped_chat_notification(
+            load_result.config,
+            service,
+            f"{service.name}:manual-review:{manual_review_count}",
+            message,
+            path="manual-review",
+        )
+        notify_details.append({"message": f"確認待ちの変更があります ({manual_review_count}件)", **notify_result})
+        if notify_issue:
+            issues.append(notify_issue)
     state_writes: list[str] = []
     if transfer_state_file is not None:
         state_writes.append(str(transfer_state_file))

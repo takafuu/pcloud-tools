@@ -166,6 +166,7 @@ def test_diffd_preview_applies_allowlist_and_default_excludes(tmp_path: Path) ->
 def test_diffd_delete_events_do_not_become_download_transfer_commands(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
+    _write_workspace_file(env, "Documents/deleted-remote.txt", "local copy\n")
     diffd_dir = state_dir / "diffd"
     diffd_dir.mkdir(parents=True)
     (diffd_dir / "remote-changes.json").write_text(
@@ -482,6 +483,96 @@ def test_diffd_api_long_poll_run_executes_fixture_in_dev_state(tmp_path: Path) -
     assert diffid == "123"
     assert run_state["appended_records"] == remote_changes
     assert run_state["written_diffid"] == "123"
+
+
+def test_diffd_api_long_poll_noop_delete_coalesces_pending_download_when_local_missing(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE": "operator-approved-api-long-poll-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    diffd_dir = state_dir / "diffd"
+    diffd_dir.mkdir(parents=True)
+    (diffd_dir / "remote-changes.json").write_text(
+        json.dumps(
+            [
+                {"path": "Documents/transient.pdf", "action": "download", "reason": "diff:createfile"},
+                {"path": "Documents/keep.pdf", "action": "download", "reason": "diff:createfile"},
+            ]
+        )
+    )
+    fixture = tmp_path / "api-long-poll-delete.json"
+    fixture.write_text(
+        json.dumps(
+            {
+                "diffid": "124",
+                "entries": [
+                    {"path": "Documents/transient.pdf", "event": "deletefile"},
+                ],
+            }
+        )
+    )
+    shadow_report = tmp_path / "shadow-validation-api-long-poll-noop-delete.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-api-long-poll-noop-delete" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "diffd",
+            "api-poll",
+            "long-poll-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-preview",
+            "--reviewer-approved-response-policy",
+            "--reviewer-approved-credential-policy",
+            "--reviewer-approved-process-policy",
+            "--fixture",
+            str(fixture),
+            "--max-iterations",
+            "1",
+            "--execute",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    remote_changes = json.loads((diffd_dir / "remote-changes.json").read_text())
+    run_state = json.loads((diffd_dir / "api-long-poll-last-run.json").read_text())
+
+    assert result.returncode == 0
+    assert payload["summary"] == "diffd pCloud API long-poll run completed"
+    assert payload["details"]["download records appended"] == 0
+    assert payload["details"]["noop remote delete records"] == 1
+    assert payload["details"]["coalesced existing remote-change records"] == 1
+    assert remote_changes == [{"path": "Documents/keep.pdf", "action": "download", "reason": "diff:createfile"}]
+    assert run_state["noop_delete_records"] == [
+        {"path": "Documents/transient.pdf", "action": "delete", "reason": "remote delete has no local target"}
+    ]
+    assert run_state["coalesced_existing_remote_change_records"] == 1
+
+
 def test_diffd_api_long_poll_parses_pcloud_metadata_paths(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,

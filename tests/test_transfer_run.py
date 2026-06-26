@@ -1186,3 +1186,76 @@ def test_automation_run_dedupes_repeated_abnormal_chat_notifications(tmp_path: P
     assert second_payload["details"]["chat notify results"][0]["suppressed"] is True
     journal = json.loads((pushd_dir / "chat-notify-journal.json").read_text())
     assert journal["pushd:timeout:Documents/slow-upload.txt"]["suppressed_count"] == 1
+
+
+def test_automation_run_dedupes_repeated_manual_review_chat_notifications(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    notify_log = workspace / ".dev-state" / "notify-manual-review.log"
+    notify_cmd = workspace / ".dev-state" / "notify-manual-review"
+    notify_cmd.write_text(
+        "#!/bin/sh\n"
+        f"printf '%s\\n' \"$*\" >> {shlex.quote(str(notify_log))}\n"
+    )
+    notify_cmd.chmod(0o755)
+    _install_real_rclone_stub(env)
+    env.update(
+        {
+            "PCLOUD_TOOLS_REAL_TRANSFER_EXECUTION_GATE": "operator-approved-real-transfer-v1",
+            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE": "operator-approved-real-transfer-automation-v1",
+            "PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_RUN_GATE": "operator-approved-real-transfer-automation-run-v1",
+            "PCLOUD_TOOLS_CHAT_NOTIFY_ENABLED": "1",
+            "PCLOUD_TOOLS_CHAT_NOTIFY_CMD": f"{notify_cmd} {{message}}",
+        }
+    )
+    diffd_dir = state_dir / "diffd"
+    diffd_dir.mkdir(parents=True)
+    (diffd_dir / "remote-changes.json").write_text(
+        json.dumps([{"path": "Documents/deleted-remote.txt", "action": "delete", "reason": "diff:deletefile"}])
+    )
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-manual-review-notify-dedupe" / "workspace"
+    shadow_report = tmp_path / "shadow-validation-manual-review-notify-dedupe.json"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "pcloud_tools.cli",
+        "diffd",
+        "transfer",
+        "automation-run",
+        "--report-path",
+        str(shadow_report),
+        "--execute",
+        "--consume-on-success",
+        "--json",
+    ]
+
+    first = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+    second = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+
+    first_payload = _payload(first)
+    second_payload = _payload(second)
+    assert first.returncode == 1
+    assert second.returncode == 1
+    assert notify_log.exists()
+    assert len(notify_log.read_text().splitlines()) == 1
+    assert first_payload["details"]["chat notify results"][0]["attempted"] is True
+    assert first_payload["details"]["chat notify results"][0]["suppressed"] is False
+    assert second_payload["details"]["chat notify results"][0]["attempted"] is False
+    assert second_payload["details"]["chat notify results"][0]["suppressed"] is True
+    journal = json.loads((diffd_dir / "chat-notify-journal.json").read_text())
+    assert journal["diffd:manual-review:1"]["suppressed_count"] == 1
