@@ -71,6 +71,7 @@ class AppConfig:
     transfer_exec_timeout_seconds: int
     download_suppression_ttl_seconds: int
     pushd_missing_local_prune_ttl_seconds: int
+    pushd_upload_settle_seconds: int
     pushd_debounce_seconds: int
     pushd_queue_limit: int
     diffd_poll_interval_seconds: int
@@ -141,6 +142,7 @@ CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("transfer_exec_timeout_seconds", "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", "int", "5"),
     FieldSpec("download_suppression_ttl_seconds", "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS", "int", "86400"),
     FieldSpec("pushd_missing_local_prune_ttl_seconds", "PCLOUD_TOOLS_PUSHD_MISSING_LOCAL_PRUNE_TTL_SECONDS", "int", "600"),
+    FieldSpec("pushd_upload_settle_seconds", "PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS", "int", "30", "0"),
     FieldSpec("pushd_debounce_seconds", "PCLOUD_TOOLS_PUSHD_DEBOUNCE_SECONDS", "int", "3"),
     FieldSpec("pushd_queue_limit", "PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT", "int", "1000"),
     FieldSpec("diffd_poll_interval_seconds", "PCLOUD_TOOLS_DIFFD_POLL_INTERVAL_SECONDS", "int", "60"),
@@ -343,6 +345,15 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
     ):
         if value < 1:
             issues.append(ConfigIssue(key=key, level="error", message=f"value must be >= 1: {value}"))
+
+    if config.pushd_upload_settle_seconds < 0:
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS",
+                level="error",
+                message=f"value must be >= 0: {config.pushd_upload_settle_seconds}",
+            )
+        )
 
     for key, value in (
         ("PCLOUD_TOOLS_PUSHD_QUEUE_LIMIT", config.pushd_queue_limit),

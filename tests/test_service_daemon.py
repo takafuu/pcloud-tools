@@ -59,7 +59,7 @@ def test_service_daemon_pid_zero_is_invalid_not_running(tmp_path: Path) -> None:
     assert payload["details"]["process state"] == "not recorded"
     assert payload["details"]["pid"] == "-"
     assert payload["summary"] == (
-        "pushd: not recorded; queued: 0; planned: 0; missing-local: 0; manual-review: 0; launchd: not_loaded"
+        "pushd: not recorded; queued: 0; planned: 0; vanished-local: 0; manual-review: 0; launchd: not_loaded"
     )
     assert "PCLOUD_TOOLS_PUSHD_PID" in [issue["key"] for issue in payload["issues"]]
 def test_service_daemon_status_summarizes_last_transfer_state(tmp_path: Path) -> None:
@@ -121,9 +121,13 @@ def test_service_daemon_status_summarizes_last_transfer_state(tmp_path: Path) ->
     assert pushd_report["details"]["last transfer file"] == str(pushd_dir / "last-transfer.json")
     assert diffd_report["details"]["last transfer file"] == str(diffd_dir / "last-transfer.json")
     assert pushd_report["details"]["last transfer status"] == "success"
-    assert pushd_report["details"]["last transfer summary"] == "success: 1; failed: 0; timeout: 0; total: 1"
+    assert pushd_report["details"]["last transfer summary"] == (
+        "success: 1; settling: 0; failed: 0; timeout: 0; total: 1"
+    )
     assert diffd_report["details"]["last transfer status"] == "timeout"
-    assert diffd_report["details"]["last transfer summary"] == "success: 0; failed: 0; timeout: 1; total: 1"
+    assert diffd_report["details"]["last transfer summary"] == (
+        "success: 0; settling: 0; failed: 0; timeout: 1; total: 1"
+    )
     assert json.loads((pushd_dir / "last-transfer.json").read_text()) == pushd_payload
     assert json.loads((diffd_dir / "last-transfer.json").read_text()) == diffd_payload
 def test_service_daemon_status_warns_on_invalid_last_transfer_json(tmp_path: Path) -> None:
@@ -270,6 +274,7 @@ def test_service_daemon_status_reports_last_run_and_gate_summaries(tmp_path: Pat
     )
     assert pushd_report["details"]["planned uploads"] == 1
     assert pushd_report["details"]["manual review transfer records"] == 1
+    assert pushd_report["details"]["manual review transfer record details"][0]["path"] == "Documents/delete.txt"
     assert pushd_report["details"]["gate summary"]["resident gate"] == "closed"
     assert pushd_report["details"]["gate summary"]["launchd registration"] == "not_loaded"
     assert pushd_report["details"]["launchd gate"] == "closed"
@@ -430,7 +435,14 @@ def test_service_daemon_status_xbar_is_concise_and_safe(tmp_path: Path) -> None:
     upload_path = workspace / "Documents" / "upload.txt"
     upload_path.parent.mkdir(parents=True, exist_ok=True)
     upload_path.write_text("upload\n")
-    (pushd_dir / "queue.json").write_text(json.dumps([{"path": "Documents/upload.txt", "action": "upload"}]))
+    (pushd_dir / "queue.json").write_text(
+        json.dumps(
+            [
+                {"path": "Documents/upload.txt", "action": "upload"},
+                {"path": "Documents/delete.txt", "action": "delete"},
+            ]
+        )
+    )
     (diffd_dir / "remote-changes.json").write_text(json.dumps([{"path": "Documents/download.txt", "action": "download"}]))
     (pushd_dir / "fswatch-resident-last-run.json").write_text(
         json.dumps({"returncode": 0, "appended_records": [{"path": "Documents/upload.txt", "action": "upload"}]})
@@ -471,6 +483,9 @@ def test_service_daemon_status_xbar_is_concise_and_safe(tmp_path: Path) -> None:
     assert "last resident: success" in pushd.stdout
     assert "gates: real=closed; resident=closed; transfer=closed" in pushd.stdout
     assert "Preview pushd plan" in pushd.stdout
+    assert "Review pending pushd items (1)" in pushd.stdout
+    assert "--Documents/delete.txt (delete)" in pushd.stdout
+    assert "param2=pushd.transfer.preview" in pushd.stdout
     assert "Inspect pushd launchd status" in pushd.stdout
     assert "pushd.transfer.check" in pushd.stdout
     assert "last transfer:" not in pushd.stdout

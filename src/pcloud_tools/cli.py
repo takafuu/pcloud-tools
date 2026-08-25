@@ -5,7 +5,7 @@ import os
 import sys
 
 from .cli_action import add_action_parser, cmd_action
-from .cli_archive import add_archive_parser, cmd_archive
+from .cli_archive import add_archive_parser, add_legacy_parser, cmd_archive
 from .cli_daemon import add_daemon_parser, cmd_daemon
 from .cli_gates import add_gates_parser, cmd_gates
 from .cli_help import add_help_parser, cmd_help
@@ -58,6 +58,8 @@ def build_parser(
     add_service_daemon_parsers(subparsers)
 
     add_trash_parser(subparsers)
+
+    add_legacy_parser(subparsers)
 
     add_archive_parser(subparsers)
 
@@ -128,7 +130,7 @@ def main(argv: list[str] | None = None) -> int:
         return 1
     if args.command == "trash":
         return cmd_trash(args, paths)
-    if args.command == "archive":
+    if args.command in {"archive", "legacy"}:
         result = cmd_archive(args, paths)
         if result is not None:
             return result

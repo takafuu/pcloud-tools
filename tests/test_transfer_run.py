@@ -557,26 +557,287 @@ def test_transfer_executor_run_executes_and_consumes_dev_state_only(tmp_path: Pa
     assert json.loads((diffd_dir / "remote-changes.json").read_text()) == []
 
 
-def test_transfer_executor_start_missing_local_cleanup_prunes_before_planning(tmp_path: Path) -> None:
+def test_pushd_executor_defers_unsettled_local_uploads_without_rclone(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, {"PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS": "3600"})
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/recording.mp3", "still changing\n")
+    queue_payload = [{"path": "Documents/recording.mp3", "action": "upload", "reason": "test"}]
+    (pushd_dir / "queue.json").write_text(json.dumps(queue_payload))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "executor-run",
+            "--execute",
+            "--consume-on-success",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["summary"] == "pushd transfer executor tick completed"
+    assert payload["details"]["planned transfer command count"] == 0
+    assert payload["details"]["planned uploads"] == 0
+    assert payload["details"]["settling local upload records"] == 1
+    assert payload["details"]["records consumed"] == 0
+    assert not fake_log.exists()
+    assert json.loads((pushd_dir / "queue.json").read_text()) == queue_payload
+
+
+def test_pushd_executor_uses_two_unchanged_fingerprint_observations(tmp_path: Path) -> None:
+    env = _base_env(tmp_path, {"PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS": "30"})
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/recording.mp3", "finished\n")
+    queue_file = pushd_dir / "queue.json"
+    queue_file.write_text(
+        json.dumps([{"path": "Documents/recording.mp3", "action": "upload", "reason": "fswatch:Updated"}])
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "pcloud_tools.cli",
+        "pushd",
+        "transfer",
+        "executor-run",
+        "--execute",
+        "--consume-on-success",
+        "--json",
+    ]
+
+    first = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+    journal_file = pushd_dir / "upload-candidates.json"
+    journal = json.loads(journal_file.read_text())
+    journal["records"][0]["stable_since"] = "2000-01-01T00:00:00+00:00"
+    journal_file.write_text(json.dumps(journal))
+    second = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+
+    assert first.returncode == 0
+    assert _payload(first)["details"]["settling local upload records"] == 1
+    assert second.returncode == 0
+    assert _payload(second)["details"]["records consumed"] == 1
+    assert "recording.mp3" in fake_log.read_text()
+    assert json.loads(queue_file.read_text()) == []
+
+
+def test_pushd_fswatch_rename_uploads_existing_target_and_prunes_vanished_source(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/final-name.txt", "complete\n")
+    queue_file = pushd_dir / "queue.json"
+    queue_file.write_text(
+        json.dumps(
+            [
+                {
+                    "path": "Documents/copying.txt",
+                    "action": "rename",
+                    "reason": "fswatch:Renamed",
+                    "missing_since": "2000-01-01T00:00:00+00:00",
+                },
+                {"path": "Documents/final-name.txt", "action": "rename", "reason": "fswatch:Renamed"},
+            ]
+        )
+    )
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "executor-run",
+            "--execute",
+            "--consume-on-success",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    assert result.returncode == 0
+    assert payload["details"]["missing local startup cleanup"]["pruned"] == 1
+    assert payload["details"]["records consumed"] == 1
+    assert "final-name.txt" in fake_log.read_text()
+    assert "copying.txt" not in fake_log.read_text()
+    assert json.loads(queue_file.read_text()) == []
+
+
+def test_pushd_source_updated_rclone_result_returns_to_settling_without_error_or_notification(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    fake_rclone = Path(env["PCLOUD_TOOLS_RCLONE_BIN"])
+    fake_rclone.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$*\" >> \"$FAKE_RCLONE_LOG\"\n"
+        "printf 'Failed to copy: source file is being updated (size changed)\\n' >&2\n"
+        "exit 1\n"
+    )
+    fake_rclone.chmod(0o755)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    _write_workspace_file(env, "Documents/recording.mp3", "changing\n")
+    queue_payload = [{"path": "Documents/recording.mp3", "action": "upload", "reason": "fswatch:Updated"}]
+    (pushd_dir / "queue.json").write_text(json.dumps(queue_payload))
+
+    result = subprocess.run(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "transfer",
+            "executor-run",
+            "--execute",
+            "--consume-on-success",
+            "--json",
+        ],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+    transfer_result = payload["details"]["transfer results"][0]
+    status = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "pushd", "status", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+    status_payload = _payload(status)
+    assert result.returncode == 0
+    assert transfer_result["settling_local"] is True
+    assert transfer_result["tolerated"] is True
+    assert transfer_result["retry_classification"] == "source-updated-during-transfer"
+    assert status_payload["details"]["last transfer status"] == "settling"
+    assert not (pushd_dir / "chat-notify-journal.json").exists()
+    assert json.loads((pushd_dir / "queue.json").read_text()) == queue_payload
+    assert fake_log.exists()
+
+
+def test_pushd_previously_uploaded_stale_upload_path_is_pruned(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    target = _write_workspace_file(env, "Documents/known.txt", "known\n")
+    queue_file = pushd_dir / "queue.json"
+    queue_file.write_text(
+        json.dumps([{"path": "Documents/known.txt", "action": "upload", "reason": "fswatch:Created"}])
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "pcloud_tools.cli",
+        "pushd",
+        "transfer",
+        "executor-run",
+        "--execute",
+        "--consume-on-success",
+        "--json",
+    ]
+    uploaded = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+    target.unlink()
+    queue_file.write_text(
+        json.dumps([{"path": "Documents/known.txt", "action": "upload", "reason": "fswatch"}])
+    )
+
+    removed = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+    payload = _payload(removed)
+
+    assert uploaded.returncode == 0
+    assert removed.returncode == 0
+    assert payload["details"]["manual review transfer records"] == 0
+    assert payload["details"]["missing local startup cleanup"]["pruned"] == 1
+    assert json.loads(queue_file.read_text()) == []
+    assert len(fake_log.read_text().splitlines()) == 1
+
+
+def test_pushd_explicit_delete_of_previously_uploaded_path_stays_manual_review(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    fake_log = _install_fake_rclone(env)
+    pushd_dir = state_dir / "pushd"
+    pushd_dir.mkdir(parents=True)
+    target = _write_workspace_file(env, "Documents/known.txt", "known\n")
+    queue_file = pushd_dir / "queue.json"
+    queue_file.write_text(
+        json.dumps([{"path": "Documents/known.txt", "action": "upload", "reason": "fswatch:Created"}])
+    )
+    command = [
+        sys.executable,
+        "-m",
+        "pcloud_tools.cli",
+        "pushd",
+        "transfer",
+        "executor-run",
+        "--execute",
+        "--consume-on-success",
+        "--json",
+    ]
+    uploaded = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+    target.unlink()
+    delete_record = {"path": "Documents/known.txt", "action": "delete", "reason": "fswatch:Removed"}
+    queue_file.write_text(json.dumps([delete_record]))
+
+    removed = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
+    payload = _payload(removed)
+
+    assert uploaded.returncode == 0
+    assert removed.returncode == 1
+    assert payload["details"]["manual review transfer records"] == 1
+    assert payload["details"]["missing local startup cleanup"]["pruned"] == 0
+    assert json.loads(queue_file.read_text()) == [delete_record]
+    assert len(fake_log.read_text().splitlines()) == 1
+
+
+def test_transfer_executor_start_prunes_fresh_uncommitted_missing_candidate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
     fake_log = _install_fake_rclone(env)
     pushd_dir = state_dir / "pushd"
     pushd_dir.mkdir(parents=True)
     _write_workspace_file(env, "Documents/present-upload.pdf", "upload\n")
-    observed_at = datetime(2026, 5, 20, 8, 0, tzinfo=timezone.utc)
-    stale_since = (observed_at - timedelta(seconds=601)).isoformat()
     queue_file = pushd_dir / "queue.json"
-    stale_missing_record = {
+    missing_record = {
         "path": "Documents/stale-missing.pdf",
         "action": "upload",
         "reason": "test",
-        "missing_since": stale_since,
     }
     queue_file.write_text(
         json.dumps(
             [
-                stale_missing_record,
+                missing_record,
                 {"path": "Documents/present-upload.pdf", "action": "upload", "reason": "test"},
             ]
         )
@@ -612,7 +873,7 @@ def test_transfer_executor_start_missing_local_cleanup_prunes_before_planning(tm
     assert json.loads(queue_file.read_text()) == []
 
 
-def test_transfer_automation_run_missing_local_cleanup_prunes_before_planning(tmp_path: Path) -> None:
+def test_transfer_automation_run_prunes_fresh_uncommitted_missing_candidate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     real_log = _install_real_rclone_stub(env)
@@ -627,7 +888,6 @@ def test_transfer_automation_run_missing_local_cleanup_prunes_before_planning(tm
                     "path": "Documents/stale-missing.pdf",
                     "action": "upload",
                     "reason": "test",
-                    "missing_since": "2000-01-01T00:00:00+00:00",
                 },
                 {"path": "Documents/present-upload.pdf", "action": "upload", "reason": "test"},
             ]
@@ -1188,7 +1448,7 @@ def test_automation_run_dedupes_repeated_abnormal_chat_notifications(tmp_path: P
     assert journal["pushd:timeout:Documents/slow-upload.txt"]["suppressed_count"] == 1
 
 
-def test_automation_run_dedupes_repeated_manual_review_chat_notifications(tmp_path: Path) -> None:
+def test_automation_run_defers_manual_review_without_error_or_chat_notification(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
@@ -1247,15 +1507,12 @@ def test_automation_run_dedupes_repeated_manual_review_chat_notifications(tmp_pa
     first = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
     second = subprocess.run(command, check=False, capture_output=True, text=True, cwd=tmp_path, env=env)
 
-    first_payload = _payload(first)
-    second_payload = _payload(second)
-    assert first.returncode == 1
-    assert second.returncode == 1
-    assert notify_log.exists()
-    assert len(notify_log.read_text().splitlines()) == 1
-    assert first_payload["details"]["chat notify results"][0]["attempted"] is True
-    assert first_payload["details"]["chat notify results"][0]["suppressed"] is False
-    assert second_payload["details"]["chat notify results"][0]["attempted"] is False
-    assert second_payload["details"]["chat notify results"][0]["suppressed"] is True
-    journal = json.loads((diffd_dir / "chat-notify-journal.json").read_text())
-    assert journal["diffd:manual-review:1"]["suppressed_count"] == 1
+    for result in (first, second):
+        payload = _payload(result)
+        assert result.returncode == 0
+        assert payload["status"] == "warning"
+        assert payload["summary"] == "diffd transfer automation-run had no records"
+        assert payload["details"]["manual review transfer records"] == 1
+        assert payload["details"]["chat notify results"] == []
+    assert not notify_log.exists()
+    assert not (diffd_dir / "chat-notify-journal.json").exists()

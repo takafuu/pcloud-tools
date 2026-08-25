@@ -21,6 +21,7 @@ test = [
 pcloud-tools = "pcloud_tools.cli:main"
 pcloud-pushd = "pcloud_tools.cli_service_daemon:main_pushd"
 pcloud-diffd = "pcloud_tools.cli_service_daemon:main_diffd"
+pcloud-archive = "pcloud_tools.pcloud_archive:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pcloud_tools"]

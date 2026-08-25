@@ -56,7 +56,7 @@ def test_pushd_preview_builds_allowlisted_queue_plan(tmp_path: Path) -> None:
     assert payload["details"]["planned uploads"] == 1
     assert payload["details"]["excluded queue items"] == 3
     assert payload["details"]["invalid queue items"] == 1
-    assert payload["details"]["plan summary"] == "upload: 1; missing-local: 0; excluded: 3; invalid: 1"
+    assert payload["details"]["plan summary"] == "upload: 1; vanished-local: 0; excluded: 3; invalid: 1"
     assert payload["details"]["planned upload records"][0]["path"] == "Documents/report.pdf"
     assert payload["details"]["excluded queue records"][1]["reason"] == "manager ignore rule"
 
@@ -356,7 +356,7 @@ def test_pushd_fswatch_fixture_preview_is_read_only(tmp_path: Path) -> None:
     assert payload["details"]["invalid queue items"] == 1
     assert payload["details"]["planned upload records"][0]["reason"] == "fswatch:Created,Updated"
     assert not (state_dir / "pushd").exists()
-def test_pushd_fswatch_delete_and_rename_events_stay_manual_review_actions(tmp_path: Path) -> None:
+def test_pushd_fswatch_missing_delete_and_rename_events_become_vanished_candidates(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     fixture = tmp_path / "fswatch-manual-review-events.txt"
     fixture.write_text(
@@ -388,11 +388,9 @@ def test_pushd_fswatch_delete_and_rename_events_stay_manual_review_actions(tmp_p
     )
 
     payload = _payload(result)
-    records = payload["details"]["planned upload records"]
-
     assert result.returncode == 0
-    assert [record["action"] for record in records] == ["delete", "rename"]
-    assert [record["reason"] for record in records] == ["fswatch:Removed", "fswatch:Renamed"]
+    assert payload["details"]["planned upload records"] == []
+    assert payload["details"]["vanished local candidates"] == 2
 def test_pushd_and_diffd_policy_reports_are_read_only(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -1462,11 +1460,10 @@ def test_pushd_missing_local_uploads_are_stale_and_do_not_block_downloads(tmp_pa
     assert pushd_payload["details"]["missing local upload records"] == 1
     assert pushd_payload["details"]["planned transfer commands"][0]["path"] == "Documents/existing.txt"
     assert pushd_xbar.returncode == 0
-    assert "missing local uploads: 1" in pushd_xbar.stdout
-    assert "Missing local upload records" in pushd_xbar.stdout
+    assert "vanished local candidates: 1" in pushd_xbar.stdout
+    assert "Vanished local candidates (automatic cleanup)" in pushd_xbar.stdout
     assert "Documents/missing.txt" in pushd_xbar.stdout
-    assert "Ignore missing local upload records" in pushd_xbar.stdout
-    assert "terminal=false" in pushd_xbar.stdout
+    assert "Prune vanished local candidates" not in pushd_xbar.stdout
     assert diffd_preview.returncode == 0
     assert diffd_payload["details"]["planned downloads"] == 1
     assert diffd_payload["details"]["manual review transfer records"] == 0
@@ -1478,7 +1475,7 @@ def test_pushd_missing_local_uploads_are_stale_and_do_not_block_downloads(tmp_pa
     ]
 
 
-def test_pushd_queue_prune_missing_local_preserves_delete_record_with_same_path(tmp_path: Path) -> None:
+def test_pushd_queue_prune_missing_local_removes_uncommitted_fswatch_delete_candidate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
     queue_file = state_dir / "pushd" / "queue.json"
@@ -1514,8 +1511,8 @@ def test_pushd_queue_prune_missing_local_preserves_delete_record_with_same_path(
 
     payload = _payload(result)
     assert result.returncode == 0
-    assert payload["details"]["queue items removed"] == 1
-    assert json.loads(queue_file.read_text()) == [delete_record]
+    assert payload["details"]["queue items removed"] == 2
+    assert json.loads(queue_file.read_text()) == []
 
 
 def _missing_local_test_config(env: dict[str, str], ttl_seconds: int = 600) -> SimpleNamespace:
@@ -1664,11 +1661,11 @@ def test_pushd_missing_local_cleanup_prunes_only_stale_missing_uploads(tmp_path:
 
     queue_payload = json.loads(queue_file.read_text())
     assert result.before_count == 8
-    assert result.after_count == 7
+    assert result.after_count == 5
     assert result.annotated_count == 1
-    assert result.pruned_count == 1
+    assert result.pruned_count == 3
     assert result.fresh_missing_count == 2
-    assert result.stale_missing_count == 1
+    assert result.stale_missing_count == 3
     assert present_record in queue_payload
     assert fresh_missing_record in queue_payload
     assert stale_missing_record not in queue_payload
@@ -1678,8 +1675,8 @@ def test_pushd_missing_local_cleanup_prunes_only_stale_missing_uploads(tmp_path:
         "reason": "fswatch",
         "missing_since": observed_at.isoformat(),
     } in queue_payload
-    assert delete_record in queue_payload
-    assert rename_record in queue_payload
+    assert delete_record not in queue_payload
+    assert rename_record not in queue_payload
     assert excluded_record in queue_payload
     assert invalid_record in queue_payload
 
@@ -1776,10 +1773,10 @@ def test_pushd_force_prune_missing_local_upload_records_ignores_ttl(tmp_path: Pa
 
     queue_payload = json.loads(queue_file.read_text())
     assert result.before_count == 5
-    assert result.after_count == 4
-    assert result.pruned_count == 1
+    assert result.after_count == 3
+    assert result.pruned_count == 2
     assert present_record in queue_payload
     assert missing_upload_record not in queue_payload
-    assert delete_record in queue_payload
+    assert delete_record not in queue_payload
     assert excluded_record in queue_payload
     assert {"path": "../bad", "action": "upload"} in queue_payload

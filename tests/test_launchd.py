@@ -1259,6 +1259,7 @@ def test_public_automation_plist_and_reload_execute_only_with_fake_launchctl_gat
     env["PATH"] = f"{public_bin}:{env['PATH']}"
     env["LAUNCHCTL_LOG"] = str(launchctl_log)
     env["PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_GATE"] = "operator-approved-real-transfer-automation-v1"
+    env["PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS"] = "0"
     env["PCLOUD_TOOLS_PUSHD_LAUNCHD_AUTOMATION_PLIST_GATE"] = (
         "operator-approved-pushd-launchd-automation-plist-v1"
     )

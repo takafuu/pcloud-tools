@@ -32,7 +32,7 @@ from .daemon_state import read_daemon_state
 from .mount_ops import mount_layer_state, resolve_layers
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .runtime import RuntimePaths
-from .service_daemon_plan import PlanRecord, build_diffd_plan, build_pushd_plan
+from .service_daemon_plan import PlanRecord, build_diffd_plan, build_pushd_plan, classify_upload_candidates
 from .service_daemon_state import read_service_daemon_state
 from .sync_exec import bisync_listing_recovery_state
 from .sync_runtime import (
@@ -155,7 +155,7 @@ def _status_actions(paths: RuntimePaths) -> list[ReportAction]:
         ),
         ReportAction(
             id="pushd.queue.prune-missing-local",
-            label="Ignore missing local upload records",
+            label="Prune vanished local candidates",
             command=action_command(paths, "pushd.queue.prune-missing-local"),
             terminal=False,
             refresh=True,
@@ -359,14 +359,22 @@ def _split_missing_local_upload_records(
     config: AppConfig,
     records: tuple[PlanRecord, ...],
 ) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...]]:
-    present_records: list[PlanRecord] = []
-    missing_records: list[PlanRecord] = []
-    for record in records:
-        if record.action == "upload" and not (config.core_dir / record.path).exists():
-            missing_records.append(PlanRecord(record.path, record.action, "local source file is missing"))
-        else:
-            present_records.append(record)
-    return tuple(present_records), tuple(missing_records)
+    classification = classify_upload_candidates(config, records)
+    present_records = (
+        *classification.ready_records,
+        *classification.settling_records,
+        *classification.deletion_review_records,
+    )
+    return tuple(present_records), classification.vanished_records
+
+
+def _split_settled_local_upload_records(
+    config: AppConfig,
+    records: tuple[PlanRecord, ...],
+) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...]]:
+    classification = classify_upload_candidates(config, records)
+    settled = (*classification.ready_records, *classification.deletion_review_records)
+    return tuple(settled), classification.settling_records
 
 
 def _manual_review_records(
@@ -397,8 +405,22 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
     pushd_plan, _pushd_scope = build_pushd_plan(config, pushd_state)
     diffd_plan = build_diffd_plan(config, diffd_state, daemon_state)
     present_uploads, missing_uploads = _split_missing_local_upload_records(config, pushd_plan.upload_records)
-    planned_uploads, manual_uploads = _manual_review_records(present_uploads, diffd_plan.download_records)
+    settled_uploads, settling_uploads = _split_settled_local_upload_records(config, present_uploads)
+    planned_uploads, manual_uploads = _manual_review_records(settled_uploads, diffd_plan.download_records)
     planned_downloads, manual_downloads = _manual_review_records(diffd_plan.download_records, present_uploads)
+    settle_enabled = int(getattr(config, "pushd_upload_settle_seconds", 0)) > 0
+    push_parts = [
+        f"queued={pushd_plan.total}",
+        f"planned={len(planned_uploads)}",
+    ]
+    if settle_enabled or settling_uploads:
+        push_parts.append(f"settling-local={len(settling_uploads)}")
+    push_parts.extend(
+        [
+            f"vanished-local={len(missing_uploads)}",
+            f"manual-review={len(manual_uploads)}",
+        ]
+    )
 
     issues: list[ConfigIssue] = [
         *pushd_state.issues,
@@ -408,10 +430,7 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
         *diffd_plan.issues,
     ]
     details: dict[str, object] = {
-        "push": (
-            f"queued={pushd_plan.total}; planned={len(planned_uploads)}; "
-            f"missing-local={len(missing_uploads)}; manual-review={len(manual_uploads)}"
-        ),
+        "push": "; ".join(push_parts),
         "pull": (
             f"pending={diffd_plan.pending_download_count}; remote={diffd_plan.remote_change_count}; "
             f"planned={len(planned_downloads)}; skipped={diffd_plan.skipped_count}; "
@@ -419,7 +438,9 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
         ),
         "push queued": pushd_plan.total,
         "push planned": len(planned_uploads),
+        "push settling local": len(settling_uploads),
         "push missing local": len(missing_uploads),
+        "push vanished local": len(missing_uploads),
         "push manual review": len(manual_uploads),
         "pull pending": diffd_plan.pending_download_count,
         "pull remote changes": diffd_plan.remote_change_count,
@@ -430,7 +451,7 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
     if missing_uploads:
         details.update(
             {
-                "push missing local detail": f"missing local upload records={len(missing_uploads)}",
+                "push missing local detail": f"vanished local candidates={len(missing_uploads)}",
                 "push review": "pcloud-manager pushd status",
                 "push cleanup": "pcloud-manager action pushd.queue.prune-missing-local",
             }

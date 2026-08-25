@@ -357,13 +357,13 @@ def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) 
     assert payload["details"]["complete read-only approvals"] == 5
     assert gates["pushd fswatch resident"]["gate status"] == "closed"
     assert gates["diffd pCloud API long-poll"]["can run"] == "no"
-    assert gates["old monolith archive"]["approval status"] == "complete-read-only"
+    assert gates["old monolith legacy archive"]["approval status"] == "complete-read-only"
     assert "sync autosync launchd" in gates
     assert gates["sync migration validation"]["approval status"] == "complete-read-only"
     assert gates["pushd fswatch resident"]["guarded run path"] == "available"
     assert gates["diffd pCloud API long-poll"]["run command"] == ["diffd", "api-poll", "long-poll-run"]
     assert gates["sync autosync launchd"]["execution gate env"].startswith("PCLOUD_TOOLS_AUTOSYNC")
-    assert "old monolith archive" in payload["details"]["guarded run paths"]
+    assert "old monolith legacy archive" in payload["details"]["guarded run paths"]
     assert "--execute" not in payload["details"]["read-only command examples"]["pushd fswatch resident"][0]
     assert "sync migration-run normal" in payload["details"]["read-only command examples"]["sync migration validation"][0]
     assert not any(state_dir.iterdir())
@@ -384,8 +384,8 @@ def test_gates_status_human_output_is_concise(tmp_path: Path) -> None:
     assert "state writes: none" in result.stdout
     assert "pushd fswatch resident" in result.stdout
     assert "diffd pCloud API long-poll" in result.stdout
-    assert "old monolith archive" in result.stdout
-    assert "run=archive old-monolith-run" in result.stdout
+    assert "old monolith legacy archive" in result.stdout
+    assert "run=legacy old-monolith-run" in result.stdout
     assert "read-only command examples:" not in result.stdout
 def test_gates_status_human_output_can_show_read_only_command_examples(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
@@ -428,7 +428,7 @@ def test_gates_status_xbar_is_concise_and_safe(tmp_path: Path) -> None:
     assert "gate summary:" in result.stdout
     assert "pushd fswatch resident: gate=closed" in result.stdout
     assert "diffd pCloud API long-poll: gate=closed" in result.stdout
-    assert "old monolith archive: gate=closed" in result.stdout
+    assert "old monolith legacy archive: gate=closed" in result.stdout
     assert "Refresh gates" in result.stdout
     assert "Pushd status" in result.stdout
     assert "Diffd status" in result.stdout

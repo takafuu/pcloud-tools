@@ -40,7 +40,6 @@ def _service_status_xbar_action_ids(service_name: str) -> set[str]:
     }
     if service_name == "pushd":
         common.add("pushd.fswatch.resident-gate")
-        common.add("pushd.queue.prune-missing-local")
     else:
         common.add("diffd.api-poll.long-poll-gate")
     return common
@@ -55,7 +54,7 @@ def render_service_status_xbar(report: CommandReport, service_name: str) -> str:
     if service_name == "pushd":
         plan_line = (
             f"plan: uploads={details.get('planned uploads', '-')}; "
-            f"missing={details.get('missing local upload records', '-')}; "
+            f"vanished={details.get('vanished local candidates', details.get('missing local upload records', '-'))}; "
             f"manual={details.get('manual review transfer records', '-')}; "
             f"queued={details.get('pending queue items', '-')}"
         )
@@ -93,9 +92,12 @@ def render_service_status_xbar(report: CommandReport, service_name: str) -> str:
             f"transfer={details.get('transfer gate', '-')}"
         ),
         _xbar_escape(f"download journal: {conflict_line}"),
-        _xbar_escape(f"missing local uploads: {details.get('missing local upload records', '-')}")
+        _xbar_escape(
+            f"vanished local candidates: "
+            f"{details.get('vanished local candidates', details.get('missing local upload records', '-'))}"
+        )
         if service_name == "pushd"
-        else _xbar_escape("missing local uploads: -"),
+        else _xbar_escape("vanished local candidates: -"),
         _xbar_escape(f"upload echo: suppressed={details.get('upload origin completed', '-')}"),
         _xbar_escape(notify_line),
     ]
@@ -103,7 +105,7 @@ def render_service_status_xbar(report: CommandReport, service_name: str) -> str:
         missing_records = details.get("missing local upload record details", [])
         if isinstance(missing_records, list) and missing_records:
             lines.append("---")
-            lines.append(_xbar_escape("Missing local upload records"))
+            lines.append(_xbar_escape("Vanished local candidates (automatic cleanup)"))
             for record in missing_records[:5]:
                 if not isinstance(record, dict):
                     continue
@@ -111,6 +113,33 @@ def render_service_status_xbar(report: CommandReport, service_name: str) -> str:
                 lines.append(_xbar_escape(f"{record.get('path', '-')} ({reason})"))
             if len(missing_records) > 5:
                 lines.append(_xbar_escape(f"... and {len(missing_records) - 5} more"))
+    manual_records = details.get("manual review transfer record details", [])
+    if isinstance(manual_records, list) and manual_records:
+        review_action = next(
+            (action for action in report.actions if action.id == f"{service_name}.transfer.preview"),
+            None,
+        )
+        lines.append("---")
+        if review_action is not None:
+            lines.append(
+                _xbar_action(
+                    ReportAction(
+                        id=review_action.id,
+                        label=f"Review pending {service_name} items ({len(manual_records)})",
+                        command=review_action.command,
+                        refresh=False,
+                        terminal=True,
+                    )
+                )
+            )
+        else:
+            lines.append(_xbar_escape(f"Manual review records: {len(manual_records)}"))
+        for record in manual_records[:5]:
+            if not isinstance(record, dict):
+                continue
+            lines.append(_xbar_escape(f"--{record.get('path', '-')} ({record.get('action', '-')})"))
+        if len(manual_records) > 5:
+            lines.append(_xbar_escape(f"--... and {len(manual_records) - 5} more"))
     if report.issues:
         lines.append("---")
         for issue in report.issues:

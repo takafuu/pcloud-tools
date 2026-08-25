@@ -123,9 +123,12 @@ from ..service_daemon_plan import (
     clear_plan_records,
     normalize_plan_path,
     cleanup_missing_local_upload_records_for_executor_start,
+    classify_upload_candidates,
     force_prune_missing_local_upload_records,
+    mark_upload_candidate_completed,
     record_dry_run_state,
     record_payloads,
+    reset_upload_candidate_settling,
     remove_plan_record_exact,
     remove_plan_records,
 )
@@ -1284,7 +1287,7 @@ def _service_actions(paths: RuntimePaths, service: ServiceDefinition) -> list[Re
         actions.append(
             ReportAction(
                 id="pushd.queue.prune-missing-local",
-                label="Ignore missing local upload records",
+                label="Prune vanished local candidates",
                 command=action_command(paths, "pushd.queue.prune-missing-local"),
                 terminal=False,
                 refresh=True,
@@ -1386,12 +1389,16 @@ def _last_transfer_summary(payload: dict[str, object] | None) -> tuple[str, str]
     timed_out = 0
     failed = 0
     succeeded = 0
+    settling = 0
     for result in results:
         if not isinstance(result, dict):
             failed += 1
             continue
         if result.get("timed_out") is True:
             timed_out += 1
+            continue
+        if result.get("settling_local") is True:
+            settling += 1
             continue
         if result.get("returncode") == 0:
             succeeded += 1
@@ -1402,10 +1409,13 @@ def _last_transfer_summary(payload: dict[str, object] | None) -> tuple[str, str]
         status = "timeout"
     elif failed:
         status = "failed"
+    elif settling:
+        status = "settling"
     else:
         status = "success"
     return (
-        f"success: {succeeded}; failed: {failed}; timeout: {timed_out}; total: {len(results)}",
+        f"success: {succeeded}; settling: {settling}; failed: {failed}; "
+        f"timeout: {timed_out}; total: {len(results)}",
         status,
     )
 
@@ -1573,17 +1583,36 @@ def _status_plan_details(
         present_upload_records, missing_local_records = _split_missing_local_upload_records(
             config, plan.upload_records
         )
+        settled_upload_records, settling_upload_records = _split_settled_local_upload_records(
+            config, present_upload_records
+        )
         records, manual_review_records = _filter_manual_review_transfers(
-            present_upload_records,
+            settled_upload_records,
             _opposite_transfer_candidates(config, service),
         )
+        settle_enabled = int(getattr(config, "pushd_upload_settle_seconds", 0)) > 0
+        plan_summary_parts = [f"upload: {len(records)}"]
+        if settle_enabled or settling_upload_records:
+            plan_summary_parts.append(f"settling-local: {len(settling_upload_records)}")
+        plan_summary_parts.extend(
+            [
+                f"vanished-local: {len(missing_local_records)}",
+                f"manual-review: {len(manual_review_records)}",
+                f"excluded: {plan.excluded_count}",
+                f"invalid: {plan.invalid_count}",
+            ]
+        )
         return {
-            "plan summary": _pushd_plan_summary(plan),
+            "plan summary": "; ".join(plan_summary_parts),
             "pending queue items": plan.total,
             "planned uploads": len(records),
+            "settling local upload records": len(settling_upload_records),
+            "settling local upload record details": _plan_records(settling_upload_records),
             "missing local upload records": len(missing_local_records),
+            "vanished local candidates": len(missing_local_records),
             "missing local upload record details": _plan_records(missing_local_records),
             "manual review transfer records": len(manual_review_records),
+            "manual review transfer record details": _plan_records(manual_review_records),
             "excluded queue items": plan.excluded_count,
             "invalid queue items": plan.invalid_count,
             "sync scope status": scope.allowlist_status,
@@ -1607,6 +1636,7 @@ def _status_plan_details(
         "pending downloads": plan.pending_download_count,
         "planned downloads": len(records),
         "manual review transfer records": len(manual_review_records),
+        "manual review transfer record details": _plan_records(manual_review_records),
         "skipped download records": plan.skipped_count,
     }, issues
 
@@ -1675,7 +1705,7 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
     missing_count = plan_details.get("missing local upload records", 0) if service.name == "pushd" else 0
     manual_count = plan_details.get("manual review transfer records", 0)
     if service.name == "pushd":
-        plan_summary_fragment = f"planned: {planned_count}; missing-local: {missing_count}; manual-review: {manual_count}"
+        plan_summary_fragment = f"planned: {planned_count}; vanished-local: {missing_count}; manual-review: {manual_count}"
     else:
         plan_summary_fragment = f"planned: {planned_count}; manual-review: {manual_count}"
     return CommandReport(
@@ -1931,19 +1961,32 @@ def _pushd_plan_details(config: AppConfig, plan: PushdPlan, scope: SyncScopeInfo
     present_upload_records, missing_local_records = _split_missing_local_upload_records(
         config, plan.upload_records
     )
+    settled_upload_records, settling_upload_records = _split_settled_local_upload_records(
+        config, present_upload_records
+    )
+    settle_enabled = int(getattr(config, "pushd_upload_settle_seconds", 0)) > 0
+    summary_parts = [f"upload: {len(settled_upload_records)}"]
+    if settle_enabled or settling_upload_records:
+        summary_parts.append(f"settling-local: {len(settling_upload_records)}")
+    summary_parts.extend(
+        [
+            f"vanished-local: {len(missing_local_records)}",
+            f"excluded: {plan.excluded_count}",
+            f"invalid: {plan.invalid_count}",
+        ]
+    )
     return {
         "plan source": str(plan.queue_file),
-        "plan summary": (
-            f"upload: {len(present_upload_records)}; missing-local: {len(missing_local_records)}; "
-            f"excluded: {plan.excluded_count}; "
-            f"invalid: {plan.invalid_count}"
-        ),
+        "plan summary": "; ".join(summary_parts),
         "pending queue items": plan.total,
-        "planned uploads": len(present_upload_records),
+        "planned uploads": len(settled_upload_records),
+        "settling local upload records": len(settling_upload_records),
         "missing local upload records": len(missing_local_records),
+        "vanished local candidates": len(missing_local_records),
         "excluded queue items": plan.excluded_count,
         "invalid queue items": plan.invalid_count,
-        "planned upload records": _plan_records(present_upload_records),
+        "planned upload records": _plan_records(settled_upload_records),
+        "settling local upload record details": _plan_records(settling_upload_records),
         "missing local upload record details": _plan_records(missing_local_records),
         "excluded queue records": _plan_records(plan.excluded_records),
         "invalid queue records": _plan_records(plan.invalid_records),
@@ -2012,14 +2055,31 @@ def _split_missing_local_upload_records(
     config: AppConfig,
     records: tuple[PlanRecord, ...],
 ) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...]]:
-    present_records: list[PlanRecord] = []
-    missing_records: list[PlanRecord] = []
-    for record in records:
-        if record.action == "upload" and not (config.core_dir / record.path).exists():
-            missing_records.append(PlanRecord(record.path, record.action, "local source file is missing"))
-        else:
-            present_records.append(record)
-    return tuple(present_records), tuple(missing_records)
+    classification = classify_upload_candidates(config, records)
+    present_records = (
+        *classification.ready_records,
+        *classification.settling_records,
+        *classification.deletion_review_records,
+    )
+    return tuple(present_records), classification.vanished_records
+
+
+def _split_settled_local_upload_records(
+    config: AppConfig,
+    records: tuple[PlanRecord, ...],
+    *,
+    now: float | None = None,
+    write: bool = False,
+) -> tuple[tuple[PlanRecord, ...], tuple[PlanRecord, ...]]:
+    observed_at = datetime.fromtimestamp(now, timezone.utc) if now is not None else None
+    classification = classify_upload_candidates(
+        config,
+        records,
+        observed_at=observed_at,
+        write=write,
+    )
+    settled = (*classification.ready_records, *classification.deletion_review_records)
+    return tuple(settled), classification.settling_records
 
 
 def _opposite_transfer_candidates(config: AppConfig, service: ServiceDefinition) -> tuple[PlanRecord, ...]:
@@ -2301,6 +2361,7 @@ def _prior_real_transfer_validation_details(
         for item in results
         if isinstance(item, dict)
         and (item.get("returncode") != 0 or item.get("timed_out"))
+        and not item.get("settling_local")
     ] if isinstance(results, list) else []
     expected_direction = "upload" if service.name == "pushd" else "download"
     direction_ok = all(str(item.get("direction", "")) == expected_direction for item in successful)
@@ -7096,10 +7157,13 @@ def _execute_transfer_commands(
             path = normalize_plan_path(item.get("path", ""))
             fingerprint = local_fingerprint(Path(str(item.get("local_path") or "")))
             journal_path = mark_upload_completed(config, path, fingerprint)
+            candidate_journal_path = mark_upload_candidate_completed(config, path)
             result.update(
                 {
                     "upload origin journal state": "completed",
                     "upload origin journal file": str(journal_path),
+                    "upload candidate journal state": "completed",
+                    "upload candidate journal file": str(candidate_journal_path),
                     "post_transfer_fingerprint": fingerprint.as_dict(),
                 }
             )
@@ -7112,8 +7176,27 @@ def _execute_transfer_commands(
                 result["conflict"] = True
         elif process.returncode != 0 and config is not None and item.get("direction") == "download":
             clear_download_suppression_record(config, str(item.get("path", "")))
+        source_updated = (
+            process.returncode != 0
+            and config is not None
+            and item.get("direction") == "upload"
+            and "source file is being updated" in f"{stdout}\n{stderr}".lower()
+        )
+        if source_updated:
+            candidate_journal_path = reset_upload_candidate_settling(
+                config,
+                str(item.get("path", "")),
+            )
+            result.update(
+                {
+                    "settling_local": True,
+                    "tolerated": True,
+                    "retry_classification": "source-updated-during-transfer",
+                    "upload candidate journal file": str(candidate_journal_path),
+                }
+            )
         results.append(result)
-        if process.returncode != 0:
+        if process.returncode != 0 and not source_updated:
             issues.append(
                 ConfigIssue(
                     key="PCLOUD_TOOLS_TRANSFER_EXEC",
@@ -7137,6 +7220,8 @@ def _notify_abnormal_transfer_results(
     journal_changed = False
     for result in transfer_results:
         if not isinstance(result, dict):
+            continue
+        if result.get("settling_local"):
             continue
         path = normalize_plan_path(result.get("path", ""))
         message = ""
@@ -7768,13 +7853,19 @@ def _real_transfer_check_report(
         present_upload_records, missing_local_records = _split_missing_local_upload_records(
             load_result.config, plan.upload_records
         )
+        settled_upload_records, settling_upload_records = _split_settled_local_upload_records(
+            load_result.config, present_upload_records
+        )
         records, manual_review_records = _filter_manual_review_transfers(
-            present_upload_records,
+            settled_upload_records,
             _opposite_transfer_candidates(load_result.config, service),
         )
         counts = {
             "planned uploads": len(records),
+            "settling local upload records": len(settling_upload_records),
+            "settling local upload record details": _plan_records(settling_upload_records),
             "missing local upload records": len(missing_local_records),
+            "vanished local candidates": len(missing_local_records),
             "missing local upload record details": _plan_records(missing_local_records),
             "manual review transfer records": len(manual_review_records),
             "excluded queue items": plan.excluded_count,
@@ -8403,13 +8494,19 @@ def _transfer_automation_run_report(
         present_upload_records, missing_local_records = _split_missing_local_upload_records(
             load_result.config, plan.upload_records
         )
+        settled_upload_records, settling_upload_records = _split_settled_local_upload_records(
+            load_result.config, present_upload_records, write=cleanup_can_run
+        )
         records, manual_review_records = _filter_manual_review_transfers(
-            present_upload_records,
+            settled_upload_records,
             _opposite_transfer_candidates(load_result.config, service),
         )
         count_details = {
             "planned uploads": len(records),
+            "settling local upload records": len(settling_upload_records),
+            "settling local upload record details": _plan_records(settling_upload_records),
             "missing local upload records": len(missing_local_records),
+            "vanished local candidates": len(missing_local_records),
             "missing local upload record details": _plan_records(missing_local_records),
             "manual review transfer records": len(manual_review_records),
             "excluded queue items": plan.excluded_count,
@@ -8438,14 +8535,6 @@ def _transfer_automation_run_report(
     manual_review_issue = _manual_review_issue(service, len(manual_review_records))
     if manual_review_issue:
         issues.append(manual_review_issue)
-    if execute and manual_review_records:
-        issues.append(
-            ConfigIssue(
-                key=f"PCLOUD_TOOLS_{service.name.upper()}_AUTOMATION_MANUAL_REVIEW",
-                level="error",
-                message="automation-run refuses to execute while manual-review transfer records are present",
-            )
-        )
     if not real_gate_open:
         issues.append(
             ConfigIssue(
@@ -8527,7 +8616,6 @@ def _transfer_automation_run_report(
         and max_records > 0
         and rclone_bin is not None
         and not rclone_issue
-        and not manual_review_records
     )
     if execute and runnable and execution_command_count > 0 and not has_errors(issues):
         transfer_results, execution_issues = _execute_transfer_commands(
@@ -8558,34 +8646,6 @@ def _transfer_automation_run_report(
         issues.extend(consume_issues)
     elif execute and runnable and planned_command_count == 0 and not has_errors(issues):
         transfer_results = []
-    elif (
-        execute
-        and manual_review_records
-        and real_gate_open
-        and automation_gate_open
-        and automation_run_gate_open
-        and shadow_check.get("status") == "ok"
-        and consume_on_success
-        and max_records > 0
-        and rclone_bin is not None
-        and not rclone_issue
-    ):
-        manual_review_count = len(manual_review_records)
-        direction_label = "アップロード" if service.name == "pushd" else "ダウンロード"
-        message = (
-            f"pcloud-manager {service.name}: 確認待ちの変更が {manual_review_count}件あるため、"
-            f"自動{direction_label}を停止しました"
-        )
-        notify_result, notify_issue = _send_deduped_chat_notification(
-            load_result.config,
-            service,
-            f"{service.name}:manual-review:{manual_review_count}",
-            message,
-            path="manual-review",
-        )
-        notify_details.append({"message": f"確認待ちの変更があります ({manual_review_count}件)", **notify_result})
-        if notify_issue:
-            issues.append(notify_issue)
     state_writes: list[str] = []
     if transfer_state_file is not None:
         state_writes.append(str(transfer_state_file))
@@ -8895,13 +8955,19 @@ def _service_transfer_report(
         present_upload_records, missing_local_records = _split_missing_local_upload_records(
             load_result.config, plan.upload_records
         )
+        settled_upload_records, settling_upload_records = _split_settled_local_upload_records(
+            load_result.config, present_upload_records, write=execute
+        )
         records, manual_review_records = _filter_manual_review_transfers(
-            present_upload_records,
+            settled_upload_records,
             _opposite_transfer_candidates(load_result.config, service),
         )
         counts = {
             "planned uploads": len(records),
+            "settling local upload records": len(settling_upload_records),
+            "settling local upload record details": _plan_records(settling_upload_records),
             "missing local upload records": len(missing_local_records),
+            "vanished local candidates": len(missing_local_records),
             "missing local upload record details": _plan_records(missing_local_records),
             "manual review transfer records": len(manual_review_records),
             "excluded queue items": plan.excluded_count,
@@ -9164,6 +9230,8 @@ def _transfer_executor_run_report(
             if key
             in {
                 "planned uploads",
+                "settling local upload records",
+                "settling local upload record details",
                 "planned downloads",
                 "remote changes",
                 "pending downloads",

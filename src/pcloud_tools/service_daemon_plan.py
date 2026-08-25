@@ -9,7 +9,7 @@ from typing import Any
 
 from .config import AppConfig, ConfigIssue
 from .daemon_state import DaemonState
-from .download_suppression import download_suppression_match, upload_origin_match
+from .download_suppression import LocalFingerprint, download_suppression_match, local_fingerprint, upload_origin_match
 from .io_utils import atomic_write_json, atomic_write_text
 from .manager_ignore import manager_ignore_match
 from .service_daemon_state import ServiceDaemonState
@@ -89,6 +89,16 @@ class MissingLocalQueueCleanupResult:
     issue: ConfigIssue | None = None
 
 
+@dataclass(frozen=True)
+class UploadCandidateClassification:
+    ready_records: tuple[PlanRecord, ...]
+    settling_records: tuple[PlanRecord, ...]
+    vanished_records: tuple[PlanRecord, ...]
+    deletion_review_records: tuple[PlanRecord, ...]
+    journal_file: Path
+    journal_written: bool = False
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -117,6 +127,180 @@ def _parse_utc_datetime(value: object) -> datetime | None:
 
 def _pushd_missing_local_prune_ttl_seconds(config: AppConfig) -> int:
     return max(0, config.pushd_missing_local_prune_ttl_seconds)
+
+
+def _upload_candidate_journal_path(config: AppConfig) -> Path:
+    return config.state_dir / "pushd" / "upload-candidates.json"
+
+
+def _fingerprint_payload(fingerprint: LocalFingerprint) -> dict[str, object]:
+    return fingerprint.as_dict()
+
+
+def _fingerprint_from_payload(payload: object) -> LocalFingerprint | None:
+    if not isinstance(payload, dict):
+        return None
+    size = payload.get("size")
+    mtime_ns = payload.get("mtime_ns")
+    return LocalFingerprint(
+        exists=bool(payload.get("exists")),
+        size=size if isinstance(size, int) else None,
+        mtime_ns=mtime_ns if isinstance(mtime_ns, int) else None,
+    )
+
+
+def _read_upload_candidate_journal(config: AppConfig) -> dict[str, dict[str, object]]:
+    path = _upload_candidate_journal_path(config)
+    try:
+        payload = json.loads(path.read_text())
+    except (OSError, json.JSONDecodeError):
+        return {}
+    raw_records = payload.get("records") if isinstance(payload, dict) else None
+    if not isinstance(raw_records, list):
+        return {}
+    records: dict[str, dict[str, object]] = {}
+    for raw in raw_records:
+        if not isinstance(raw, dict):
+            continue
+        path_value = normalize_plan_path(raw.get("path", ""))
+        if path_value:
+            records[path_value] = dict(raw)
+    return records
+
+
+def _write_upload_candidate_journal(
+    config: AppConfig,
+    records: dict[str, dict[str, object]],
+) -> Path:
+    path = _upload_candidate_journal_path(config)
+    payload = {
+        "schema_version": "pcloud-tools-upload-candidates.v1",
+        "generated_at": _now(),
+        "records": [records[key] for key in sorted(records)],
+    }
+    return atomic_write_json(path, payload, sort_keys=True)
+
+
+def upload_candidate_was_uploaded(config: AppConfig, path: str) -> bool:
+    entry = _read_upload_candidate_journal(config).get(normalize_plan_path(path))
+    return bool(entry and entry.get("uploaded_at"))
+
+
+def classify_upload_candidates(
+    config: AppConfig,
+    records: tuple[PlanRecord, ...],
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = False,
+) -> UploadCandidateClassification:
+    now = _coerce_utc_datetime(observed_at)
+    now_text = now.isoformat()
+    settle_seconds = max(0, int(getattr(config, "pushd_upload_settle_seconds", 0)))
+    journal = _read_upload_candidate_journal(config)
+    updated = dict(journal)
+    ready: list[PlanRecord] = []
+    settling: list[PlanRecord] = []
+    vanished: list[PlanRecord] = []
+    deletion_review: list[PlanRecord] = []
+
+    for record in records:
+        path = normalize_plan_path(record.path)
+        if not path:
+            ready.append(record)
+            continue
+        local_path = config.core_dir / path
+        fingerprint = local_fingerprint(local_path)
+        entry = dict(journal.get(path, {}))
+        uploaded_at = entry.get("uploaded_at")
+        fswatch_candidate = record.reason.startswith("fswatch")
+
+        if not fingerprint.exists:
+            destructive_action = record.action in {"delete", "rename"}
+            if not uploaded_at or not destructive_action:
+                updated.pop(path, None)
+            if destructive_action and (uploaded_at or not fswatch_candidate):
+                deletion_review.append(
+                    PlanRecord(
+                        path,
+                        "delete",
+                        "previously uploaded local path disappeared" if uploaded_at else record.reason,
+                    )
+                )
+            else:
+                vanished.append(PlanRecord(path, record.action, "uncommitted local candidate disappeared"))
+            continue
+
+        previous = _fingerprint_from_payload(entry.get("fingerprint"))
+        stable_since = _parse_utc_datetime(entry.get("stable_since"))
+        same_fingerprint = previous == fingerprint and stable_since is not None
+        if not same_fingerprint:
+            stable_since = now
+
+        updated[path] = {
+            "path": path,
+            "fingerprint": _fingerprint_payload(fingerprint),
+            "stable_since": stable_since.isoformat(),
+            "observed_at": now_text,
+            **({"uploaded_at": uploaded_at} if uploaded_at else {}),
+        }
+        stable_age = max(0, int((now - stable_since).total_seconds()))
+        effective_record = (
+            PlanRecord(path, "upload", record.reason)
+            if fswatch_candidate and record.action in {"delete", "rename"}
+            else record
+        )
+        if settle_seconds > 0 and stable_age < settle_seconds:
+            settling.append(
+                PlanRecord(
+                    path,
+                    effective_record.action,
+                    f"waiting for unchanged local fingerprint ({stable_age}s < {settle_seconds}s)",
+                )
+            )
+            continue
+        ready.append(effective_record)
+
+    journal_written = False
+    if write and updated != journal:
+        _write_upload_candidate_journal(config, updated)
+        journal_written = True
+    return UploadCandidateClassification(
+        ready_records=tuple(ready),
+        settling_records=tuple(settling),
+        vanished_records=tuple(vanished),
+        deletion_review_records=tuple(deletion_review),
+        journal_file=_upload_candidate_journal_path(config),
+        journal_written=journal_written,
+    )
+
+
+def reset_upload_candidate_settling(config: AppConfig, path: str) -> Path:
+    normalized = normalize_plan_path(path)
+    journal = _read_upload_candidate_journal(config)
+    existing = dict(journal.get(normalized, {}))
+    now_text = _now()
+    journal[normalized] = {
+        "path": normalized,
+        "fingerprint": _fingerprint_payload(local_fingerprint(config.core_dir / normalized)),
+        "stable_since": now_text,
+        "observed_at": now_text,
+        **({"uploaded_at": existing["uploaded_at"]} if existing.get("uploaded_at") else {}),
+    }
+    return _write_upload_candidate_journal(config, journal)
+
+
+def mark_upload_candidate_completed(config: AppConfig, path: str) -> Path:
+    normalized = normalize_plan_path(path)
+    journal = _read_upload_candidate_journal(config)
+    now_text = _now()
+    journal[normalized] = {
+        "path": normalized,
+        "fingerprint": _fingerprint_payload(local_fingerprint(config.core_dir / normalized)),
+        "stable_since": now_text,
+        "observed_at": now_text,
+        "uploaded_at": now_text,
+    }
+    return _write_upload_candidate_journal(config, journal)
 
 
 def _read_json_list(path: Path, key_prefix: str) -> tuple[list[Any], ConfigIssue | None]:
@@ -364,7 +548,8 @@ def _is_configured_trash_path(config: AppConfig, path: str) -> bool:
 
 
 def _is_planned_pushd_upload_record(config: AppConfig, queue_file: Path, record: PlanRecord) -> bool:
-    if record.action != "upload":
+    is_fswatch_candidate = record.reason.startswith("fswatch") and record.action in {"delete", "rename"}
+    if record.action != "upload" and not is_fswatch_candidate:
         return False
     plan = build_pushd_plan_from_records(config, queue_file, (record,), total=1)
     return bool(plan.upload_records)
@@ -378,9 +563,14 @@ def _queue_item_missing_since(item: object) -> datetime | None:
 
 def _planned_missing_local_upload_record(config: AppConfig, queue_file: Path, item: object) -> PlanRecord | None:
     record = _record_from_item(item, "upload")
+    destructive_uploaded_path = (
+        record.action in {"delete", "rename"}
+        and upload_candidate_was_uploaded(config, record.path)
+    )
     if (
         _is_planned_pushd_upload_record(config, queue_file, record)
         and not (config.core_dir / record.path).exists()
+        and not destructive_uploaded_path
     ):
         return record
     return None
@@ -590,11 +780,11 @@ def cleanup_missing_local_upload_records_for_executor_start(
     observed_at: datetime | str | None = None,
     write: bool = True,
 ) -> MissingLocalQueueCleanupResult:
-    return cleanup_stale_missing_local_upload_records(
+    del observed_at
+    return force_prune_missing_local_upload_records(
         config,
         queue_file,
         key_prefix,
-        observed_at=observed_at,
         write=write,
     )
 

@@ -213,18 +213,18 @@ def test_top_level_status_and_doctor_surface_pushd_missing_local_details(tmp_pat
 
     assert status.returncode == 0
     assert status_payload["status"] == "warning"
-    assert status_payload["details"]["push"] == "queued=2; planned=1; missing-local=1; manual-review=0"
+    assert status_payload["details"]["push"] == "queued=2; planned=1; vanished-local=1; manual-review=0"
     assert status_payload["details"]["push review"] == "pcloud-manager pushd status"
     assert status_payload["details"]["push cleanup"] == "pcloud-manager action pushd.queue.prune-missing-local"
     assert "pushd warning: missing-local=1" not in status_payload["summary"]
     assert "PCLOUD_TOOLS_PUSHD_QUEUE_MISSING_LOCAL" not in issue_keys
-    assert "push: queued=2; planned=1; missing-local=1; manual-review=0" in status_human.stdout
+    assert "push: queued=2; planned=1; vanished-local=1; manual-review=0" in status_human.stdout
     assert "push cleanup: pcloud-manager action pushd.queue.prune-missing-local" in status_human.stdout
     assert doctor.returncode == 0
     assert doctor_payload["status"] == "warning"
     assert doctor_payload["details"]["summary"] != "queue warning"
     assert doctor_payload["details"]["suspected cause"] != "pushd queue has missing local upload records"
-    assert doctor_payload["details"]["push missing local detail"] == "missing local upload records=1"
+    assert doctor_payload["details"]["push missing local detail"] == "vanished local candidates=1"
     assert doctor_human.returncode == 0
     assert "next:" in doctor_human.stdout
     assert "checks:" in doctor_human.stdout

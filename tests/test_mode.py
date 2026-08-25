@@ -199,6 +199,7 @@ def test_autosync_internal_mode_builds_allowlist_normal_bisync_plan(tmp_path: Pa
         remote_trash_index_file=state_dir / "pushd" / "trash-index.sqlite",
         remote_trash_warn_bytes=5368709120,
         pushd_missing_local_prune_ttl_seconds=600,
+        pushd_upload_settle_seconds=0,
         pushd_debounce_seconds=2,
         pushd_queue_limit=100,
         diffd_poll_interval_seconds=30,

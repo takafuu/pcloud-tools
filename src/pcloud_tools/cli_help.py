@@ -164,6 +164,8 @@ def _important_subcommands_for_topics(topics: list[str]) -> list[str]:
             selected.add("mode")
         if normalized in {"overview", "config"}:
             selected.update({"status", "doctor"})
+        if normalized in {"legacy", "archive"}:
+            selected.update({"legacy", "archive"})
     return sorted(selected)
 
 

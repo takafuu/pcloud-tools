@@ -17,7 +17,7 @@ def test_archive_old_monolith_gate_is_read_only_checklist(tmp_path: Path) -> Non
             sys.executable,
             "-m",
             "pcloud_tools.cli",
-            "archive",
+            "legacy",
             "old-monolith-gate",
             "--backup-dir",
             str(backup_dir),
@@ -48,12 +48,12 @@ def test_archive_old_monolith_gate_is_read_only_checklist(tmp_path: Path) -> Non
     assert payload["details"]["human gate status"] == "required-before-old-monolith-archive"
     assert checks["legacy monolith backup"]["status"] == "ok"
     assert checks["backup source approval"]["status"] == "ok"
-    assert "archive.old-monolith.gate" in [action["id"] for action in payload["actions"]]
+    assert "legacy.old-monolith.gate" in [action["id"] for action in payload["actions"]]
     assert not (workspace / ".dev-state" / "old-monolith-archive").exists()
 def test_archive_old_monolith_gate_missing_backup_stays_pending(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     result = subprocess.run(
-        [sys.executable, "-m", "pcloud_tools.cli", "archive", "old-monolith-gate", "--json"],
+        [sys.executable, "-m", "pcloud_tools.cli", "legacy", "old-monolith-gate", "--json"],
         check=False,
         capture_output=True,
         text=True,
@@ -85,7 +85,7 @@ def test_archive_old_monolith_run_refuses_without_execution_gate(tmp_path: Path)
             sys.executable,
             "-m",
             "pcloud_tools.cli",
-            "archive",
+                "legacy",
             "old-monolith-run",
             "--backup-dir",
             str(backup_dir),
@@ -134,7 +134,7 @@ def test_archive_old_monolith_run_copies_backup_to_dev_archive(tmp_path: Path) -
             sys.executable,
             "-m",
             "pcloud_tools.cli",
-            "archive",
+                "legacy",
             "old-monolith-run",
             "--backup-dir",
             str(backup_dir),
@@ -168,3 +168,23 @@ def test_archive_old_monolith_run_copies_backup_to_dev_archive(tmp_path: Path) -
     assert manifest["public_wrapper_modified"] is False
     assert manifest["source_backup_retained"] is True
     assert legacy_backup.exists()
+
+
+def test_archive_old_monolith_alias_warns_and_routes_to_legacy(tmp_path: Path) -> None:
+    env = _base_env(tmp_path)
+
+    result = subprocess.run(
+        [sys.executable, "-m", "pcloud_tools.cli", "archive", "old-monolith-gate", "--json"],
+        check=False,
+        capture_output=True,
+        text=True,
+        cwd=tmp_path,
+        env=env,
+    )
+
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["command"] == "archive old-monolith-gate"
+    assert "PCLOUD_TOOLS_ARCHIVE_DEPRECATED" in [issue["key"] for issue in payload["issues"]]
+    assert "legacy.old-monolith.gate" in [action["id"] for action in payload["actions"]]

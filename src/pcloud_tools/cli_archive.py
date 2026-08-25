@@ -22,17 +22,30 @@ from .io_utils import atomic_write_json
 from .output import CommandReport, ReportAction, render_report
 from .runtime import RuntimePaths
 
+def add_legacy_parser(subparsers: argparse._SubParsersAction) -> None:
+    legacy_parser = subparsers.add_parser("legacy", help="Inspect guarded legacy pcloud-manager migration tasks.")
+    legacy_subparsers = legacy_parser.add_subparsers(dest="archive_command")
+    _add_old_monolith_parsers(legacy_subparsers)
+
+
 def add_archive_parser(subparsers: argparse._SubParsersAction) -> None:
-    archive_parser = subparsers.add_parser("archive", help="Read-only archive readiness checks.")
+    archive_parser = subparsers.add_parser(
+        "archive",
+        help="Deprecated alias for legacy old-monolith commands.",
+    )
     archive_subparsers = archive_parser.add_subparsers(dest="archive_command")
-    old_monolith_parser = archive_subparsers.add_parser(
+    _add_old_monolith_parsers(archive_subparsers)
+
+
+def _add_old_monolith_parsers(subparsers: argparse._SubParsersAction) -> None:
+    old_monolith_parser = subparsers.add_parser(
         "old-monolith-gate", help="Read-only checklist before archiving the old pcloud-manager monolith."
     )
     old_monolith_parser.add_argument("--backup-dir", type=Path)
     add_gate_review_args(old_monolith_parser, GATES["archive.old-monolith"])
     old_monolith_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     old_monolith_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
-    old_monolith_run_parser = archive_subparsers.add_parser(
+    old_monolith_run_parser = subparsers.add_parser(
         "old-monolith-run", help="Run guarded old pcloud-manager monolith archival after the dedicated gate opens."
     )
     old_monolith_run_parser.add_argument("--backup-dir", type=Path)
@@ -48,6 +61,22 @@ def cmd_archive(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
     if args.archive_command == "old-monolith-run":
         return cmd_archive_old_monolith_run(args, paths)
     return None
+
+
+def _maybe_archive_alias_issue(args: argparse.Namespace) -> list[ConfigIssue]:
+    if getattr(args, "command", "") != "archive":
+        return []
+    return [
+        ConfigIssue(
+            key="PCLOUD_TOOLS_ARCHIVE_DEPRECATED",
+            level="warning",
+            message="pcloud-manager archive is deprecated; use pcloud-manager legacy old-monolith-*",
+        )
+    ]
+
+
+def _legacy_command(args: argparse.Namespace, leaf: str) -> str:
+    return f"{getattr(args, 'command', 'legacy')} {leaf}"
 
 
 def _command_path(command: str) -> str | None:
@@ -166,7 +195,7 @@ def _render_old_monolith_run_human(report: CommandReport) -> str:
 
 
 def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
-    issues: list[ConfigIssue] = []
+    issues: list[ConfigIssue] = _maybe_archive_alias_issue(args)
     archive_gate = validate_gate(GATES["archive.old-monolith"], args, os.environ)
     current_wrapper = Path("/Users/takafumi/p-core/dotfiles/.zsh/functions/pcloud-manager")
     home_wrapper = Path("/Users/takafumi/.zsh/functions/pcloud-manager")
@@ -280,7 +309,7 @@ def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         "archive approval status": approval_status,
         "human gate status": "required-before-old-monolith-archive",
         "human gate reason": "archive would move or retire the only rollback copy of the old zsh implementation",
-        "next human check trigger": "explicit old monolith archive command or rollback-source retention decision",
+        "next human check trigger": "explicit legacy old-monolith command or rollback-source retention decision",
         "review commands": review_commands,
         "preflight checks": checks,
         "success policy": "archive only after the selected backup source and rollback policy are explicitly approved",
@@ -295,23 +324,23 @@ def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> 
         ],
     }
     return CommandReport(
-        command="archive old-monolith-gate",
+        command=_legacy_command(args, "old-monolith-gate"),
         status=status_from_issues(sort_issues(issues)),
         summary="old monolith archive gate is closed",
         details=details,
         issues=report_issues(sort_issues(issues)),
         actions=[
             ReportAction(
-                id="archive.old-monolith.gate",
-                label="Check old monolith archive gate",
-                command=action_command(paths, "archive.old-monolith.gate"),
+                id="legacy.old-monolith.gate",
+                label="Check old monolith legacy gate",
+                command=action_command(paths, "legacy.old-monolith.gate"),
                 terminal=True,
                 refresh=False,
             ),
             ReportAction(
-                id="archive.old-monolith-run.preview",
-                label="Preview old monolith archive run",
-                command=action_command(paths, "archive.old-monolith-run.preview"),
+                id="legacy.old-monolith-run.preview",
+                label="Preview old monolith legacy run",
+                command=action_command(paths, "legacy.old-monolith-run.preview"),
                 terminal=True,
                 refresh=False,
             )
@@ -431,7 +460,7 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
             details["state writes"] = "none"
         sorted_issues = sort_issues(issues)
         return CommandReport(
-            command="archive old-monolith-run",
+            command=_legacy_command(args, "old-monolith-run"),
             status=status_from_issues(sorted_issues),
             summary=(
                 "old monolith archive execution is gated"
@@ -472,7 +501,7 @@ def _old_monolith_run_report(args: argparse.Namespace, paths: RuntimePaths) -> C
     )
     sorted_issues = sort_issues(issues)
     return CommandReport(
-        command="archive old-monolith-run",
+        command=_legacy_command(args, "old-monolith-run"),
         status=status_from_issues(sorted_issues),
         summary="old monolith archive run completed",
         details=details,
