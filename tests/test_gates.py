@@ -272,6 +272,13 @@ def test_operational_launchd_plist_gate_specs_match_existing_public_contracts() 
 
 def test_gates_status_summarizes_remaining_gates_without_writes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
+    public_wrapper = _install_public_manager_wrapper(env)
+    fswatch = public_wrapper.parent / "fswatch"
+    fswatch.write_text("#!/bin/sh\nexit 0\n")
+    fswatch.chmod(0o755)
+    fake_launchctl, _launchctl_log, _launchctl_env = _install_fake_mode_launchctl(tmp_path)
+    env["PATH"] = f"{fake_launchctl.parent}:{env['PATH']}"
+    _install_real_rclone_stub(env)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"

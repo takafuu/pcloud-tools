@@ -426,7 +426,7 @@ def _sync_execution_report(args: argparse.Namespace, paths: RuntimePaths, mode: 
         )
 
     try:
-        rclone_bin = _command_path("rclone")
+        rclone_bin = _command_path(load_result.config.rclone_bin)
         if not rclone_bin:
             raise SyncExecutionError("rclone command not found")
         listing_recovery = bisync_listing_recovery_state(load_result.config)
@@ -865,7 +865,7 @@ def cmd_sync_internal_run(args: argparse.Namespace, paths: RuntimePaths) -> int:
         print(render_report(report))
         return 1
 
-    rclone_bin = _command_path("rclone")
+    rclone_bin = _command_path(config.rclone_bin)
     if not rclone_bin:
         report = CommandReport(
             command="sync _run",

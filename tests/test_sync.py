@@ -184,8 +184,28 @@ def test_sync_status_marks_last_error_as_current_when_latest_result_failed(tmp_p
     assert payload["details"]["sync state"] == "sync_error"
     assert payload["details"]["last error status"] == "current"
 def test_resync_preview_exposes_explicit_resync_mode(tmp_path: Path) -> None:
-    newer = _run_cli(tmp_path / "newer", "sync", "resync", "--resync-mode", "newer", "--json")
-    path1 = _run_cli(tmp_path / "path1", "sync", "resync", "--resync-mode", "path1", "--json")
+    rclone = tmp_path / "rclone"
+    rclone.write_text("#!/bin/sh\nexit 0\n")
+    rclone.chmod(0o755)
+    extra_env = {"PCLOUD_TOOLS_RCLONE_BIN": str(rclone)}
+    newer = _run_cli(
+        tmp_path / "newer",
+        "sync",
+        "resync",
+        "--resync-mode",
+        "newer",
+        "--json",
+        extra_env=extra_env,
+    )
+    path1 = _run_cli(
+        tmp_path / "path1",
+        "sync",
+        "resync",
+        "--resync-mode",
+        "path1",
+        "--json",
+        extra_env=extra_env,
+    )
 
     newer_payload = _payload(newer)
     path1_payload = _payload(path1)
@@ -203,7 +223,18 @@ def test_resync_preview_exposes_explicit_resync_mode(tmp_path: Path) -> None:
 
 
 def test_full_resync_preview_exposes_explicit_resync_mode(tmp_path: Path) -> None:
-    result = _run_cli(tmp_path, "sync", "full-resync", "--resync-mode", "newer", "--json")
+    rclone = tmp_path / "rclone"
+    rclone.write_text("#!/bin/sh\nexit 0\n")
+    rclone.chmod(0o755)
+    result = _run_cli(
+        tmp_path,
+        "sync",
+        "full-resync",
+        "--resync-mode",
+        "newer",
+        "--json",
+        extra_env={"PCLOUD_TOOLS_RCLONE_BIN": str(rclone)},
+    )
 
     payload = _payload(result)
 

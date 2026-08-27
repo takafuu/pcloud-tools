@@ -5,6 +5,7 @@ from conftest import *
 
 def test_archive_old_monolith_gate_is_read_only_checklist(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
+    _install_public_manager_wrapper(env)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
     backup_dir.mkdir(parents=True)
@@ -72,6 +73,7 @@ def test_archive_old_monolith_gate_missing_backup_stays_pending(tmp_path: Path) 
     assert "PCLOUD_TOOLS_ARCHIVE_LEGACY_BACKUP" in [issue["key"] for issue in payload["issues"]]
 def test_archive_old_monolith_run_refuses_without_execution_gate(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
+    _install_public_manager_wrapper(env)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
     backup_dir.mkdir(parents=True)
@@ -119,6 +121,7 @@ def test_archive_old_monolith_run_copies_backup_to_dev_archive(tmp_path: Path) -
         tmp_path,
         {"PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE": "operator-approved-old-monolith-archive-v1"},
     )
+    _install_public_manager_wrapper(env)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     backup_dir = workspace / ".dev-state" / "cutover-backups" / "20260426-040551"
     backup_dir.mkdir(parents=True)

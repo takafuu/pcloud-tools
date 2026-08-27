@@ -110,6 +110,7 @@ def test_root_help_uses_runtime_specific_program_name(tmp_path: Path) -> None:
     assert "CLI for pcloud-tools operations." in public_result.stdout
 def test_help_subcommand_and_ai_context_are_read_only(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
+    public_wrapper = _install_public_manager_wrapper(env)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     human_result = subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", "help"],
@@ -161,7 +162,7 @@ def test_help_subcommand_and_ai_context_are_read_only(tmp_path: Path) -> None:
     assert any("does not call an LLM" in item for item in payload["non_goals"])
     assert any("does not execute generated commands" in item for item in payload["non_goals"])
     assert any("Do not bootstrap" in item for item in topics["launchd"]["safety"])
-    assert payload["important_paths"]["public_wrapper"] == "/Users/takafumi/bin/pcloud-manager"
+    assert payload["important_paths"]["public_wrapper"] == str(public_wrapper)
     assert not state_dir.exists() or not any(state_dir.iterdir())
 def test_public_help_ai_uses_public_command_name(tmp_path: Path) -> None:
     result = _run_cli(

@@ -51,6 +51,13 @@ def _base_env(root: Path) -> dict[str, str]:
             "XDG_CACHE_HOME": str(cache_dir),
         }
     )
+    public_bin = home_dir / "bin"
+    public_bin.mkdir(parents=True, exist_ok=True)
+    public_wrapper = public_bin / "pcloud-manager"
+    public_wrapper.write_text("#!/bin/sh\n# pcloud_tools.cli release wrapper fixture\nexit 0\n")
+    public_wrapper.chmod(0o755)
+    env["PCLOUD_TOOLS_PUBLIC_ENTRYPOINT"] = str(public_wrapper)
+    env["PATH"] = f"{public_bin}:{env.get('PATH', '')}"
     return env
 
 
@@ -472,6 +479,7 @@ def run_validation() -> dict[str, Any]:
         public_env["PCLOUD_TOOLS_CORE_DIR"] = str(workspace)
         public_env["PCLOUD_TOOLS_ALLOWLIST_FILE"] = str(workspace / ".pcloud-sync-allowlist")
         public_env["PCLOUD_TOOLS_PCLOUD_API_TOKEN"] = "shadow-token"
+        public_env["PCLOUD_TOOLS_PUBLIC_ENTRYPOINT"] = str(public_pcloud_manager)
         public_env["PATH"] = f"{public_bin}:{public_env.get('PATH', '')}"
         public_env["PUBLIC_LAUNCHCTL_LOG"] = str(public_launchctl_log)
         public_pushd_plist_path = Path(public_env["HOME"]) / "Library" / "LaunchAgents" / "com.takafumi.pcloud-pushd.plist"

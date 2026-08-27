@@ -197,16 +197,28 @@ def _render_old_monolith_run_human(report: CommandReport) -> str:
 def _old_monolith_gate_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     issues: list[ConfigIssue] = _maybe_archive_alias_issue(args)
     archive_gate = validate_gate(GATES["archive.old-monolith"], args, os.environ)
-    current_wrapper = Path("/Users/takafumi/p-core/dotfiles/.zsh/functions/pcloud-manager")
-    home_wrapper = Path("/Users/takafumi/.zsh/functions/pcloud-manager")
-    command_wrapper = _command_path("pcloud-manager")
+    configured_wrapper = os.environ.get("PCLOUD_TOOLS_PUBLIC_ENTRYPOINT", "").strip()
+    if configured_wrapper:
+        current_wrapper = Path(configured_wrapper).expanduser()
+        home_wrapper = Path.home() / "bin" / "pcloud-manager"
+        command_wrapper = configured_wrapper if current_wrapper.exists() and os.access(current_wrapper, os.X_OK) else None
+    else:
+        current_wrapper = Path("/Users/takafumi/p-core/dotfiles/.zsh/functions/pcloud-manager")
+        home_wrapper = Path("/Users/takafumi/.zsh/functions/pcloud-manager")
+        command_wrapper = _command_path("pcloud-manager")
     backup_dir = getattr(args, "backup_dir", None) or _latest_cutover_backup(paths)
     legacy_backup = backup_dir / "pcloud-manager.current" if backup_dir else None
     shadow_backup = backup_dir / "shadow-validation.json" if backup_dir else None
     archive_target = paths.workspace_root / ".dev-state" / "old-monolith-archive" / (
         backup_dir.name if backup_dir else "YYYYMMDD-HHMMSS"
     )
-    current_is_python = current_wrapper.exists() and _file_contains(current_wrapper, "pcloud_tools.cli")
+    current_is_python = current_wrapper.exists() and (
+        _file_contains(current_wrapper, "pcloud_tools.cli")
+        or (
+            _file_contains(current_wrapper, "runtime_dir")
+            and _file_contains(current_wrapper, "/bin/pcloud-manager")
+        )
+    )
     legacy_is_monolith = bool(legacy_backup and legacy_backup.exists() and _file_contains(legacy_backup, "PCLOUD_MANAGER_CONFIG"))
     checks = [
         _check(

@@ -339,7 +339,7 @@ def _sync_migration_gate_report(args: argparse.Namespace, paths: RuntimePaths) -
         getattr(args, "sync_status_report_path", None)
     )
     issues.extend(saved_status_issues)
-    rclone_bin = _command_path("rclone")
+    rclone_bin = _command_path(config.rclone_bin)
     rclone_check = {
         "name": "rclone binary",
         "status": "ok" if rclone_bin else "pending",
@@ -595,7 +595,7 @@ def _sync_migration_run_report(args: argparse.Namespace, paths: RuntimePaths) ->
     migration_spec = _sync_migration_gate_spec()
     gate_open = _sync_migration_gate_open(config)
     state_file = _sync_migration_run_state_file(config)
-    rclone_bin = _command_path("rclone")
+    rclone_bin = _command_path(config.rclone_bin)
     plan = None
 
     details.update(

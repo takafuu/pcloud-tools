@@ -39,6 +39,11 @@ def test_pushd_diffd_scaffold_reports_use_isolated_state(tmp_path: Path) -> None
     assert "diffd.preview" in [action["id"] for action in diffd_payload["actions"]]
 def test_service_daemon_pid_zero_is_invalid_not_running(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
+    _fake_launchctl, _launchctl_log, launchctl_env = _install_fake_mode_launchctl(
+        tmp_path,
+        'if [ "$1" = "print" ]; then printf "Could not find service\\n" >&2; exit 113; fi',
+    )
+    env.update(launchctl_env)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     pushd_dir = state_dir / "pushd"
     pushd_dir.mkdir(parents=True)

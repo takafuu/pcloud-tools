@@ -72,6 +72,18 @@ def _base_env(tmp_path: Path, extra: dict[str, str] | None = None) -> dict[str, 
     if extra:
         env.update(extra)
     return env
+
+
+def _install_public_manager_wrapper(env: dict[str, str]) -> Path:
+    home_dir = Path(env["HOME"])
+    bin_dir = home_dir / "bin"
+    bin_dir.mkdir(parents=True, exist_ok=True)
+    wrapper = bin_dir / "pcloud-manager"
+    wrapper.write_text("#!/bin/sh\n# pcloud_tools.cli release wrapper fixture\nexit 0\n")
+    wrapper.chmod(0o755)
+    env["PCLOUD_TOOLS_PUBLIC_ENTRYPOINT"] = str(wrapper)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    return wrapper
 def _run_cli(tmp_path: Path, *args: str, extra_env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "pcloud_tools.cli", *args],
