@@ -135,6 +135,10 @@ Always review the command output before opening a gate or adding `--execute`.
 
 After installation, bundled documentation paths can also be rediscovered with `pcloud-manager info paths` and `pcloud-archive info paths`.
 
+## License
+
+This project is available under the [MIT License](LICENSE).
+
 ## Development
 
 The repository is the development checkout, not the installed runtime:
