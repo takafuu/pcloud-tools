@@ -12,8 +12,6 @@ Last updated: 2026-08-28
 - release workflow: `/Users/takafumi/p-core/dev/pcloud-tools/.github/workflows/release.yml`
 - release bundle builder: `/Users/takafumi/p-core/dev/pcloud-tools/scripts/build-release-bundle.sh`
 - 開発用入口: `/Users/takafumi/p-core/dev/pcloud-tools/pcloud-manager-dev`
-- cutover readiness package: `/Users/takafumi/p-core/dev/#仕様書/pcloud-manager/cutover-readiness-package.md`
-- レビュー連絡: `/Users/takafumi/p-core/dev/pcloud-tools/報告.md`
 
 正式版は `pcloud-tools` wheelをuv tool environmentへinstallして実行する。development checkoutはsource/test/buildの正本で、public wrapperは`${XDG_DATA_HOME:-$HOME/.local/share}/pcloud-tools/bin/`のinstalled executableへ委譲する。public wrapperに`PYTHONPATH`やdevelopment `.venv`を戻してはいけない。
 
@@ -44,13 +42,13 @@ root help 表示は runtime で分かれる。public `pcloud-manager` は `usage
 
 ## pushd / diffd daemon surfaces
 
-`pcloud-pushd` / `pcloud-diffd` は public wrapper と launchd 登録まで進んでいる。現在の live daemon は fswatch queue append、bounded pushd upload executor tick、bounded diffd API polling、bounded diffd download executor tick まで。normal sync/resync、listing cache 操作は閉じたまま。bisync/autosync と daemon loop は排他運用で、横断状態は `pcloud-manager mode status|plan|switch` が担当する。
+`pcloud-pushd` / `pcloud-diffd` はlocal eventとremote changeを別queueで扱い、bounded executorがeligible recordを転送する。bisync/autosyncとdaemon loopは排他運用で、横断状態は`pcloud-manager mode status|plan|switch`が担当する。
 
-現在の live 状態:
+主要な設計:
 
-- `pcloud-pushd`: `com.takafumi.pcloud-pushd` が loaded/running。operational fswatch resident plist で、sync scope 内 event を `enqueued_at` 付きで `~/.pcloud/pushd/queue.json` に append する。`com.takafumi.pcloud-pushd-executor` も loaded で、`pushd transfer automation-run --execute --consume-on-success --max-records 1` を StartInterval 60 で実行する。observed launchd runs は queued screenshot upload を 1 tick 1 record で upload/consume している。current live status は都度 `pcloud-manager pushd status --json` を見る。
-- `pcloud-diffd`: `com.takafumi.pcloud-diffd` が loaded。KeepAlive false の bounded live API one-shot payload が `StartInterval 60` で定期起動している。checkpoint 後の observed periodic runs は pcloud:core 配下の新規 remote changes を `diffd/remote-changes.json` に append できる。current live status は都度 `pcloud-manager diffd status --json` を見る。
-- `com.takafumi.pcloud-diffd-executor` は bounded public download executor として write/reload 済み。remote test files は poll -> remote-change -> automatic download -> consume まで確認済み。最新の long timeout env (`PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS=3600`) を public plist に書いた後、live LaunchAgent へ反映する reload は terminal human gate が必要。
+- `pcloud-pushd` はsync scope内eventを`enqueued_at`付きで`state_dir/pushd/queue.json`へappendする。resident watcherとbounded executorは別processで、current stateは`pcloud-manager pushd status --json`を見る。
+- `pcloud-diffd` はpCloud `/diff`のcursorとfolder cacheを保持し、scope内changeを`state_dir/diffd/remote-changes.json`へappendする。pollerとbounded executorは別processで、current stateは`pcloud-manager diffd status --json`を見る。
+- public LaunchAgentのwrite/reloadはすべてterminal human gateが必要。文書には特定machineのloaded状態や検証結果を保存しない。
 - `mode status` は read-only で daemon 4本、bisync/autosync、dirty state を見る。`mode plan daemon|maintenance|pause` は予定 `launchctl` 操作を表示するだけ。`mode switch` は `PCLOUD_TOOLS_MODE_SWITCH_GATE=operator-approved-mode-switch-v1` と review flags が揃うまで実行しない。mode switch は transfer、normal sync/resync、listing cache、diffd checkpoint を実行しない。
 - `pushd transfer executor-run` / `diffd transfer executor-run` は dev-state fake-rclone 専用の queue executor tick。pushd queue は transfer 命令ではなく filesystem change candidate。pushd は `state_dir/pushd/upload-candidates.json` の size / mtime_ns fingerprint が `PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS` 続いた path だけ upload する。executor tick 時点で存在しない `upload` 候補は、過去のupload成功履歴に関係なく即時・無通知でpruneする。以前uploadしたpathに対する明示的な`delete` / `rename` eventだけmanual reviewに残す。rclone の `source file is being updated` は tolerated settling として queue を保持し、通知しない。
 - `pushd launchd executor-plist` / `diffd launchd executor-plist` は dev-state fake-rclone queue executor 用の StartInterval LaunchAgent plist surface。`.dev-state/launchd/com.example.pcloud-*-executor.dev.plist` だけを書ける。public LaunchAgent write、`launchctl` 実行、real transfer automation は行わない。
@@ -58,7 +56,7 @@ root help 表示は runtime で分かれる。public `pcloud-manager` は `usage
 - `pushd transfer real-gate` / `diffd transfer real-gate` と `real-run` は、`--confirm-path` + `--confirm-direction` が planned transfer の exactly 1 件に一致した場合、その selected transfer だけを manual first-run 対象にできる。複数 planned record があっても、manual `real-run` は selected 1 件だけを実行し、`--consume-policy remove-on-success-retain-on-failure` の承認下では成功した matching record だけを消費し、他 record は触らない。
 - `pushd transfer automation-run` / `diffd transfer automation-run` は実装済みの gated automatic real-transfer executor tick。real-transfer gate、automation gate、automation-run gate、saved shadow validation report、non-`fake-rclone` rclone、`--execute`、`--consume-on-success` が揃うまで拒否する。manual-review record は安全に除外・保持し、他のeligible transferを止めず、automation errorや反復chat通知にも転換しない。`pushd automation-run --execute` は gate が揃った tick 冒頭で missing-local upload cleanup を行ってから plan を組む。default は one transfer record per tick (`--max-records 1`) で、成功 record だけ consume し、失敗/不明/deferred record は保持する。public automation launchd review は confirmed selected target 1 件を current bounded automation tick として review でき、他 planned records は deferred として残す。
 - queue が空の public automation launchd review は、直近の successful manual `real-run` を validation evidence として使える。last transfer は `mode: real-rclone-transfer`、service/direction 一致、successful result 1 件以上、failed/timeout 0 件が必要。これにより manual validation で queue を drain した後でも executor LaunchAgent を review できる。
-- `pushd launchd automation-plist` / `diffd launchd automation-plist` と `automation-reload` は public real-transfer executor LaunchAgent write / bootout-bootstrap gate。pushd executor plist は bounded payload で rewrite/reload 済み。diffd public download executor automation も bounded payload で write/reload 済み。
+- `pushd launchd automation-plist` / `diffd launchd automation-plist` と `automation-reload` は public real-transfer executor LaunchAgent write / bootout-bootstrap gate。public payloadはbounded executionを維持する。
 - diffd download transfer は staging finalization に変わった。`state_dir/diffd/download-staging/` に rclone download してから、転送前に取った destination fingerprint と比較する。destination が変わっていなければ replace して completed suppression journal を記録する。変わっていれば existing local file を残し、downloaded content を `name.conflict-YYYYMMDD-HHMMSS.ext` に移し、remote-change record は manual review 用に保持する。
 - download suppression journal は `state_dir/diffd/download-suppression-journal.json`。completed record の TTL は `PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS` default 86400 秒。pushd plan は active/completed matching download を excluded として扱い、local fingerprint が変わったら user edit とみなして upload planning を許す。
 - upload-origin journal は `state_dir/pushd/upload-origin-journal.json`。pushd upload 成功時に local fingerprint を保存し、diffd plan は same-path `diff:createfile` remote echo を `upload origin journal` として skipped にする。remote-side edit (`diff:modifyfile`) は suppression せず download planning に回す。local fingerprint が変わった場合も download planning を再度許す。
@@ -145,7 +143,7 @@ root help 表示は runtime で分かれる。public `pcloud-manager` は `usage
 - extra action id: `pushd.policy`, `pushd.run.preview`, `pushd.backfill.preview`, `pushd.gate`, `pushd.launchd.gate`, `pushd.launchd.status`, `pushd.launchd.review`, `pushd.launchd.register.preview`, `pushd.launchd.reload.preview`, `pushd.launchd.resident-plist.preview`, `pushd.launchd.plist.preview`, `pushd.transfer.preview`, `pushd.transfer.validation-matrix`, `pushd.transfer.check`, `pushd.queue.clear.preview`, `diffd.policy`, `diffd.run.preview`, `diffd.gate`, `diffd.launchd.gate`, `diffd.launchd.status`, `diffd.launchd.review`, `diffd.launchd.register.preview`, `diffd.launchd.reload.preview`, `diffd.launchd.resident-plist.preview`, `diffd.launchd.plist.preview`, `diffd.transfer.preview`, `diffd.transfer.validation-matrix`, `diffd.transfer.check`, `diffd.remote-change.clear.preview`
 - shadow validation prep script: `/Users/takafumi/p-core/dev/pcloud-tools/scripts/pcloud-shadow-validation.py`
 - validation script uses a temp workspace and only exercises dev preview / dry-run / gate / fixture parsers / action / safety-guard / historical last-error display paths
-- validation reports can be saved with `--report-path`; cutover remains blocked unless the saved report has `status: ok` and every check is `ok`
+- validation reports can be saved with `--report-path`; guarded changes remain blocked unless the saved report has `status: ok` and every check is `ok`
 
 まだ閉じたままにしているもの:
 
@@ -216,13 +214,13 @@ git diff --check
 
 代表コマンドは変更対象に合わせて追加で通す。`--execute` は dev mode で拒否される設計なので、通常レビューでは preview / JSON / xbar 経路を確認する。
 
-cutover 前の判断:
+変更前の判断:
 
 - `scripts/pcloud-shadow-validation.py` の report が失敗した場合は public `pcloud-manager` を切り替えない
-- public wrapper を触る前に `cutover-readiness-package.md` の entrypoint 確認、backup、rollback command、停止条件を確認する
+- public wrapper を触る前に entrypoint、backup、rollback command、停止条件を確認する
 - 既承認済みの queue-only fswatch resident / bounded API one-shot を超える launchd 変更、daemon expansion、実 upload/download、old monolith legacy archive には進まない
 
 ## pcloud-archive との境界
 
 設定したlocal `source_root` から `pcloud-crypt:` の `remote_root` へ一方向copy/checkする用途は `pcloud-manager` へ追加せず、別 command `/Users/takafumi/p-core/bin/pcloud-archive` が担当する。crypt mountは不要で、ローカル削除はremoteへ自動伝播しない。`man pcloud-archive`、`help --detail`、`info paths` から説明を再発見できる。man pageは任意で、未設置時はdoctor issueにしない。詳細は `/Users/takafumi/p-core/dev/#仕様書/pcloud-archive/` を読む。
-- failed check の `name` と `detail` を `報告.md` に添えて reviewer/implementer 間で戻す
+- failed check の `name` と `detail` を作業記録またはレビューコメントへ添えて reviewer/implementer 間で戻す

@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "pcloud-tools"
 version = "0.1.0"
-description = "Python-centered successor to the pcloud-manager shell monolith."
+description = "Personal, preview-first pCloud CLI suite built around rclone."
 readme = "README.md"
 requires-python = ">=3.11"
 dependencies = [
