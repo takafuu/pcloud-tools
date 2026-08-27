@@ -56,6 +56,16 @@ with zipfile.ZipFile(wheel) as archive:
     if missing:
         raise SystemExit(f"wheel is missing packaged documentation: {missing}")
 
+    forbidden_docs = {
+        "pcloud_tools/share/docs/pcloud-manager/.source",
+        "pcloud_tools/share/docs/pcloud-archive/.source",
+        "pcloud_tools/share/docs/pcloud-manager/cutover-readiness-package.md",
+        "pcloud_tools/share/docs/pcloud-manager/引き継ぎメモ-2026-04-22.md",
+    }
+    unexpected = sorted(forbidden_docs & names)
+    if unexpected:
+        raise SystemExit(f"wheel contains internal documentation artifacts: {unexpected}")
+
     entry_points_name = next(name for name in names if name.endswith(".dist-info/entry_points.txt"))
     parser = configparser.ConfigParser()
     parser.read_file(io.StringIO(archive.read(entry_points_name).decode()))

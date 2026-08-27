@@ -46,9 +46,9 @@ The installer bootstraps a pinned `uv` and Python runtime when needed. macOS `la
 The recommended first installation pins the release version and lets you inspect the installer before running it:
 
 ```sh
-curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.1.0/install.sh -o pcloud-tools-install.sh
+curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.1.1/install.sh -o pcloud-tools-install.sh
 less pcloud-tools-install.sh
-sh pcloud-tools-install.sh --version v0.1.0
+sh pcloud-tools-install.sh --version v0.1.1
 rm pcloud-tools-install.sh
 ```
 

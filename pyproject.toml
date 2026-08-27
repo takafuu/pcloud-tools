@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pcloud-tools"
-version = "0.1.0"
+version = "0.1.1"
 description = "Personal, preview-first pCloud CLI suite built around rclone."
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,10 @@ pcloud-archive = "pcloud_tools.pcloud_archive:main"
 packages = ["src/pcloud_tools"]
 
 [tool.hatch.build.targets.wheel.force-include]
-"docs/spec" = "pcloud_tools/share/docs/pcloud-manager"
-"docs/commands/pcloud-archive" = "pcloud_tools/share/docs/pcloud-archive"
+"docs/spec/利用ガイド.md" = "pcloud_tools/share/docs/pcloud-manager/利用ガイド.md"
+"docs/spec/技術仕様.md" = "pcloud_tools/share/docs/pcloud-manager/技術仕様.md"
+"docs/spec/AI向け概要.md" = "pcloud_tools/share/docs/pcloud-manager/AI向け概要.md"
+"docs/commands/pcloud-archive/利用ガイド.md" = "pcloud_tools/share/docs/pcloud-archive/利用ガイド.md"
+"docs/commands/pcloud-archive/技術仕様.md" = "pcloud_tools/share/docs/pcloud-archive/技術仕様.md"
+"docs/commands/pcloud-archive/AI向け概要.md" = "pcloud_tools/share/docs/pcloud-archive/AI向け概要.md"
 "docs/man" = "pcloud_tools/share/man/man1"

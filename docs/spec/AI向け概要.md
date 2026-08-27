@@ -17,7 +17,7 @@ Last updated: 2026-08-28
 
 root help 表示は runtime で分かれる。public `pcloud-manager` は `usage: pcloud-manager ...`、dev `./pcloud-manager-dev` は `usage: pcloud-manager-dev ...` を表示する。これは `src/pcloud_tools/cli.py` の root parser が `PCLOUD_TOOLS_DEV` を見て切り替える。
 
-初回releaseは`0.1.0`。GitHub-only distributionで、raw.githubusercontent.comの`install.sh`がGitHub Release bundleを取得し、checksum確認後に`uv tool install`する。installerはconfig/state/rclone credentials/launchd/NAS serviceを変更しない。NASへの実導入はrelease後の別taskとして、READMEとpublic diagnosticsだけで行う。
+releaseはsemantic version tagで管理する。GitHub-only distributionで、raw.githubusercontent.comの`install.sh`がGitHub Release bundleを取得し、checksum確認後に`uv tool install`する。installerはconfig/state/rclone credentials/launchd/NAS serviceを変更しない。別machineへの実導入はrelease後の別taskとして、READMEとpublic diagnosticsだけで行う。
 
 `pcloud-manager help --ai "request" --topic <topic>` は別 AI/helper 向けの read-only JSON context generator。topic は `overview`, `safety`, `mode`, `pushd`, `diffd`, `launchd`, `transfer`, `sync`, `config`。LLM 呼び出し、生成 command 実行、runtime state mutation、private/large content 読み込みは禁止。
 
