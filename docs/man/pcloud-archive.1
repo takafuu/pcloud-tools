@@ -1,0 +1,144 @@
+.TH PCLOUD-ARCHIVE 1 "2026-08-26" "pcloud-tools" "User Commands"
+.SH NAME
+pcloud-archive \- copy a configured local folder directly to pcloud-crypt
+.SH SYNOPSIS
+.B pcloud-archive
+.RB [ \-\-config " " CONFIG ]
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+.B pcloud-archive
+performs a manual, one-way copy from a configured local source folder to a
+.B pcloud-crypt:
+remote using rclone.
+The crypt mount is not required.
+Missing or changed files are copied, while files deleted locally are not
+automatically deleted from pCloud.
+.PP
+This command is not a bidirectional sync tool and does not implement
+.BR "rsync --delete" .
+.SH FIRST-TIME SETUP
+Create
+.I ~/.config/pcloud-archive/config.toml
+and configure an existing local
+.B source_root
+plus the destination
+.BR remote_root .
+.PP
+Use
+.B pcloud-archive help config
+to see the keys and a complete example, or create a non-overwriting
+starter file with:
+.PP
+.EX
+pcloud-archive help config --init-config ~/.config/pcloud-archive/config.toml
+.EE
+.PP
+.EX
+[defaults]
+profile = "mac"
+
+[profiles.mac]
+source_root = "/absolute/path/to/local/archive-source"
+remote_root = "pcloud-crypt:archive"
+.EE
+.PP
+Do not use
+.I ~/p-crypt
+or
+.I ~/.pcloud/crypt
+as
+.BR source_root ;
+those are mounted views of the destination.
+.SH TYPICAL WORKFLOW
+.EX
+pcloud-archive doctor
+pcloud-archive diff
+pcloud-archive promote . --dry-run
+pcloud-archive promote . --execute
+pcloud-archive check . --execute
+.EE
+.SH COMMANDS
+.TP
+.B help
+Show command help. Use
+.B help --detail
+to rediscover the manual page and the full Markdown documentation.
+Use
+.B help config
+for the configuration schema and
+.B help config --init-config <config-path>
+to create a starter file without overwriting an existing file.
+.TP
+.B info
+Show resolved configuration, runtime state, paths, and impact scope.
+Use
+.B info paths
+to rediscover files and documentation.
+.TP
+.B doctor
+Check configuration, the local source, rclone, and pcloud-crypt connectivity.
+The crypt mount and this manual page are not runtime requirements.
+.TP
+.B status
+Show manifest counts, tombstones, and the latest recorded run.
+.TP
+.B diff
+Compare the configured local source with the remote without copying files.
+.TP
+.B promote
+Preview or execute a one-way
+.B rclone copy
+for a path under
+.BR source_root .
+.TP
+.B check
+Run
+.B rclone check --one-way
+and record a successful verification.
+.TP
+.B delete-canonical
+Preview or explicitly delete one remote file and record a tombstone.
+.TP
+.B drop-cache
+Preview local cleanup without deleting anything from pCloud.
+.SH CONFIGURATION
+Configuration is resolved in this order: command-line flags,
+environment variables,
+.I ~/.config/pcloud-archive/config.toml,
+then safe built-in defaults.
+rclone owns pCloud credentials; no pCloud secret is required in this
+config file.
+.SH FILES
+.TP
+.I ~/.config/pcloud-archive/config.toml
+Persistent configuration.
+.TP
+.I ~/.local/state/pcloud-archive/<profile>/manifest.json
+Successful verification records.
+.TP
+.I ~/.local/state/pcloud-archive/<profile>/tombstones.json
+Remote deletion tombstones.
+.TP
+.I ~/.local/state/pcloud-archive/<profile>/last-run.json
+Latest recorded mutating or verification run.
+.SH DOCUMENTATION
+The complete documentation is stored under:
+.PP
+.I /Users/takafumi/p-core/dev/#仕様書/pcloud-archive/
+.PP
+Use these commands to rediscover the current paths:
+.PP
+.EX
+pcloud-archive help --detail
+pcloud-archive info paths
+.EE
+.SH EXIT STATUS
+Returns 0 when a command succeeds or when diagnostics contain only
+nonblocking information.
+Returns nonzero for invalid or missing required configuration,
+inaccessible sources, unavailable required commands or remotes,
+and failed operations.
+.SH SEE ALSO
+.BR rclone (1),
+.BR man (1)

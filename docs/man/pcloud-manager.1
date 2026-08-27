@@ -1,0 +1,65 @@
+.TH PCLOUD-MANAGER 1 "2026-08-26" "pcloud-tools" "User Commands"
+.SH NAME
+pcloud-manager \- inspect and operate guarded pCloud sync tooling
+.SH SYNOPSIS
+.B pcloud-manager
+.I command
+.RI [ options ]
+.SH DESCRIPTION
+.B pcloud-manager
+is the public command for local pCloud synchronization, mounts, indexes,
+daemon state, transfer queues, remote-diff queues, and operator gates. Most
+commands are inspection or preview surfaces; state-changing work is explicit.
+.SH FIRST-TIME SETUP
+Run
+.B pcloud-manager info paths
+to inspect the public wrapper, configuration directory, local state, logs, and
+sync scope. Run
+.B pcloud-manager doctor --json
+before enabling or changing runtime services.
+.SH COMMON WORKFLOW
+Use
+.B status --json
+for the current runtime report. Use
+.B gates status
+to inspect human approval gates. Use subsystem status commands such as
+.B pushd status --xbar
+and
+.B diffd status --xbar
+for compact menu-bar output.
+.SH CONFIGURATION
+The default configuration directory is
+.I ~/.config/pcloud-tools
+and its environment file is
+.IR ~/.config/pcloud-tools/.env .
+Runtime state and logs live under
+.IR ~/.pcloud .
+Secrets and remote credentials must never be printed or committed.
+.SH SAFETY
+Commands that transfer, delete, mount, unmount, modify queues, or change
+LaunchAgents are guarded by explicit subcommands and execution flags. Inspect
+with status, doctor, info, preview, and gates before using an execute path.
+.SH FILES
+.TP
+.I /Users/takafumi/bin/pcloud-manager
+Public wrapper.
+.TP
+.I /Users/takafumi/p-core/dev/pcloud-tools/src
+Implementation package.
+.TP
+.I /Users/takafumi/p-core/.pcloud-sync-allowlist
+Shared synchronization scope.
+.SH DOCUMENTATION
+Use
+.B pcloud-manager help
+and
+.B pcloud-manager info paths
+for command rediscovery. Full canonical documentation is under
+.IR /Users/takafumi/p-core/dev/#仕様書/pcloud-manager/ .
+.SH EXIT STATUS
+Zero indicates success. Nonzero indicates invalid arguments, an unhealthy
+runtime, an unmet human gate, or a failed guarded operation.
+.SH SEE ALSO
+.BR pcloud-archive (1),
+.BR rclone (1),
+.BR man (1)

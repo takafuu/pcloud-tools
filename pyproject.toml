@@ -18,6 +18,7 @@ test = [
 ]
 
 [project.scripts]
+pcloud-manager = "pcloud_tools.cli:main"
 pcloud-tools = "pcloud_tools.cli:main"
 pcloud-pushd = "pcloud_tools.cli_service_daemon:main_pushd"
 pcloud-diffd = "pcloud_tools.cli_service_daemon:main_diffd"
@@ -25,3 +26,8 @@ pcloud-archive = "pcloud_tools.pcloud_archive:main"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/pcloud_tools"]
+
+[tool.hatch.build.targets.wheel.force-include]
+"docs/spec" = "pcloud_tools/share/docs/pcloud-manager"
+"docs/commands/pcloud-archive" = "pcloud_tools/share/docs/pcloud-archive"
+"docs/man" = "pcloud_tools/share/man/man1"

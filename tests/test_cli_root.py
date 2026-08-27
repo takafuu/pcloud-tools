@@ -1,6 +1,93 @@
 from __future__ import annotations
 
+import tomllib
+
 from conftest import *
+
+
+def test_distribution_exposes_formal_public_entrypoints() -> None:
+    payload = tomllib.loads((REPO_ROOT / "pyproject.toml").read_text())
+
+    assert payload["project"]["scripts"]["pcloud-manager"] == "pcloud_tools.cli:main"
+    assert payload["project"]["scripts"]["pcloud-archive"] == "pcloud_tools.pcloud_archive:main"
+
+
+def test_public_runtime_defaults_do_not_depend_on_current_working_directory(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pcloud_tools.runtime import detect_runtime_paths
+
+    home = tmp_path / "home"
+    unrelated_cwd = tmp_path / "unrelated"
+    home.mkdir()
+    unrelated_cwd.mkdir()
+    monkeypatch.setenv("HOME", str(home))
+    monkeypatch.setenv("PCLOUD_TOOLS_DEV", "0")
+    for key in (
+        "PCLOUD_TOOLS_WORKSPACE_ROOT",
+        "PCLOUD_TOOLS_CONFIG_DIR",
+        "PCLOUD_TOOLS_STATE_DIR",
+        "PCLOUD_TOOLS_LOG_DIR",
+    ):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.chdir(unrelated_cwd)
+
+    paths = detect_runtime_paths()
+
+    assert paths.workspace_root == home / "p-core"
+    assert paths.config_dir == home / ".config" / "pcloud-tools"
+    assert paths.state_dir == home / ".pcloud"
+    assert paths.log_dir == home / ".pcloud" / "logs"
+
+
+def test_public_cli_reports_release_version(tmp_path: Path) -> None:
+    result = _run_cli(
+        tmp_path,
+        "--version",
+        extra_env={"PCLOUD_TOOLS_DEV": "0"},
+    )
+
+    assert result.returncode == 0
+    assert result.stdout.strip() == "pcloud-manager 0.1.0"
+
+
+def test_configured_public_entrypoint_wins_over_path_lookup(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pcloud_tools.runtime import action_entrypoint_command, detect_runtime_paths
+
+    wrapper = tmp_path / "bin" / "pcloud-manager"
+    wrapper.parent.mkdir()
+    wrapper.write_text("#!/bin/sh\n")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("PCLOUD_TOOLS_DEV", "0")
+    monkeypatch.setenv("PCLOUD_TOOLS_PUBLIC_ENTRYPOINT", str(wrapper))
+
+    assert action_entrypoint_command(detect_runtime_paths()) == str(wrapper)
+
+
+def test_dev_entrypoint_lookup_skips_active_virtual_environment(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pcloud_tools.runtime import action_entrypoint_command, detect_runtime_paths
+
+    virtual_bin = tmp_path / "virtual" / "bin"
+    public_bin = tmp_path / "public" / "bin"
+    virtual_bin.mkdir(parents=True)
+    public_bin.mkdir(parents=True)
+    virtual_entrypoint = virtual_bin / "pcloud-manager"
+    public_entrypoint = public_bin / "pcloud-manager"
+    for entrypoint in (virtual_entrypoint, public_entrypoint):
+        entrypoint.write_text("#!/bin/sh\n")
+        entrypoint.chmod(0o755)
+
+    monkeypatch.setattr("pcloud_tools.runtime.sys.prefix", str(tmp_path / "virtual"))
+    monkeypatch.setenv("PATH", f"{virtual_bin}:{public_bin}")
+    monkeypatch.setenv("PCLOUD_TOOLS_DEV", "1")
+    monkeypatch.setenv("PCLOUD_TOOLS_WORKSPACE_ROOT", str(tmp_path / "workspace"))
+    monkeypatch.delenv("PCLOUD_TOOLS_PUBLIC_ENTRYPOINT", raising=False)
+
+    assert action_entrypoint_command(detect_runtime_paths()) == str(public_entrypoint)
 
 
 def test_root_help_uses_runtime_specific_program_name(tmp_path: Path) -> None:
@@ -143,11 +230,45 @@ def test_info_reports_runtime_paths_and_redacted_config(tmp_path: Path) -> None:
     assert paths.returncode == 0
     assert paths_payload["command"] == "info paths"
     assert any("manager ignore file:" in item for item in paths_payload["details"]["paths"])
+    assert any("documentation directory:" in item for item in paths_payload["details"]["paths"])
     assert config.returncode == 0
     assert config_payload["command"] == "info config"
     assert config_payload["details"]["pCloud API token"] == "set (redacted)"
     assert "secret-token" not in config.stdout
     assert config_payload["details"]["gate env values"] == "redacted from info; use gates/status commands for gate state"
+
+
+def test_help_detail_rediscovers_runtime_and_documentation(tmp_path: Path) -> None:
+    result = _run_cli(tmp_path, "help", "--detail")
+
+    assert result.returncode == 0
+    assert "Runtime discovery:" in result.stdout
+    assert "Documentation:" in result.stdout
+    assert "利用ガイド.md: found" in result.stdout
+    assert "Browse documentation:" in result.stdout
+
+
+def test_public_documentation_prefers_packaged_release_copy(
+    tmp_path: Path, monkeypatch
+) -> None:
+    from pcloud_tools import documentation
+    from pcloud_tools.runtime import RuntimePaths
+
+    package_share = tmp_path / "installed" / "share"
+    packaged_docs = package_share / "docs" / "pcloud-manager"
+    external_docs = tmp_path / "workspace" / "dev" / "#仕様書" / "pcloud-manager"
+    packaged_docs.mkdir(parents=True)
+    external_docs.mkdir(parents=True)
+    monkeypatch.setattr(documentation, "package_share_dir", lambda: package_share)
+    monkeypatch.setenv("PCLOUD_TOOLS_DEV", "0")
+    paths = RuntimePaths(
+        workspace_root=tmp_path / "workspace",
+        config_dir=tmp_path / "config",
+        state_dir=tmp_path / "state",
+        log_dir=tmp_path / "logs",
+    )
+
+    assert documentation.command_documentation_dir("pcloud-manager", paths) == packaged_docs
 def test_top_level_status_and_doctor_surface_pushd_missing_local_details(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])

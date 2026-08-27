@@ -29,6 +29,7 @@ from .config import (
     repair_manager_ignore_file,
 )
 from .daemon_state import read_daemon_state
+from .documentation import command_documentation_dir, command_documentation_files, packaged_manpage
 from .mount_ops import mount_layer_state, resolve_layers
 from .output import CommandReport, ReportAction, ReportIssue, render_report
 from .runtime import RuntimePaths
@@ -219,6 +220,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
     mode = "dev" if paths.dev_mode else "default"
 
     if args.info_command == "paths":
+        docs_dir = command_documentation_dir("pcloud-manager", paths)
         details = {
             "paths": [
                 _path_entry(entrypoint_command(paths), "entrypoint"),
@@ -235,6 +237,12 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
                 _path_entry(config.autosync_plist, "autosync LaunchAgent plist"),
                 _path_entry(config.vault_mount_dir, "vault mount directory"),
                 _path_entry(config.crypt_mount_dir, "crypt mount directory"),
+                _path_entry(docs_dir or "not found", "documentation directory"),
+                *[
+                    _path_entry(path, "documentation file")
+                    for path in command_documentation_files("pcloud-manager", paths)
+                ],
+                _path_entry(packaged_manpage("pcloud-manager") or "not found", "packaged man page"),
             ],
             "state policy": "runtime state stays local under the configured state directory",
             "content policy": "shared sync scope; p-core root is allowed when dangerous/generated/private paths are ignored",
@@ -272,6 +280,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "gate env values": "redacted from info; use gates/status commands for gate state",
         }
     else:
+        docs_dir = command_documentation_dir("pcloud-manager", paths)
         details = {
             "version": _package_version(),
             "mode": mode,
@@ -300,6 +309,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "log policy": "logs stay local; reports redact pCloud API tokens",
             "sensitive data policy": "secrets are read on demand and redacted in info output",
             "content policy": "sync scope file controls the outer roots; normal sync/resync remains separately gated",
+            "documentation": str(docs_dir or "not found"),
         }
 
     return CommandReport(

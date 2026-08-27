@@ -3,7 +3,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from pathlib import Path
 
+from . import __version__
 from .cli_action import add_action_parser, cmd_action
 from .cli_archive import add_archive_parser, add_legacy_parser, cmd_archive
 from .cli_daemon import add_daemon_parser, cmd_daemon
@@ -39,6 +41,7 @@ def build_parser(
         prog=prog,
         description=description,
     )
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
     add_help_parser(subparsers)
@@ -82,7 +85,9 @@ def _normalize_legacy_argv(argv: list[str]) -> tuple[list[str], str | None]:
 
 def main(argv: list[str] | None = None) -> int:
     dev_mode = _env_truthy("PCLOUD_TOOLS_DEV")
-    parser = build_parser(dev_mode=dev_mode)
+    invoked_name = Path(sys.argv[0]).name
+    public_prog = "pcloud-tools" if invoked_name == "pcloud-tools" else None
+    parser = build_parser(prog=public_prog, dev_mode=dev_mode)
     raw_argv = sys.argv[1:] if argv is None else list(argv)
     normalized_argv, legacy_sync_command = _normalize_legacy_argv(raw_argv)
     args = parser.parse_args(normalized_argv)
@@ -91,7 +96,7 @@ def main(argv: list[str] | None = None) -> int:
     paths = detect_runtime_paths()
 
     if args.command == "help":
-        return cmd_help(args, parser, dev_mode=dev_mode)
+        return cmd_help(args, parser, dev_mode=dev_mode, paths=paths)
     if args.command == "info":
         return cmd_info(args, paths)
     if args.command == "status":

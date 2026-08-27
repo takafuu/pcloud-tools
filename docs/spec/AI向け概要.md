@@ -1,6 +1,6 @@
 # pcloud-manager AI向け概要
 
-Last updated: 2026-05-07
+Last updated: 2026-08-28
 
 ## 最初に読む場所
 
@@ -8,11 +8,18 @@ Last updated: 2026-05-07
 - 現行実装ワークツリー: `/Users/takafumi/p-core/dev/pcloud-tools/`
 - CLI 入口: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli.py`
 - public 入口: `/Users/takafumi/bin/pcloud-manager`
+- release installer: `/Users/takafumi/p-core/dev/pcloud-tools/install.sh`
+- release workflow: `/Users/takafumi/p-core/dev/pcloud-tools/.github/workflows/release.yml`
+- release bundle builder: `/Users/takafumi/p-core/dev/pcloud-tools/scripts/build-release-bundle.sh`
 - 開発用入口: `/Users/takafumi/p-core/dev/pcloud-tools/pcloud-manager-dev`
 - cutover readiness package: `/Users/takafumi/p-core/dev/#仕様書/pcloud-manager/cutover-readiness-package.md`
 - レビュー連絡: `/Users/takafumi/p-core/dev/pcloud-tools/報告.md`
 
+正式版は `pcloud-tools` wheelをuv tool environmentへinstallして実行する。development checkoutはsource/test/buildの正本で、public wrapperは`${XDG_DATA_HOME:-$HOME/.local/share}/pcloud-tools/bin/`のinstalled executableへ委譲する。public wrapperに`PYTHONPATH`やdevelopment `.venv`を戻してはいけない。
+
 root help 表示は runtime で分かれる。public `pcloud-manager` は `usage: pcloud-manager ...`、dev `./pcloud-manager-dev` は `usage: pcloud-manager-dev ...` を表示する。これは `src/pcloud_tools/cli.py` の root parser が `PCLOUD_TOOLS_DEV` を見て切り替える。
+
+初回releaseは`0.1.0`。GitHub-only distributionで、raw.githubusercontent.comの`install.sh`がGitHub Release bundleを取得し、checksum確認後に`uv tool install`する。installerはconfig/state/rclone credentials/launchd/NAS serviceを変更しない。NASへの実導入はrelease後の別taskとして、READMEとpublic diagnosticsだけで行う。
 
 `pcloud-manager help --ai "request" --topic <topic>` は別 AI/helper 向けの read-only JSON context generator。topic は `overview`, `safety`, `mode`, `pushd`, `diffd`, `launchd`, `transfer`, `sync`, `config`。LLM 呼び出し、生成 command 実行、runtime state mutation、private/large content 読み込みは禁止。
 
@@ -29,6 +36,7 @@ root help 表示は runtime で分かれる。public `pcloud-manager` は `usage
 - `notify`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_notify.py`
 - `sync`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_sync.py`
 - `status` / `doctor`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_status.py`
+- release/runtime docs discovery: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/documentation.py`
 - `mount` / `umount`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_mount.py`
 - `index`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_index.py`
 
@@ -216,5 +224,5 @@ cutover 前の判断:
 
 ## pcloud-archive との境界
 
-NAS/Mac の staging data を `pcloud-crypt:` の正データへ昇格する用途は `pcloud-manager` へ追加せず、別 command `/Users/takafumi/p-core/bin/pcloud-archive` が担当する。`pcloud-archive` は `rclone copy` / `rclone check` を使い、crypt mount への `cp` fallback は行わない。詳細は `/Users/takafumi/p-core/dev/#仕様書/pcloud-archive/` を読む。
+設定したlocal `source_root` から `pcloud-crypt:` の `remote_root` へ一方向copy/checkする用途は `pcloud-manager` へ追加せず、別 command `/Users/takafumi/p-core/bin/pcloud-archive` が担当する。crypt mountは不要で、ローカル削除はremoteへ自動伝播しない。`man pcloud-archive`、`help --detail`、`info paths` から説明を再発見できる。man pageは任意で、未設置時はdoctor issueにしない。詳細は `/Users/takafumi/p-core/dev/#仕様書/pcloud-archive/` を読む。
 - failed check の `name` と `detail` を `報告.md` に添えて reviewer/implementer 間で戻す

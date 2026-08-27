@@ -5,6 +5,7 @@ import fnmatch
 import json
 import os
 import shlex
+import shutil
 import subprocess
 import sys
 import tomllib
@@ -13,14 +14,19 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from . import __version__
 from .cli_common import has_errors, report_issues, sort_issues, status_from_issues
 from .config import ConfigIssue
+from .documentation import package_share_dir
 from .io_utils import atomic_write_json
 from .output import CommandReport, render_report
 
 
 ARCHIVE_HELP_AI_SCHEMA_VERSION = "pcloud-archive-help-ai.v1"
 ARCHIVE_REPORT_SCHEMA_VERSION = "pcloud-archive-report.v1"
+ARCHIVE_COMMAND_NAME = "pcloud-archive"
+ARCHIVE_DOC_FILENAMES = ("利用ガイド.md", "技術仕様.md", "AI向け概要.md")
+ARCHIVE_MANPAGE_FILENAME = f"{ARCHIVE_COMMAND_NAME}.1"
 
 
 @dataclass(frozen=True)
@@ -28,10 +34,13 @@ class ArchiveProfile:
     name: str
     config_file: Path
     config_source: str
-    source_root: Path
+    source_root: Path | None
     remote_root: str
     state_dir: Path
     log_dir: Path
+    docs_dir: Path | None
+    docs_dir_source: str
+    docs_search_candidates: tuple[Path, ...]
     rclone_bin: str
     transfers: int
     checkers: int
@@ -53,6 +62,12 @@ class ArchiveProfile:
     def last_run_file(self) -> Path:
         return self.state_dir / "last-run.json"
 
+    @property
+    def documentation_files(self) -> tuple[Path, ...]:
+        if self.docs_dir is None:
+            return ()
+        return tuple(self.docs_dir / name for name in ARCHIVE_DOC_FILENAMES)
+
 
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
@@ -67,24 +82,58 @@ def main(argv: list[str] | None = None) -> int:
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(
         prog="pcloud-archive",
-        description="Promote NAS/Mac staging data into pcloud-crypt canonical archive storage.",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        description=(
+            "Copy files from a configured local folder directly to pcloud-crypt: using rclone.\n\n"
+            "The crypt mount is not required. This is a one-way copy: missing or changed files are\n"
+            "uploaded, while files deleted locally are not automatically deleted from pCloud."
+        ),
+        epilog=(
+            "First-time setup:\n"
+            "  Configure source_root and remote_root in ~/.config/pcloud-archive/config.toml\n"
+            "  Run `pcloud-archive doctor` before copying data.\n\n"
+            "Typical workflow:\n"
+            "  pcloud-archive doctor\n"
+            "  pcloud-archive diff\n"
+            "  pcloud-archive promote <path> --dry-run\n"
+            "  pcloud-archive promote <path> --execute\n"
+            "  pcloud-archive check <path> --execute\n\n"
+            "Rediscover later:\n"
+            "  pcloud-archive info paths\n"
+            "  pcloud-archive help --detail"
+        ),
     )
     parser.add_argument("--config", type=Path, help="Override config file path.")
+    parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
-    help_parser = subparsers.add_parser("help", help="Show command help or emit AI helper context.")
+    help_parser = subparsers.add_parser("help", help="Show workflow help, documentation paths, or AI context.")
     help_parser.add_argument("topic_arg", nargs="?")
     help_parser.add_argument("--ai", metavar="REQUEST")
     help_parser.add_argument("--topic", action="append", default=[])
+    help_parser.add_argument("--detail", action="store_true", help="Show documentation files and discovery commands.")
+    help_parser.add_argument(
+        "--init-config",
+        type=Path,
+        metavar="CONFIG_PATH",
+        help="With the config topic, create a starter config without overwriting an existing file.",
+    )
+    _add_profile_args(help_parser)
 
-    for name in ("info", "doctor", "status", "diff"):
-        sub = subparsers.add_parser(name, help=f"{name} pcloud-archive state.")
+    state_command_help = {
+        "info": "Show resolved config, runtime paths, and documentation paths.",
+        "doctor": "Check config, local source, rclone, and pcloud-crypt connectivity.",
+        "status": "Show manifest counts, tombstones, and the latest recorded run.",
+        "diff": "Compare the local source with pcloud-crypt without copying files.",
+    }
+    for name, help_text in state_command_help.items():
+        sub = subparsers.add_parser(name, help=help_text)
         _add_profile_args(sub)
         if name == "info":
             sub.add_argument("view", choices=("overview", "paths", "config"), nargs="?", default="overview")
         sub.add_argument("--json", action="store_true", help="Emit structured JSON output.")
 
-    promote = subparsers.add_parser("promote", help="Preview or execute rclone copy into the archive remote.")
+    promote = subparsers.add_parser("promote", help="Preview or run a one-way rclone copy to pcloud-crypt.")
     _add_profile_args(promote)
     promote.add_argument("path", help="Path under source_root, or an absolute path inside source_root.")
     promote.add_argument("--dry-run", action="store_true", help="Preview the rclone copy command.")
@@ -92,19 +141,21 @@ def build_parser() -> argparse.ArgumentParser:
     promote.add_argument("--bwlimit", help="Override rclone --bwlimit for this run.")
     promote.add_argument("--json", action="store_true", help="Emit structured JSON output.")
 
-    check = subparsers.add_parser("check", help="Run rclone check and update the manifest on success.")
+    check = subparsers.add_parser("check", help="Verify a local path against pcloud-crypt and record success.")
     _add_profile_args(check)
     check.add_argument("path", help="Path under source_root, or an absolute path inside source_root.")
     check.add_argument("--execute", action="store_true", help="Run rclone check. Default is preview only.")
     check.add_argument("--json", action="store_true", help="Emit structured JSON output.")
 
-    delete = subparsers.add_parser("delete-canonical", help="Preview or execute canonical remote deletion.")
+    delete = subparsers.add_parser(
+        "delete-canonical", help="Preview or explicitly delete one remote file and record a tombstone."
+    )
     _add_profile_args(delete)
     delete.add_argument("remote_path", help="Path under remote_root, or a full remote path.")
     delete.add_argument("--execute", action="store_true", help="Run rclone deletefile and record a tombstone.")
     delete.add_argument("--json", action="store_true", help="Emit structured JSON output.")
 
-    drop = subparsers.add_parser("drop-cache", help="Preview local cache deletion without touching pCloud.")
+    drop = subparsers.add_parser("drop-cache", help="Preview local cleanup without deleting anything from pCloud.")
     _add_profile_args(drop)
     drop.add_argument("local_path", help="Local cache path to preview.")
     drop.add_argument("--json", action="store_true", help="Emit structured JSON output.")
@@ -113,7 +164,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _add_profile_args(parser: argparse.ArgumentParser) -> None:
-    parser.add_argument("--profile", help="Profile name. Defaults to config defaults.profile or nas-dev.")
+    parser.add_argument("--profile", help="Profile name. Defaults to config defaults.profile.")
 
 
 def _dispatch_report(args: argparse.Namespace, parser: argparse.ArgumentParser) -> CommandReport:
@@ -143,26 +194,34 @@ def _dispatch_report(args: argparse.Namespace, parser: argparse.ArgumentParser) 
 
 
 def _cmd_help(args: argparse.Namespace, parser: argparse.ArgumentParser) -> int:
+    profile, _issues = _load_profile(args)
+    init_config = getattr(args, "init_config", None)
+    if init_config is not None:
+        if args.ai is not None:
+            print("pcloud-archive help: --init-config cannot be combined with --ai", file=sys.stderr)
+            return 2
+        if getattr(args, "topic_arg", None) != "config":
+            print("pcloud-archive help: --init-config requires the config topic", file=sys.stderr)
+            return 2
+        return _init_config_file(init_config, profile)
     if args.ai is not None:
         topics = [getattr(args, "topic_arg", None) or "", *getattr(args, "topic", [])]
-        print(_render_help_ai(parser, args.ai, [topic for topic in topics if topic]))
+        print(_render_help_ai(parser, args.ai, [topic for topic in topics if topic], profile))
+        return 0
+    if getattr(args, "detail", False):
+        print(_render_detailed_help(parser, profile))
         return 0
     topic = getattr(args, "topic_arg", None)
     if topic:
-        print(_topic_help(topic))
+        print(_topic_help(topic, profile))
         return 0
     print(parser.format_help().rstrip())
-    print()
-    print("Examples:")
-    print("  pcloud-archive doctor --profile nas-dev")
-    print("  pcloud-archive diff --profile nas-dev")
-    print("  pcloud-archive promote --profile nas-dev Photos/2026-07 --dry-run")
-    print("  pcloud-archive check --profile nas-dev Photos/2026-07 --execute")
-    print("  pcloud-archive help --ai \"inspect archive safety\" --topic safety")
     return 0
 
 
-def _render_help_ai(parser: argparse.ArgumentParser, request: str, topics: list[str]) -> str:
+def _render_help_ai(
+    parser: argparse.ArgumentParser, request: str, topics: list[str], profile: ArchiveProfile
+) -> str:
     selected = topics or ["overview", "safety", "config", "workflow"]
     payload = {
         "schema_version": ARCHIVE_HELP_AI_SCHEMA_VERSION,
@@ -176,10 +235,15 @@ def _render_help_ai(parser: argparse.ArgumentParser, request: str, topics: list[
         },
         "topics": [_topic_payload(topic, include_name=True) for topic in selected],
         "important_paths": {
-            "public_wrapper": "/Users/takafumi/p-core/bin/pcloud-archive",
-            "implementation": "/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/pcloud_archive.py",
+            "public_wrapper": str(_public_command_path() or "not found"),
+            "implementation": str(Path(__file__).resolve()),
             "default_config": "~/.config/pcloud-archive/config.toml",
             "default_state": "~/.local/state/pcloud-archive/<profile>",
+            "documentation_directory": str(profile.docs_dir or "not found"),
+            "documentation_files": [str(path) for path in profile.documentation_files],
+            "manpage_source": str(_manpage_source_path() or "not found"),
+            "manpage_installed": str(_installed_manpage_path() or "not used"),
+            "manpage_status": _manpage_status(),
         },
         "safety_rules": _safety_rules(),
         "non_goals": [
@@ -192,6 +256,46 @@ def _render_help_ai(parser: argparse.ArgumentParser, request: str, topics: list[
     return json.dumps(payload, indent=2, ensure_ascii=False, sort_keys=True)
 
 
+def _render_detailed_help(parser: argparse.ArgumentParser, profile: ArchiveProfile) -> str:
+    manpage_source = _manpage_source_path()
+    installed_manpage = _installed_manpage_path()
+    lines = [
+        parser.format_help().rstrip(),
+        "",
+        "Manual:",
+        f"  status: {_manpage_status(installed_manpage)}",
+        f"  command: man {ARCHIVE_COMMAND_NAME}",
+        f"  source: {manpage_source or 'not found'}",
+        f"  installed: {installed_manpage or 'not used'}",
+        "",
+        "Documentation:",
+    ]
+    if profile.docs_dir is None:
+        lines.append("  directory: not found")
+        lines.append("  searched:")
+        lines.extend(f"    - {path}" for path in profile.docs_search_candidates)
+        lines.append("  override: set profiles.<name>.docs_dir or PCLOUD_ARCHIVE_DOCS_DIR")
+        return "\n".join(lines)
+
+    lines.append(f"  directory: {profile.docs_dir}")
+    lines.append(f"  directory status: {'found' if profile.docs_dir.is_dir() else 'missing'}")
+    lines.append(f"  resolved by: {profile.docs_dir_source}")
+    lines.append("  files:")
+    for path in profile.documentation_files:
+        status = "found" if path.is_file() else "missing"
+        lines.append(f"    - {path.name} ({status})")
+    lines.extend(
+        [
+            "",
+            "Browse documentation:",
+            f"  cd {shlex.quote(str(profile.docs_dir))}",
+            "  ls -1",
+            f"  open {shlex.quote(str(profile.docs_dir / '利用ガイド.md'))}",
+        ]
+    )
+    return "\n".join(lines)
+
+
 def _subcommand_help(parser: argparse.ArgumentParser) -> dict[str, str]:
     for action in parser._actions:
         if isinstance(action, argparse._SubParsersAction):
@@ -199,10 +303,30 @@ def _subcommand_help(parser: argparse.ArgumentParser) -> dict[str, str]:
     return {}
 
 
-def _topic_help(topic: str) -> str:
+def _topic_help(topic: str, profile: ArchiveProfile | None = None) -> str:
     payload = _topic_payload(topic)
     lines = [f"pcloud-archive help topic: {topic}", ""]
     lines.extend(payload["summary"])
+    if topic.lower() == "config" and profile is not None:
+        lines.extend(
+            [
+                "",
+                f"Config file: {profile.config_file}",
+                "",
+                "Create a starter config (existing files are not overwritten):",
+                f"  pcloud-archive help config --init-config {shlex.quote(str(profile.config_file))}",
+                "",
+                "Or create and edit it manually:",
+                f"  mkdir -p {shlex.quote(str(profile.config_file.parent))}",
+                f"  ${{EDITOR:-vi}} {shlex.quote(str(profile.config_file))}",
+                "",
+                "Minimal config:",
+                _config_example(profile),
+                "",
+                "Replace source_root with an existing local directory, then run:",
+                "  pcloud-archive doctor",
+            ]
+        )
     if payload["commands"]:
         lines.append("")
         lines.append("Commands:")
@@ -240,8 +364,9 @@ def _safety_rules() -> list[str]:
 _TOPICS: dict[str, dict[str, Any]] = {
     "overview": {
         "summary": [
-            "pcloud-archive promotes NAS/Mac staging data into pcloud-crypt canonical storage.",
-            "The transfer path is rclone remote-to-remote/local-to-remote, not mounted-folder cp.",
+            "pcloud-archive copies a configured local source folder directly to pcloud-crypt: with rclone.",
+            "The crypt mount is optional and is not used by diff, promote, or check.",
+            "The copy is one-way; local deletion does not automatically delete the remote file.",
         ],
         "commands": ["pcloud-archive info", "pcloud-archive status", "pcloud-archive doctor"],
         "safety": ["Start with sandbox remote roots such as pcloud-crypt:_pcloud-archive-dev."],
@@ -249,23 +374,28 @@ _TOPICS: dict[str, dict[str, Any]] = {
     "safety": {
         "summary": [
             "The command separates diff, promote, check, cache drop, and canonical delete.",
-            "NAS deletion never propagates to pCloud.",
+            "Local deletion never propagates to pCloud automatically.",
         ],
         "commands": ["pcloud-archive diff", "pcloud-archive promote --dry-run", "pcloud-archive check"],
         "safety": _safety_rules(),
     },
     "config": {
-        "summary": ["Config is read from CLI flags, environment, config.toml, then safe defaults."],
-        "commands": ["pcloud-archive info config", "pcloud-archive doctor"],
+        "summary": [
+            "Configure source_root and remote_root before the first copy.",
+            "Config is read from CLI flags, environment, config.toml, then safe defaults.",
+            "Documentation is discovered from the command/project location; docs_dir is only an override.",
+        ],
+        "commands": ["pcloud-archive info config", "pcloud-archive info paths", "pcloud-archive doctor"],
         "safety": ["Secrets are not needed for config; rclone owns pCloud credentials."],
     },
     "workflow": {
         "summary": ["Manual v1 workflow is diff -> promote dry-run -> promote execute -> check."],
         "commands": [
-            "pcloud-archive diff --profile nas-dev",
-            "pcloud-archive promote --profile nas-dev <path> --dry-run",
-            "pcloud-archive promote --profile nas-dev <path> --execute",
-            "pcloud-archive check --profile nas-dev <path> --execute",
+            "pcloud-archive doctor",
+            "pcloud-archive diff",
+            "pcloud-archive promote <path> --dry-run",
+            "pcloud-archive promote <path> --execute",
+            "pcloud-archive check <path> --execute",
         ],
         "safety": ["Launchd should only call the same CLI paths after manual verification."],
     },
@@ -276,6 +406,58 @@ def _config_file(args: argparse.Namespace) -> Path:
     if value:
         return Path(value).expanduser()
     return Path("~/.config/pcloud-archive/config.toml").expanduser()
+
+
+def _config_example(profile: ArchiveProfile) -> str:
+    profile_key = profile.name if all(character.isalnum() or character in "_-" for character in profile.name) else json.dumps(profile.name)
+    return "\n".join(
+        [
+            "[defaults]",
+            f"profile = {json.dumps(profile.name)}",
+            "",
+            f"[profiles.{profile_key}]",
+            'source_root = "/absolute/path/to/local/archive-source"',
+            f"remote_root = {json.dumps(profile.remote_root)}",
+        ]
+    )
+
+
+def _starter_config(profile: ArchiveProfile) -> str:
+    return _config_example(profile).replace(
+        'source_root = "/absolute/path/to/local/archive-source"',
+        '# Set this to an existing local directory before copying.\nsource_root = ""',
+    ) + "\n"
+
+
+def _config_guidance(config_file: Path) -> str:
+    config_path = shlex.quote(str(config_file))
+    return (
+        '"pcloud-archive help config" to see config settings, or '
+        f'"pcloud-archive help config --init-config {config_path}" to create a default config file.'
+    )
+
+
+def _init_config_file(config_path: Path, profile: ArchiveProfile) -> int:
+    target = config_path.expanduser()
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with target.open("x", encoding="utf-8") as handle:
+            handle.write(_starter_config(profile))
+    except FileExistsError:
+        print(f"pcloud-archive help config: config already exists; not overwritten: {target}", file=sys.stderr)
+        return 1
+    except OSError as exc:
+        print(f"pcloud-archive help config: cannot create config: {target}: {exc}", file=sys.stderr)
+        return 1
+
+    doctor_command = "pcloud-archive doctor"
+    if target != profile.config_file:
+        doctor_command = f"pcloud-archive --config {shlex.quote(str(target))} doctor"
+    print(f"created config: {target}")
+    print("source_root: not configured")
+    print(f"next: ${{EDITOR:-vi}} {shlex.quote(str(target))}")
+    print(f"then: {doctor_command}")
+    return 0
 
 
 def _load_profile(args: argparse.Namespace) -> tuple[ArchiveProfile, list[ConfigIssue]]:
@@ -290,13 +472,19 @@ def _load_profile(args: argparse.Namespace) -> tuple[ArchiveProfile, list[Config
         except (OSError, tomllib.TOMLDecodeError) as exc:
             issues.append(ConfigIssue("PCLOUD_ARCHIVE_CONFIG", "error", f"cannot read config: {exc}"))
     else:
-        issues.append(ConfigIssue("PCLOUD_ARCHIVE_CONFIG", "warning", f"config file is missing: {config_file}"))
+        issues.append(
+            ConfigIssue(
+                "PCLOUD_ARCHIVE_CONFIG",
+                "warning",
+                f"config file is missing: {config_file}\n{_config_guidance(config_file)}",
+            )
+        )
 
     defaults = payload.get("defaults", {}) if isinstance(payload.get("defaults", {}), dict) else {}
     profile_name = (
         getattr(args, "profile", None)
         or os.environ.get("PCLOUD_ARCHIVE_PROFILE")
-        or str(defaults.get("profile") or "nas-dev")
+        or str(defaults.get("profile") or "default")
     )
     profiles = payload.get("profiles", {}) if isinstance(payload.get("profiles", {}), dict) else {}
     profile_payload = profiles.get(profile_name, {}) if isinstance(profiles.get(profile_name, {}), dict) else {}
@@ -309,13 +497,7 @@ def _load_profile(args: argparse.Namespace) -> tuple[ArchiveProfile, list[Config
     transfer = profile_payload.get("transfer", {}) if isinstance(profile_payload.get("transfer", {}), dict) else {}
     ignore = profile_payload.get("ignore", {}) if isinstance(profile_payload.get("ignore", {}), dict) else {}
 
-    source_root = _path_setting(
-        args,
-        "source_root",
-        "PCLOUD_ARCHIVE_SOURCE_ROOT",
-        profile_payload,
-        "/Volumes/NAS/archive-inbox",
-    )
+    source_root = _optional_path_setting("source_root", "PCLOUD_ARCHIVE_SOURCE_ROOT", profile_payload)
     state_dir = _path_setting(args, "state_dir", "PCLOUD_ARCHIVE_STATE_DIR", profile_payload, str(default_state))
     log_dir = _path_setting(args, "log_dir", "PCLOUD_ARCHIVE_LOG_DIR", profile_payload, str(default_log))
     remote_root = _str_setting(
@@ -325,6 +507,7 @@ def _load_profile(args: argparse.Namespace) -> tuple[ArchiveProfile, list[Config
         profile_payload,
         "pcloud-crypt:_pcloud-archive-dev",
     ).rstrip("/")
+    docs_dir, docs_dir_source, docs_search_candidates = _resolve_docs_dir(profile_payload)
     rclone_bin = _str_setting(args, "rclone_bin", "PCLOUD_ARCHIVE_RCLONE_BIN", profile_payload, "rclone")
     ignore_patterns = _ignore_patterns(ignore)
     env_ignore = os.environ.get("PCLOUD_ARCHIVE_IGNORE_PATTERNS")
@@ -340,6 +523,9 @@ def _load_profile(args: argparse.Namespace) -> tuple[ArchiveProfile, list[Config
             remote_root=remote_root,
             state_dir=state_dir,
             log_dir=log_dir,
+            docs_dir=docs_dir,
+            docs_dir_source=docs_dir_source,
+            docs_search_candidates=docs_search_candidates,
             rclone_bin=rclone_bin,
             transfers=_int_setting("transfers", "PCLOUD_ARCHIVE_TRANSFERS", transfer, 3),
             checkers=_int_setting("checkers", "PCLOUD_ARCHIVE_CHECKERS", transfer, 8),
@@ -356,6 +542,111 @@ def _load_profile(args: argparse.Namespace) -> tuple[ArchiveProfile, list[Config
 def _path_setting(args: argparse.Namespace, key: str, env_key: str, profile: dict[str, Any], default: str) -> Path:
     del args
     return Path(os.environ.get(env_key) or str(profile.get(key) or default)).expanduser()
+
+
+def _optional_path_setting(key: str, env_key: str, profile: dict[str, Any]) -> Path | None:
+    raw = os.environ.get(env_key) or profile.get(key)
+    if raw is None or not str(raw).strip():
+        return None
+    return Path(str(raw)).expanduser()
+
+
+def _public_command_path() -> Path | None:
+    resolved = shutil.which(ARCHIVE_COMMAND_NAME)
+    if not resolved:
+        return None
+    return Path(resolved).expanduser().resolve()
+
+
+def _documentation_candidates() -> tuple[Path, ...]:
+    anchors = [Path(__file__).resolve()]
+    command_path = _public_command_path()
+    if command_path is not None:
+        anchors.append(command_path)
+
+    candidates: list[Path] = [package_share_dir() / "docs" / ARCHIVE_COMMAND_NAME]
+    seen: set[Path] = set()
+    for anchor in anchors:
+        start = anchor.parent
+        for parent in (start, *start.parents):
+            for relative in (
+                Path("dev") / "#仕様書" / ARCHIVE_COMMAND_NAME,
+                Path("#仕様書") / ARCHIVE_COMMAND_NAME,
+            ):
+                candidate = parent / relative
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _manpage_source_candidates() -> tuple[Path, ...]:
+    anchors = [Path(__file__).resolve()]
+    command_path = _public_command_path()
+    if command_path is not None:
+        anchors.append(command_path)
+
+    candidates: list[Path] = [package_share_dir() / "man" / "man1" / ARCHIVE_MANPAGE_FILENAME]
+    seen: set[Path] = set()
+    for anchor in anchors:
+        start = anchor.parent
+        for parent in (start, *start.parents):
+            for relative in (
+                Path("docs") / "man" / ARCHIVE_MANPAGE_FILENAME,
+                Path("share") / "man" / "man1" / ARCHIVE_MANPAGE_FILENAME,
+            ):
+                candidate = parent / relative
+                if candidate not in seen:
+                    seen.add(candidate)
+                    candidates.append(candidate)
+    return tuple(candidates)
+
+
+def _manpage_source_path() -> Path | None:
+    for candidate in _manpage_source_candidates():
+        if candidate.is_file():
+            return candidate
+    return None
+
+
+def _installed_manpage_path() -> Path | None:
+    man_command = shutil.which("man")
+    if not man_command:
+        return None
+    result = subprocess.run(
+        [man_command, "-w", ARCHIVE_COMMAND_NAME],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode != 0:
+        return None
+    for line in result.stdout.splitlines():
+        path = line.strip()
+        if path:
+            return Path(path)
+    return None
+
+
+def _manpage_status(installed: Path | None = None) -> str:
+    return "available" if (installed or _installed_manpage_path()) else "not used"
+
+
+def _resolve_docs_dir(profile: dict[str, Any]) -> tuple[Path | None, str, tuple[Path, ...]]:
+    env_value = os.environ.get("PCLOUD_ARCHIVE_DOCS_DIR")
+    config_value = profile.get("docs_dir")
+    if env_value:
+        path = Path(env_value).expanduser()
+        return path, "PCLOUD_ARCHIVE_DOCS_DIR", (path,)
+    if config_value:
+        path = Path(str(config_value)).expanduser()
+        return path, "config.toml docs_dir", (path,)
+
+    candidates = _documentation_candidates()
+    for candidate in candidates:
+        if candidate.is_dir():
+            return candidate, "discovered from command/project path", candidates
+    return None, "not found", candidates
 
 
 def _str_setting(args: argparse.Namespace, key: str, env_key: str, profile: dict[str, Any], default: str) -> str:
@@ -423,10 +714,12 @@ def _base_details(profile: ArchiveProfile) -> dict[str, Any]:
         "profile": profile.name,
         "config file": str(profile.config_file),
         "config source": profile.config_source,
-        "source root": str(profile.source_root),
+        "source root": str(profile.source_root) if profile.source_root else "not configured",
         "remote root": profile.remote_root,
         "state dir": str(profile.state_dir),
         "log dir": str(profile.log_dir),
+        "documentation dir": str(profile.docs_dir) if profile.docs_dir else "not found",
+        "documentation source": profile.docs_dir_source,
         "rclone": profile.rclone_bin,
         "transfers": profile.transfers,
         "checkers": profile.checkers,
@@ -439,22 +732,44 @@ def _info_report(args: argparse.Namespace) -> CommandReport:
     profile, issues = _load_profile(args)
     view = getattr(args, "view", "overview")
     details = _base_details(profile)
+    details.update(
+        {
+            "man page status": _manpage_status(),
+            "man command": f"man {ARCHIVE_COMMAND_NAME}",
+        }
+    )
     if view == "paths":
+        command_path = _public_command_path()
+        manpage_source = _manpage_source_path()
+        installed_manpage = _installed_manpage_path()
         details = {
             "paths": [
+                f"public command: {command_path or 'not found'}",
+                f"implementation: {Path(__file__).resolve()}",
                 f"config file: {profile.config_file}",
-                f"source root: {profile.source_root}",
+                f"source root: {profile.source_root or 'not configured'}",
                 f"remote root: {profile.remote_root}",
                 f"state dir: {profile.state_dir}",
                 f"log dir: {profile.log_dir}",
                 f"manifest: {profile.manifest_file}",
                 f"tombstones: {profile.tombstone_file}",
                 f"last run: {profile.last_run_file}",
+                f"documentation directory: {profile.docs_dir or 'not found'}",
+                *[f"documentation file: {path}" for path in profile.documentation_files],
+                f"man page source: {manpage_source or 'not found'}",
+                f"man page installed: {installed_manpage or 'not used'}",
             ]
         }
+        details["man page status"] = _manpage_status(installed_manpage)
+        details["man command"] = f"man {ARCHIVE_COMMAND_NAME}"
+        if profile.docs_dir is None:
+            details["documentation search candidates"] = [str(path) for path in profile.docs_search_candidates]
     elif view == "config":
         details["ignore patterns"] = list(profile.ignore_patterns)
         details["config resolution"] = "CLI flags > PCLOUD_ARCHIVE_* env > config.toml > built-in defaults"
+        details["documentation resolution"] = (
+            "PCLOUD_ARCHIVE_DOCS_DIR > config.toml docs_dir > discovery from command/project path"
+        )
     return CommandReport(
         f"info {view}" if view != "overview" else "info",
         status_from_issues(issues),
@@ -470,26 +785,50 @@ def _doctor_report(args: argparse.Namespace) -> CommandReport:
     rclone_path = _command_v(profile.rclone_bin)
     if not rclone_path:
         issues.append(ConfigIssue("PCLOUD_ARCHIVE_RCLONE_BIN", "error", f"rclone command not found: {profile.rclone_bin}"))
-    if not profile.source_root.exists():
+    if profile.source_root is None:
+        issues.append(ConfigIssue("PCLOUD_ARCHIVE_SOURCE_ROOT", "error", "source root is not configured"))
+    elif not profile.source_root.exists():
         issues.append(ConfigIssue("PCLOUD_ARCHIVE_SOURCE_ROOT", "error", f"source root is missing: {profile.source_root}"))
+    if profile.docs_dir is None or not profile.docs_dir.is_dir():
+        issues.append(ConfigIssue("PCLOUD_ARCHIVE_DOCS_DIR", "warning", "documentation directory was not found"))
     if rclone_path:
         remote_ok, remote_detail = _remote_available(profile)
         if not remote_ok:
             issues.append(ConfigIssue("PCLOUD_ARCHIVE_REMOTE_ROOT", "error", f"remote unavailable: {remote_detail}"))
     details = _base_details(profile)
+    installed_manpage = _installed_manpage_path()
     details.update(
         {
             "rclone path": rclone_path or "-",
-            "source root status": "ok" if profile.source_root.exists() else "missing",
-            "remote status": "checked" if rclone_path else "not checked",
+            "source root status": (
+                "not configured"
+                if profile.source_root is None
+                else ("ok" if profile.source_root.exists() else "missing")
+            ),
+            "remote connectivity": "ok" if rclone_path and remote_ok else "not checked" if not rclone_path else "error",
+            "crypt mount required": "no",
+            "man page status": _manpage_status(installed_manpage),
+            "man page required": "no",
+            "man command": f"man {ARCHIVE_COMMAND_NAME}",
+            "next command": (
+                "pcloud-archive help config"
+                if profile.source_root is None
+                else "pcloud-archive diff"
+            ),
             "state writes": "none",
         }
     )
     status = status_from_issues(issues)
+    if profile.source_root is None:
+        summary = "pcloud-archive is not configured: set source_root in config.toml before copying"
+    elif not profile.source_root.exists():
+        summary = f"pcloud-archive cannot copy: source root is missing: {profile.source_root}"
+    else:
+        summary = "pcloud-archive doctor passed" if status == "ok" else "pcloud-archive doctor found issues"
     return CommandReport(
         "doctor",
         status,
-        "pcloud-archive doctor passed" if status == "ok" else "pcloud-archive doctor found issues",
+        summary,
         details,
         report_issues(sort_issues(issues)),
         schema_version=ARCHIVE_REPORT_SCHEMA_VERSION,
@@ -523,7 +862,9 @@ def _status_report(args: argparse.Namespace) -> CommandReport:
 
 def _diff_report(args: argparse.Namespace) -> CommandReport:
     profile, issues = _load_profile(args)
-    if not profile.source_root.exists():
+    if profile.source_root is None:
+        issues.append(ConfigIssue("PCLOUD_ARCHIVE_SOURCE_ROOT", "error", "source root is not configured"))
+    elif not profile.source_root.exists():
         issues.append(ConfigIssue("PCLOUD_ARCHIVE_SOURCE_ROOT", "error", f"source root is missing: {profile.source_root}"))
     local = {} if has_errors(issues) else _local_inventory(profile)
     remote: dict[str, dict[str, Any]] = {}
@@ -537,10 +878,10 @@ def _diff_report(args: argparse.Namespace) -> CommandReport:
     details.update(
         {
             "state writes": "none",
-            "nas only": len(classified["NAS only"]),
+            "source only": len(classified["source only"]),
             "same": len(classified["same"]),
             "different": len(classified["different"]),
-            "pCloud only": len(classified["pCloud only"]),
+            "remote only": len(classified["remote only"]),
             "tombstoned-local": len(classified["tombstoned-local"]),
             "samples": {key: values[:10] for key, values in classified.items() if values},
         }
@@ -707,6 +1048,8 @@ def _drop_cache_report(args: argparse.Namespace) -> CommandReport:
 
 
 def _resolve_local_arg(profile: ArchiveProfile, value: str) -> tuple[str | None, Path | None, ConfigIssue | None]:
+    if profile.source_root is None:
+        return None, None, ConfigIssue("PCLOUD_ARCHIVE_SOURCE_ROOT", "error", "source root is not configured")
     raw = Path(value).expanduser()
     local_path = raw if raw.is_absolute() else profile.source_root / raw
     try:
@@ -787,6 +1130,8 @@ def _relative_remote_arg(profile: ArchiveProfile, value: str) -> str:
 
 
 def _local_inventory(profile: ArchiveProfile) -> dict[str, dict[str, Any]]:
+    if profile.source_root is None:
+        raise ValueError("source root is not configured")
     records: dict[str, dict[str, Any]] = {}
     for path in profile.source_root.rglob("*"):
         if not path.is_file():
@@ -828,18 +1173,18 @@ def _classify(
     remote: dict[str, dict[str, Any]],
     tombstones: dict[str, Any],
 ) -> dict[str, list[str]]:
-    result = {"NAS only": [], "same": [], "different": [], "pCloud only": [], "tombstoned-local": []}
+    result = {"source only": [], "same": [], "different": [], "remote only": [], "tombstoned-local": []}
     for path, local_meta in sorted(local.items()):
         if path in tombstones:
             result["tombstoned-local"].append(path)
         elif path not in remote:
-            result["NAS only"].append(path)
+            result["source only"].append(path)
         elif int(local_meta.get("size") or -1) == int(remote[path].get("size") or -2):
             result["same"].append(path)
         else:
             result["different"].append(path)
     for path in sorted(set(remote) - set(local)):
-        result["pCloud only"].append(path)
+        result["remote only"].append(path)
     return result
 
 

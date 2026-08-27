@@ -6,6 +6,10 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .cli_common import entrypoint_command
+from .documentation import command_documentation_candidates, command_documentation_dir, command_documentation_files
+from .runtime import RuntimePaths
+
 
 AI_HELP_SCHEMA_VERSION = "pcloud-tools-help-ai.v1"
 
@@ -32,11 +36,34 @@ def add_help_parser(subparsers: argparse._SubParsersAction) -> None:
         default=[],
         help="Include a task-oriented AI help topic. Can be passed multiple times.",
     )
+    help_parser.add_argument(
+        "--detail",
+        action="store_true",
+        help="Show resolved documentation and runtime discovery paths.",
+    )
 
 
-def cmd_help(args: argparse.Namespace, parser: argparse.ArgumentParser, *, dev_mode: bool) -> int:
+def cmd_help(
+    args: argparse.Namespace,
+    parser: argparse.ArgumentParser,
+    *,
+    dev_mode: bool,
+    paths: RuntimePaths,
+) -> int:
     if args.ai is not None:
-        print(render_ai_help(parser, request=args.ai, topics=_requested_topics(args), dev_mode=dev_mode))
+        print(
+            render_ai_help(
+                parser,
+                request=args.ai,
+                topics=_requested_topics(args),
+                dev_mode=dev_mode,
+                paths=paths,
+            )
+        )
+        return 0
+
+    if args.detail:
+        print(render_detailed_help(parser, paths))
         return 0
 
     topic = getattr(args, "topic_arg", None)
@@ -95,6 +122,7 @@ def render_ai_help(
     request: str,
     topics: list[str],
     dev_mode: bool,
+    paths: RuntimePaths,
 ) -> str:
     selected_topics = topics or _default_ai_topics()
     payload = {
@@ -110,7 +138,7 @@ def render_ai_help(
         },
         "topics": [_topic_payload(topic, include_name=True) for topic in selected_topics],
         "safety_rules": _safety_rules(),
-        "important_paths": _important_paths(),
+        "important_paths": _important_paths(paths),
         "non_goals": [
             "This command does not call an LLM.",
             "This command does not execute generated commands.",
@@ -200,21 +228,53 @@ def _safety_rules() -> list[str]:
     ]
 
 
-def _important_paths() -> dict[str, str]:
-    root = Path("/Users/takafumi/p-core/dev/pcloud-tools")
+def _important_paths(paths: RuntimePaths) -> dict[str, str]:
+    docs_dir = command_documentation_dir("pcloud-manager", paths)
+    docs = {path.name: str(path) for path in command_documentation_files("pcloud-manager", paths)}
     return {
-        "implementation_root": str(root),
-        "public_wrapper": "/Users/takafumi/bin/pcloud-manager",
-        "dotfiles_wrapper": "/Users/takafumi/p-core/dotfiles/.zsh/functions/pcloud-manager",
-        "dev_wrapper": str(root / "pcloud-manager-dev"),
-        "public_config": "/Users/takafumi/.config/pcloud-tools/.env",
-        "dev_config": str(root / ".dev-state/config/.env"),
-        "public_state": "/Users/takafumi/.pcloud",
-        "public_logs": "/Users/takafumi/.pcloud/logs",
-        "spec_ai_overview": "/Users/takafumi/p-core/dev/#仕様書/pcloud-manager/AI向け概要.md",
-        "spec_technical": "/Users/takafumi/p-core/dev/#仕様書/pcloud-manager/技術仕様.md",
-        "spec_usage": "/Users/takafumi/p-core/dev/#仕様書/pcloud-manager/利用ガイド.md",
+        "implementation_package": str(Path(__file__).resolve().parent),
+        "public_wrapper": entrypoint_command(paths),
+        "dev_wrapper": str(paths.workspace_root / "pcloud-manager-dev"),
+        "config": str(paths.env_file),
+        "state": str(paths.state_dir),
+        "logs": str(paths.log_dir),
+        "documentation_directory": str(docs_dir or "not found"),
+        "spec_ai_overview": docs.get("AI向け概要.md", "not found"),
+        "spec_technical": docs.get("技術仕様.md", "not found"),
+        "spec_usage": docs.get("利用ガイド.md", "not found"),
     }
+
+
+def render_detailed_help(parser: argparse.ArgumentParser, paths: RuntimePaths) -> str:
+    docs_dir = command_documentation_dir("pcloud-manager", paths)
+    lines = [parser.format_help().rstrip(), "", "Runtime discovery:"]
+    lines.append(f"  public command: {entrypoint_command(paths)}")
+    lines.append(f"  implementation package: {Path(__file__).resolve().parent}")
+    lines.append(f"  config: {paths.env_file}")
+    lines.append(f"  state: {paths.state_dir}")
+    lines.append(f"  logs: {paths.log_dir}")
+    lines.append("")
+    lines.append("Documentation:")
+    lines.append(f"  directory: {docs_dir or 'not found'}")
+    if docs_dir is not None:
+        for path in command_documentation_files("pcloud-manager", paths):
+            lines.append(f"  {path.name}: {'found' if path.is_file() else 'missing'}")
+        lines.extend(
+            [
+                "",
+                "Browse documentation:",
+                f"  cd {json.dumps(str(docs_dir), ensure_ascii=False)}",
+                "  ls -1",
+                "  open 利用ガイド.md",
+            ]
+        )
+    else:
+        lines.append("  searched:")
+        lines.extend(
+            f"    {candidate}"
+            for candidate in command_documentation_candidates("pcloud-manager", paths)
+        )
+    return "\n".join(lines)
 
 
 _TOPICS: dict[str, dict[str, Any]] = {
@@ -347,7 +407,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
     },
     "config": {
         "summary": [
-            "Public config is /Users/takafumi/.config/pcloud-tools/.env.",
+            "Public config is ~/.config/pcloud-tools/.env by default.",
             "Dev config is .dev-state/config/.env under the implementation root.",
         ],
         "commands": [

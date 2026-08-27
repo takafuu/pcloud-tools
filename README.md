@@ -1,6 +1,44 @@
 # pcloud-tools
 
-`pcloud-tools` is the new implementation root for the `pcloud-manager` migration.
+`pcloud-tools` is the development and release source for the `pcloud-manager`, `pcloud-archive`, `pcloud-pushd`, and `pcloud-diffd` command suite. Release installations run from an isolated uv tool environment and do not import code from this checkout.
+
+## Install the release
+
+The package is distributed only through GitHub Releases. The readable bootstrap script lives in this repository and installs the release wheel with uv.
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/takafuu/pcloud-tools/main/install.sh -o install.sh
+less install.sh
+sh install.sh
+```
+
+The shorter pipe form is also supported.
+
+```sh
+curl -LsSf https://raw.githubusercontent.com/takafuu/pcloud-tools/main/install.sh | sh
+```
+
+For a reproducible installer, replace `main` with a release tag such as `v0.1.0`. The installer downloads the matching GitHub Release bundle by default; pass `--version 0.1.0` when the installer itself comes from `main` but the package version must be pinned.
+
+By default, uv-managed tool environments and generated executables live under `${XDG_DATA_HOME:-$HOME/.local/share}/pcloud-tools`, while stable thin wrappers are written to `$HOME/bin`. On this Mac, `$HOME/bin` resolves to `/Users/takafumi/p-core/bin`. The wrappers never set `PYTHONPATH` or refer to `/Users/takafumi/p-core/dev/pcloud-tools`.
+
+The installer does not create or alter pcloud-tools configuration, runtime state, `rclone.conf`, pCloud credentials, remotes, launchd jobs, or NAS services. After installation, inspect the installed version and follow diagnostics:
+
+```sh
+pcloud-manager --version
+pcloud-manager info
+pcloud-manager info paths
+pcloud-manager doctor
+pcloud-archive help config
+```
+
+Re-run the installer to replace the isolated tool environment with a newer or explicitly selected GitHub Release. Development remains separate:
+
+```sh
+uv sync --extra test
+./pcloud-manager-dev --version
+./pcloud-manager-dev doctor
+```
 
 Current focus:
 
@@ -10,11 +48,11 @@ Current focus:
 - move machine configuration into `.env` plus a central Python config module
 - operate `pcloud-pushd` / `pcloud-diffd` through preview-first, human-gated launchd surfaces while keeping each live transfer/polling scope explicit
 - keep legacy bisync/autosync and the pushd/diffd daemon loop mutually exclusive through a top-level `mode` surface
-- provide `pcloud-archive` as a separate manual-first CLI for promoting NAS/Mac staging data into `pcloud-crypt:` canonical archive storage
+- provide `pcloud-archive` as a separate manual-first CLI for one-way rclone copy/check from a configured local folder directly to `pcloud-crypt:` without requiring the crypt mount
 
-Current live daemon state:
+Current live daemon state before the 0.1.0 installed-runtime cutover:
 
-- public wrapper: `/Users/takafumi/bin/pcloud-manager` -> `/Users/takafumi/.zsh/functions/pcloud-manager` -> Python implementation in `/Users/takafumi/p-core/dev/pcloud-tools`
+- current public wrapper: `/Users/takafumi/bin/pcloud-manager` -> `/Users/takafumi/.zsh/functions/pcloud-manager` -> Python implementation in `/Users/takafumi/p-core/dev/pcloud-tools`; the 0.1.0 cutover replaces this with a stable `$HOME/bin` wrapper that delegates to the uv-managed release runtime
 - public help uses the public program name: `pcloud-manager` prints `usage: pcloud-manager ...` and the public CLI description; `./pcloud-manager-dev` keeps the dev-only name and description
 - `pcloud-manager mode status|plan|switch` is the exclusive operation switch. `daemon` mode keeps pushd/diffd residents and executors active while bisync stays disabled. `maintenance` and `pause` stop daemon automation; they do not run or enable bisync automatically
 - `pcloud-pushd`: `com.takafumi.pcloud-pushd` is loaded and running as a launchd fswatch resident; validation confirmed one allowlisted queue append and cleanup back to `queued=0`
@@ -253,7 +291,7 @@ Config notes:
 - `pushd queue prune-excluded` is the public-safe cleanup surface for queue records that the current plan excludes, such as `.pcloudmanagerignore` matches and hard safety excludes. Preview is read-only; public `--execute` requires `--reviewer-approved-excluded-record-cleanup` and `PCLOUD_TOOLS_PUSHD_QUEUE_PRUNE_EXCLUDED_GATE=operator-approved-pushd-queue-prune-excluded-v1`
 - `legacy old-monolith-gate` is a read-only checklist before archiving the old zsh `pcloud-manager` monolith; it checks the current public wrapper, dotfiles wrapper target, selected cutover backup, legacy monolith backup, rollback source, and archive target approval while keeping `archive gate status: closed` and `state writes: none`
 - `legacy old-monolith-run` is the guarded archive execution path. It previews by default and refuses `--execute` until the archive approval flags and `PCLOUD_TOOLS_OLD_MONOLITH_ARCHIVE_GATE=operator-approved-old-monolith-archive-v1` are present. When executed, it copies the selected `pcloud-manager.current` and `shadow-validation.json` backup into `.dev-state/old-monolith-archive/<backup>/`, writes `archive-manifest.json`, retains the source backup, and does not modify public wrappers, launchd, sync state, or remote files. `archive old-monolith-*` remains as a deprecated warning alias for compatibility
-- `pcloud-archive` is a separate CLI for NAS/Mac staging data promotion into `pcloud-crypt:`. It uses `rclone copy` / `rclone check`, never falls back to `cp` into a mounted crypt folder, and keeps `diff`, `promote`, `check`, `delete-canonical`, and `drop-cache` as explicit manual operations. The default profile target is the sandbox `pcloud-crypt:_pcloud-archive-dev`
+- `pcloud-archive` is a separate CLI for one-way copy/check from a configured local `source_root` directly to a `pcloud-crypt:` `remote_root`. It does not require the crypt mount, never propagates local deletion automatically, and keeps `diff`, `promote`, `check`, `delete-canonical`, and `drop-cache` as explicit manual operations. `man pcloud-archive`, `help --detail`, and `info paths` provide layered rediscovery of the short manual and full documentation. `help config` shows the config schema, while `help config --init-config <config-path>` creates a non-overwriting starter file with an empty `source_root`. The man page is optional operational documentation: absent means `not used`, not a doctor warning/error. The safe unconfigured remote fallback remains `pcloud-crypt:_pcloud-archive-dev`, while `source_root` has no fictional built-in path and must be configured
 - `gates status` is a concise read-only aggregate of human gates; pass `--report-path .dev-state/reports/shadow-validation.json --sync-status-report-path .dev-state/reports/sync-status.json --assume-read-only-approvals` to inspect guarded `*-run` command/env gates while keeping every execution gate closed. Add `--show-command-examples` to print read-only review commands for those guarded paths; those examples intentionally omit `--execute`
 - `gates status --xbar` uses a concise xbar renderer that shows gate counts, one compact line per gate, and safe status refresh actions only. It suppresses full guarded command examples, execution gate env values, and any `--execute` path from the xbar menu
 - `scripts/pcloud-shadow-validation.py` runs a temp-dev-state shadow validation pass over preview, dry-run, action, wrapper, and safety-guard paths without touching live state or pCloud remotes; it covers the thin `pcloud-pushd` / `pcloud-diffd` dev wrappers in a temp workspace, the pushd/diffd launchd gates, launchd status surface, dev-only launchd plist preview/write without launchctl registration, operational pushd/diffd plist and reload gates with fake `launchctl`, the fswatch resident gate and a bounded fake-fswatch resident run using a temp fake `fswatch` discovered through `command -v`, the pCloud API long-poll gate without live API calls, fixture-backed long-poll execution, fake local HTTP live-API execution with token redaction, rclone-config OAuth token fallback using a temp rclone config, dev-only autosync plist preview/write, the autosync launchd gate using a temp fake `launchctl`, the sync migration gate using a temp fake `rclone` plus a saved sync-status report, and the old monolith legacy gate/run using a temp cutover backup

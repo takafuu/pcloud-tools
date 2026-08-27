@@ -7,9 +7,13 @@ def _archive_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
     source = tmp_path / "nas" / "archive-inbox"
     remote = tmp_path / "remote"
     state = tmp_path / "state"
+    docs = tmp_path / "docs" / "#仕様書" / "pcloud-archive"
     log = tmp_path / "rclone.log"
     source.mkdir(parents=True)
     remote.mkdir(parents=True)
+    docs.mkdir(parents=True)
+    for name in ("利用ガイド.md", "技術仕様.md", "AI向け概要.md"):
+        (docs / name).write_text(f"# {name}\n")
     config = tmp_path / "config.toml"
     fake = tmp_path / "fake-rclone"
     fake.write_text(
@@ -38,6 +42,7 @@ def _archive_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
         "remote_root = \"pcloud-crypt:_pcloud-archive-dev\"\n"
         f"state_dir = \"{state}\"\n"
         f"log_dir = \"{tmp_path / 'logs'}\"\n"
+        f"docs_dir = \"{docs}\"\n"
         f"rclone_bin = \"{fake}\"\n"
         "\n"
         "[profiles.nas-dev.transfer]\n"
@@ -65,6 +70,94 @@ def _archive_env(tmp_path: Path) -> tuple[dict[str, str], Path, Path, Path]:
     return env, source, state, log
 
 
+def test_pcloud_archive_help_explains_mount_config_and_one_way_copy(tmp_path: Path) -> None:
+    result = _run_archive(tmp_path, "help")
+
+    assert result.returncode == 0
+    assert "The crypt mount is not required" in result.stdout
+    assert "one-way copy" in result.stdout
+    assert "~/.config/pcloud-archive/config.toml" in result.stdout
+    assert "pcloud-archive info paths" in result.stdout
+
+
+def test_pcloud_archive_help_detail_lists_documentation(tmp_path: Path) -> None:
+    env, _source, _state, _log = _archive_env(tmp_path)
+
+    result = _run_archive(tmp_path, "help", "--detail", env=env)
+
+    assert result.returncode == 0
+    assert "Documentation:" in result.stdout
+    assert "Manual:" in result.stdout
+    assert "command: man pcloud-archive" in result.stdout
+    assert "利用ガイド.md (found)" in result.stdout
+    assert "Browse documentation:" in result.stdout
+    assert "ls -1" in result.stdout
+
+
+def test_pcloud_archive_help_config_shows_schema_and_initializer(tmp_path: Path) -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_ARCHIVE_")
+    }
+    env.update({"PYTHONPATH": str(REPO_ROOT / "src"), "HOME": str(tmp_path / "home")})
+
+    result = _run_archive(tmp_path, "help", "config", env=env)
+
+    assert result.returncode == 0
+    assert "[defaults]" in result.stdout
+    assert "[profiles.default]" in result.stdout
+    assert 'source_root = "/absolute/path/to/local/archive-source"' in result.stdout
+    assert "help config --init-config" in result.stdout
+
+
+def test_pcloud_archive_help_config_init_creates_once_without_source_default(tmp_path: Path) -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_ARCHIVE_")
+    }
+    env.update({"PYTHONPATH": str(REPO_ROOT / "src"), "HOME": str(tmp_path / "home")})
+    target = tmp_path / "config" / "config.toml"
+
+    created = _run_archive(tmp_path, "help", "config", "--init-config", str(target), env=env)
+
+    assert created.returncode == 0
+    assert target.is_file()
+    assert 'source_root = ""' in target.read_text()
+    assert 'remote_root = "pcloud-crypt:_pcloud-archive-dev"' in target.read_text()
+    assert f"pcloud-archive --config {target} doctor" in created.stdout
+
+    inspected = _run_archive(tmp_path, "--config", str(target), "info", "--json", env=env)
+    payload = _payload(inspected)
+
+    assert inspected.returncode == 0
+    assert payload["details"]["config source"] == str(target)
+    assert payload["details"]["source root"] == "not configured"
+    assert not any(issue["key"] == "PCLOUD_ARCHIVE_CONFIG" for issue in payload["issues"])
+
+    existing = _run_archive(tmp_path, "help", "config", "--init-config", str(target), env=env)
+
+    assert existing.returncode == 1
+    assert "not overwritten" in existing.stderr
+
+    ai_target = tmp_path / "config" / "from-ai.toml"
+    blocked = _run_archive(
+        tmp_path,
+        "help",
+        "config",
+        "--ai",
+        "create config",
+        "--init-config",
+        str(ai_target),
+        env=env,
+    )
+
+    assert blocked.returncode == 2
+    assert "cannot be combined with --ai" in blocked.stderr
+    assert not ai_target.exists()
+
+
 def _run_archive(tmp_path: Path, *args: str, env: dict[str, str] | None = None) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         [sys.executable, "-m", "pcloud_tools.pcloud_archive", *args],
@@ -86,6 +179,8 @@ def test_pcloud_archive_help_ai_is_read_only(tmp_path: Path) -> None:
     assert payload["command_name"] == "pcloud-archive"
     assert payload["user_request"] == "inspect archive workflow"
     assert "promote" in payload["generated_help"]["subcommands"]
+    assert payload["important_paths"]["documentation_directory"].endswith("/#仕様書/pcloud-archive")
+    assert payload["important_paths"]["manpage_status"] in {"available", "not used"}
     assert any("does not call an LLM" in item for item in payload["non_goals"])
 
 
@@ -103,8 +198,65 @@ def test_pcloud_archive_doctor_detects_missing_config_and_source(tmp_path: Path)
 
     assert result.returncode == 1
     assert payload["status"] == "error"
+    assert "set source_root in config.toml" in payload["summary"]
+    assert payload["details"]["source root"] == "not configured"
+    assert payload["details"]["source root status"] == "not configured"
+    assert payload["details"]["crypt mount required"] == "no"
+    assert payload["details"]["man page required"] == "no"
+    assert payload["details"]["man page status"] in {"available", "not used"}
+    assert payload["details"]["next command"] == "pcloud-archive help config"
+    assert "/Volumes/NAS/archive-inbox" not in result.stdout
     assert "PCLOUD_ARCHIVE_CONFIG" in keys
     assert "PCLOUD_ARCHIVE_SOURCE_ROOT" in keys
+    config_issue = next(issue for issue in payload["issues"] if issue["key"] == "PCLOUD_ARCHIVE_CONFIG")
+    assert '"pcloud-archive help config"' in config_issue["message"]
+    assert "--init-config" in config_issue["message"]
+
+
+def test_pcloud_archive_info_repeats_missing_config_guidance(tmp_path: Path) -> None:
+    env = {
+        key: value
+        for key, value in os.environ.items()
+        if not key.startswith("PCLOUD_ARCHIVE_")
+    }
+    env.update({"PYTHONPATH": str(REPO_ROOT / "src"), "HOME": str(tmp_path / "home")})
+
+    result = _run_archive(tmp_path, "info", "--json", env=env)
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["status"] == "warning"
+    config_issue = next(issue for issue in payload["issues"] if issue["key"] == "PCLOUD_ARCHIVE_CONFIG")
+    assert '"pcloud-archive help config"' in config_issue["message"]
+    assert "--init-config" in config_issue["message"]
+
+
+def test_pcloud_archive_info_paths_rediscovers_documentation(tmp_path: Path) -> None:
+    env, _source, _state, _log = _archive_env(tmp_path)
+
+    result = _run_archive(tmp_path, "info", "paths", "--json", env=env)
+    payload = _payload(result)
+    paths = payload["details"]["paths"]
+
+    assert result.returncode == 0
+    assert any(item.startswith("documentation directory: ") for item in paths)
+    assert any(item.endswith("利用ガイド.md") for item in paths)
+    assert any(item.startswith("man page source: ") for item in paths)
+    assert payload["details"]["man page status"] in {"available", "not used"}
+
+
+def test_pcloud_archive_doctor_does_not_warn_when_man_is_not_used(tmp_path: Path) -> None:
+    env, _source, _state, _log = _archive_env(tmp_path)
+    env["PATH"] = ""
+
+    result = _run_archive(tmp_path, "doctor", "--json", env=env)
+    payload = _payload(result)
+
+    assert result.returncode == 0
+    assert payload["status"] == "ok"
+    assert payload["details"]["man page status"] == "not used"
+    assert payload["details"]["man page required"] == "no"
+    assert not any(issue["key"].startswith("PCLOUD_ARCHIVE_MAN") for issue in payload["issues"])
 
 
 def test_pcloud_archive_diff_classifies_without_writing_state(tmp_path: Path) -> None:
@@ -125,10 +277,10 @@ def test_pcloud_archive_diff_classifies_without_writing_state(tmp_path: Path) ->
 
     assert result.returncode == 0
     assert payload["status"] == "ok"
-    assert payload["details"]["nas only"] == 1
+    assert payload["details"]["source only"] == 1
     assert payload["details"]["same"] == 1
     assert payload["details"]["different"] == 1
-    assert payload["details"]["pCloud only"] == 1
+    assert payload["details"]["remote only"] == 1
     assert payload["details"]["state writes"] == "none"
     assert not state.exists()
 

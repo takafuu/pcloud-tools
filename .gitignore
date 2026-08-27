@@ -1,5 +1,6 @@
 .dev-state/
 .venv/
+dist/
 .DS_Store
 .claude/
 __pycache__/
