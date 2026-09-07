@@ -9,6 +9,12 @@ export PCLOUD_TOOLS_WORKSPACE_ROOT="${ROOT_DIR}"
 export PCLOUD_TOOLS_CONFIG_DIR="${ROOT_DIR}/.dev-state/config"
 export PCLOUD_TOOLS_STATE_DIR="${ROOT_DIR}/.dev-state/state"
 export PCLOUD_TOOLS_LOG_DIR="${ROOT_DIR}/.dev-state/logs"
+# Development must not fall back to the user's production rclone credentials/cache.
+export RCLONE_CONFIG="${ROOT_DIR}/.dev-state/config/rclone.conf"
+export XDG_CACHE_HOME="${ROOT_DIR}/.dev-state/cache"
+export RCLONE_CACHE_DIR="${XDG_CACHE_HOME}/rclone"
+unset PCLOUD_TOOLS_PCLOUD_API_TOKEN
+unset PCLOUD_TOOLS_PUBLIC_ENTRYPOINT
 
 PYTHON_BIN="${ROOT_DIR}/.venv/bin/python"
 if [ ! -x "${PYTHON_BIN}" ]; then

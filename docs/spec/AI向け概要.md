@@ -1,6 +1,14 @@
 # pcloud-manager AI向け概要
 
-Last updated: 2026-08-28
+Last updated: 2026-09-07
+
+追加worktreeは `/Users/takafumi/p-core/dev/pcloud-tools-dev/<worktree>/` に集約する。これは `~/dev/pcloud-tools-dev/<worktree>/` と同じ場所（`~/dev` は `/Users/takafumi/p-core/dev` へのsymlink）。`~/dev` 直下へworktreeを増やさない。主checkoutは `/Users/takafumi/p-core/dev/pcloud-tools/` に維持する。
+
+## 開発・本番の境界を先に確認する
+
+本番CLIとLaunchAgentはinstall済みwheelを使う。古い `.zsh/functions/pcloud-manager` もpublic wrapperへの委譲だけにする。本番の検証レポートは `~/.pcloud/validation/` のハッシュ付き実ファイルに保存し、開発 `.dev-state` を本番から参照しない。`pcloud-manager-dev` はrclone認証/cacheも開発用へ分離し、親shellのAPI token/public入口を引き継がない。開発用設定へ本番credentialをコピーしない。
+
+変更前に実機のwrapper、loaded LaunchAgentのprogram/argumentsを確認する。資料上の分離だけで実機の分離を断定しない。公開版の更新はrelease installで行い、source checkoutをpublic `PYTHONPATH` に足さない。詳細は [開発仕様書](開発仕様書.md) と技術仕様の「開発・本番の実行境界」を参照。
 
 ## 最初に読む場所
 

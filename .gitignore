@@ -10,5 +10,9 @@ __pycache__/
 plan.md
 todo.md
 thread-status.md
+thread-status-*.md
+.env
 bisync_status.log
 bisync_error.log
+
+work/agent-project/

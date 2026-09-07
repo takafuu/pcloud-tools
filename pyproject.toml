@@ -33,6 +33,7 @@ packages = ["src/pcloud_tools"]
 "docs/spec/利用ガイド.md" = "pcloud_tools/share/docs/pcloud-manager/利用ガイド.md"
 "docs/spec/技術仕様.md" = "pcloud_tools/share/docs/pcloud-manager/技術仕様.md"
 "docs/spec/AI向け概要.md" = "pcloud_tools/share/docs/pcloud-manager/AI向け概要.md"
+"docs/spec/開発仕様書.md" = "pcloud_tools/share/docs/pcloud-manager/開発仕様書.md"
 "docs/commands/pcloud-archive/利用ガイド.md" = "pcloud_tools/share/docs/pcloud-archive/利用ガイド.md"
 "docs/commands/pcloud-archive/技術仕様.md" = "pcloud_tools/share/docs/pcloud-archive/技術仕様.md"
 "docs/commands/pcloud-archive/AI向け概要.md" = "pcloud_tools/share/docs/pcloud-archive/AI向け概要.md"

@@ -150,4 +150,8 @@ uv run pytest -q
 uv run pcloud-archive --help
 ```
 
+Use `./pcloud-manager-dev` for development CLI work. It isolates configuration, state, logs, rclone configuration, and caches under `.dev-state/`, and does not inherit the shell's pCloud API token or public action entrypoint. Its rclone configuration is `.dev-state/config/rclone.conf`; a missing development configuration does not fall back to production credentials. Test archive operations with temporary configuration, source, and remote fixtures. `uv run` alone does not isolate production configuration.
+
+Production commands and LaunchAgents must use the installed release through the public wrappers, including legacy compatibility entrypoints. Promote accepted validation reports to hash-named regular files under `~/.pcloud/validation/` before referencing them from production jobs; production must not depend on a report in the development checkout. See the [development contract](docs/spec/開発仕様書.md) and [usage guide](docs/spec/利用ガイド.md) for validation promotion and rollback.
+
 Release wheels and installer bundles are built and published by the GitHub Actions release workflow when a `v*` tag is pushed.
