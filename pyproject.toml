@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pcloud-tools"
-version = "0.2.2"
+version = "0.2.3"
 description = "Personal, preview-first pCloud CLI suite built around rclone."
 readme = "README.md"
 license = "MIT"

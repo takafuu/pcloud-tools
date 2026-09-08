@@ -8,7 +8,7 @@ from pathlib import Path
 import pytest
 
 from conftest import _base_env, _install_real_rclone_stub, _use_default_dev_state_dir
-from pcloud_tools.download_review import mark_missing_source, missing_remote_source, review_reason
+from pcloud_tools.download_review import mark_missing_source, missing_remote_source, review_reason, discard_missing_source, discard_legacy_missing_reviews
 
 
 @pytest.mark.parametrize(
@@ -38,7 +38,7 @@ def test_old_failure_cannot_mark_a_new_queue_generation(tmp_path: Path):
     assert review_reason("new", {"download_review": {"event_id": "old", "reason": "remote-source-missing"}}) == ""
 
 
-def test_missing_source_keeps_local_and_queue_but_next_tick_transfers_other_event(tmp_path: Path):
+def test_missing_source_retires_only_old_request_without_local_mutation(tmp_path: Path):
     env = _base_env(tmp_path)
     state = _use_default_dev_state_dir(env)
     _install_real_rclone_stub(env)
@@ -81,33 +81,58 @@ def test_missing_source_keeps_local_and_queue_but_next_tick_transfers_other_even
     command = ("automation-run", "--report-path", str(report), "--max-records", "1", "--execute", "--consume-on-success")
     code, first = run(*command)
     assert code == 0, first
-    assert first["status"] == "warning"
+    assert not any(issue["key"] in {"PCLOUD_TOOLS_TRANSFER_EXEC", "PCLOUD_TOOLS_DIFFD_TRANSFER_MANUAL_REVIEW"} for issue in first["issues"])
     assert first["details"]["performance"]["succeeded"] == 0
-    assert first["details"]["performance"]["failed"] == 1
+    assert first["details"]["performance"]["failed"] == 0
+    assert first["details"]["performance"]["obsolete"] == 1
     assert first["details"]["performance"]["conflict"] == 0
     assert first["details"]["chat notify results"] == []
-    retained = json.loads(queue.read_text())[0]
-    assert {k: retained[k] for k in original} == original
-    assert review_reason(retained["event_id"], retained)
+    assert [r["event_id"] for r in json.loads(queue.read_text())] == ["present-event"]
     assert local.read_text() == "local content must remain\n"
     assert (local.stat().st_size, local.stat().st_mtime_ns) == fingerprint
 
     code, second = run(*command)
     assert code == 0, second
     assert second["details"]["performance"]["succeeded"] == 1
-    assert len(json.loads(queue.read_text())) == 1
+    assert json.loads(queue.read_text()) == []
     assert (local.parent / "present.txt").read_text() == "downloaded\n"
 
+    # Old confirmed-missing holds migrate on an admitted automatic tick.
+    legacy = {**original, "download_review": {"event_id": "missing-event", "reason": "remote-source-missing", "returncode": 3}}
+    queue.write_text(json.dumps([legacy]))
     before = queue.read_bytes()
-    code, preview = run("review", "preview")
-    assert code == 0 and preview["details"]["review count"] == 1
+    code, preview = run("automation-run", "--report-path", str(report), "--max-records", "1", "--consume-on-success")
     assert queue.read_bytes() == before
-    code, _ = run("review", "retry", "--path", original["path"], "--event-id", "stale", "--execute")
-    assert code != 0 and queue.read_bytes() == before
-    code, _ = run("review", "retry", "--path", original["path"], "--event-id", original["event_id"])
-    assert code == 0 and queue.read_bytes() == before
     log = Path(env["REAL_RCLONE_STUB_LOG"]).read_bytes()
-    code, retry = run("review", "retry", "--path", original["path"], "--event-id", original["event_id"], "--execute")
-    assert code == 0 and retry["details"]["transfer started"] is False
-    assert json.loads(queue.read_text()) == [original]
+    code, migrated = run(*command)
+    assert code == 0, migrated
+    assert migrated["details"]["obsolete download cleanup"]["discarded"] == 1
+    assert json.loads(queue.read_text()) == []
     assert Path(env["REAL_RCLONE_STUB_LOG"]).read_bytes() == log
+    assert local.read_text() == "local content must remain\n"
+
+
+def test_obsolete_discard_preserves_new_generation_and_unrelated_records(tmp_path):
+    queue = tmp_path / "remote-changes.json"
+    new = {"path": "a.txt", "action": "download", "event_id": "new", "custom": 42}
+    queue.write_text(json.dumps([new]))
+    before = queue.read_bytes()
+    result = {"path": "a.txt", "event_id": "old", "direction": "download", "returncode": 3,
+              "stderr": "error reading source root directory: directory not found"}
+    assert discard_missing_source(queue, result) == 0
+    assert queue.read_bytes() == before
+    for failure in [{"returncode": 5}, {"stderr": "permission denied"}, {"timed_out": True}, {"requires_child_exit_confirmation": True}]:
+        assert discard_missing_source(queue, {**result, "event_id": "new", **failure}) == 0
+        assert queue.read_bytes() == before
+
+
+def test_legacy_cleanup_keeps_conflicts_and_mismatched_review_generations(tmp_path):
+    queue = tmp_path / "remote-changes.json"
+    marker = {"reason": "remote-source-missing", "event_id": "old", "returncode": 3}
+    stale = {"path": "a", "event_id": "new", "download_review": marker}
+    conflict = {"path": "b", "event_id": "b", "download_review": {"reason": "conflict", "event_id": "b"}}
+    deletion = {"path": "c", "event_id": "old", "action": "delete", "download_review": marker}
+    removable = {"path": "d", "event_id": "old", "action": "download", "download_review": marker}
+    queue.write_text(json.dumps([stale, conflict, deletion, removable]))
+    assert discard_legacy_missing_reviews(queue) == [removable]
+    assert json.loads(queue.read_text()) == [stale, conflict, deletion]

@@ -33,7 +33,7 @@ Optional `vault` and `crypt` mount layers avoid `rclone mount`: the tool runs `r
 
 `pcloud-tools` is an alias of `pcloud-manager`.
 
-Missing remote download sources are retained for review by queue event ID, allowing other eligible downloads to continue. Inspect them with `pcloud-manager diffd transfer review preview --json`; use `review retry --path <path> --event-id <current-id> --execute` to permit a later gated retry without deleting the queue record or changing local files.
+Confirmed missing remote download sources are automatically retired by queue event ID. Other events and local files remain intact; no user action is needed. File IDs coalesce obsolete names into the latest queued name. Authentication, network failures, and unresolved conflicts remain pending.
 
 ## Requirements
 
@@ -48,9 +48,9 @@ The installer bootstraps a pinned `uv` and Python runtime when needed. macOS `la
 The recommended first installation pins the release version and lets you inspect the installer before running it:
 
 ```sh
-curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.2.2/install.sh -o pcloud-tools-install.sh
+curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.2.3/install.sh -o pcloud-tools-install.sh
 less pcloud-tools-install.sh
-sh pcloud-tools-install.sh --version v0.2.2
+sh pcloud-tools-install.sh --version v0.2.3
 rm pcloud-tools-install.sh
 ```
 
@@ -107,7 +107,7 @@ Set either value to `2` or `4` in the existing `.env` to enable bounded parallel
 
 The executor uses process and path locks, consumes only the selected queue event generation, preserves files edited during transfers, and holds incomplete attempts for explicit recovery. Status reports expose configured concurrency, observed peak concurrency, elapsed time, and success/deferred/conflict counts. Preview and inspection do not start transfers or rewrite state. See the [recovery and writer-stop procedure](docs/spec/利用ガイド.md#本番用検証レポートと切り戻し).
 
-Validation includes 261 tests and independent review of concurrency, queue generations, process cleanup, crash recovery, and writer cutover. In a local 12-file fixture with a fixed 0.18-second delay per fake-rclone transfer, three runs per setting produced these median wall times through the development CLI:
+The original concurrency change included 261 tests and independent review of concurrency, queue generations, process cleanup, crash recovery, and writer cutover. In a local 12-file fixture with a fixed 0.18-second delay per fake-rclone transfer, three runs per setting produced these median wall times through the development CLI:
 
 | Direction | Concurrency 1 | Concurrency 2 | Concurrency 4 |
 | --- | ---: | ---: | ---: |
@@ -123,9 +123,9 @@ Use versioned releases and keep the previous wheel or installer bundle. Before u
 Install a pinned release using the inspected installer, or a saved wheel:
 
 ```sh
-sh pcloud-tools-install.sh --version v0.2.2
+sh pcloud-tools-install.sh --version v0.2.3
 # Or use an already verified local wheel:
-sh pcloud-tools-install.sh --wheel /path/to/pcloud_tools-0.2.2-py3-none-any.whl
+sh pcloud-tools-install.sh --wheel /path/to/pcloud_tools-0.2.3-py3-none-any.whl
 ```
 
 Verify `pcloud-manager --version`, `pcloud-manager info`, and `pcloud-manager doctor`, then restore the previously loaded services. Keep the installed runtime independent of the source checkout. To return to the previous package, repeat the writer-stop and backup procedure and install the pinned previous release:

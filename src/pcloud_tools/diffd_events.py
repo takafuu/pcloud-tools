@@ -14,6 +14,7 @@ class DiffdRemoteChange:
     event: str
     diffid: str
     raw: str
+    file_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -84,7 +85,10 @@ def _change_from_mapping(
     if not path:
         return InvalidDiffdRemoteChange(raw=raw, reason="missing or unsafe path")
     diffid = _string(item.get("diffid", default_diffid), default_diffid)
-    return DiffdRemoteChange(path=path, event=event or "change", diffid=diffid or default_diffid, raw=raw)
+    file_id = _string(metadata.get("fileid")) if isinstance(metadata, dict) else ""
+    if not file_id.isdigit():
+        file_id = ""
+    return DiffdRemoteChange(path=path, event=event or "change", diffid=diffid or default_diffid, raw=raw, file_id=file_id)
 
 
 def _payload_entries(payload: Any) -> tuple[str, list[Any]] | InvalidDiffdRemoteChange:
@@ -151,19 +155,31 @@ def parse_diff_response_fixture(path: Path, initial_folder_paths: dict[str, str]
 
 def diff_changes_to_records(changes: tuple[DiffdRemoteChange, ...]) -> tuple[PlanRecord, ...]:
     records: list[PlanRecord] = []
+    # /diff entries are ordered. Collapse repeated identity observations in
+    # this response before planning, retaining the latest name/action.
+    latest: dict[str, DiffdRemoteChange] = {}
     for change in changes:
+        if change.file_id:
+            previous = latest.get(change.file_id)
+            if previous is None or not (previous.diffid.isdigit() and change.diffid.isdigit()) or int(change.diffid) >= int(previous.diffid):
+                latest[change.file_id] = change
+    for change in changes:
+        if change.file_id and latest[change.file_id] is not change:
+            continue
         event = change.event.strip().lower().replace("_", "-")
         action = "download"
         if "delete" in event or "remove" in event:
             action = "delete"
         elif "rename" in event or "move" in event:
-            action = "rename"
+            # With a stable file identity, fetch the new path. Never rename or
+            # delete a local file as a side effect of queue coalescing.
+            action = "download" if change.file_id else "rename"
         records.append(
             PlanRecord(
                 path=change.path,
                 action=action,
                 reason=f"diff:{change.event}",
-                extra={"diffid": change.diffid},
+                extra={"diffid": change.diffid, **({"remote_file_id": change.file_id} if change.file_id else {})},
             )
         )
     return tuple(records)

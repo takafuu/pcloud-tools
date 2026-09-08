@@ -582,3 +582,24 @@ def test_actual_cli_executor_consume_skips_deferred_tick(
 
     assert first.returncode == 0, first_stderr
     assert len(calls.read_text().splitlines()) == 1
+
+
+def test_status_distinguishes_running_tick_from_stopped_incomplete_attempt(tmp_path: Path):
+    from pcloud_tools.transfer_state import create_attempt
+    env = _base_env(tmp_path)
+    state_dir = _use_default_dev_state_dir(env)
+    created = create_attempt(state_dir, 'diffd', [{'path': 'Documents/test.txt', 'event_id': 'one'}], concurrency=1)
+    assert created.issue is None
+
+    def status():
+        result = subprocess.run([sys.executable, '-m', 'pcloud_tools.cli', 'diffd', 'status', '--json'], env=env, cwd=tmp_path, capture_output=True, text=True)
+        return json.loads(result.stdout)
+
+    with transfer_tick_lock(state_dir, 'diffd'):
+        running = status()
+        assert running['details']['transfer executor active'] is True
+        assert running['details']['transfer recovery pending attempts'] == 1
+        assert not any(i['key'] == 'PCLOUD_TOOLS_TRANSFER_ATTEMPT_PENDING' for i in running['issues'])
+    stopped = status()
+    assert stopped['details']['transfer executor active'] is False
+    assert any(i['key'] == 'PCLOUD_TOOLS_TRANSFER_ATTEMPT_PENDING' for i in stopped['issues'])

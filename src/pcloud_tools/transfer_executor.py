@@ -435,9 +435,8 @@ def _run_one(
             elif isinstance(after, dict):
                 result = after
             if result.get("missing_remote_source"):
-                # The exact queue generation has been retained for review.
-                # Keep the nonzero result/failed metric, but don't repeatedly
-                # fail an otherwise runnable batch on this missing source.
+                # The obsolete generation was retired without touching local files.
+                # Preserve rclone diagnostics, but do not report it as failure.
                 issues = [issue for issue in issues if issue.key != "PCLOUD_TOOLS_TRANSFER_EXEC"]
         return result, issues
     finally:
@@ -567,6 +566,7 @@ def run_transfer_batch(
         1
         for item in results
         if item.get("phase") not in {"cancelled", "deferred"}
+        and not item.get("obsolete")
         and (item.get("returncode") not in {0, None} or item.get("phase") in {"start-failed", "worker-failed"})
     )
     performance = {
@@ -583,6 +583,7 @@ def run_transfer_batch(
         "deferred": deferred,
         "conflict": conflicts,
         "manual_review": sum(1 for item in results if item.get("manual_review")),
+        "obsolete": sum(1 for item in results if item.get("obsolete")),
     }
     return TransferBatchResult(results=results, issues=issues, performance=performance)
 

@@ -28,12 +28,11 @@ and
 .B diffd status --xbar
 for compact menu-bar output.
 .PP
-Missing remote download sources are held for review by event ID. Use
+Legacy missing-source review markers can be inspected with
 .B diffd transfer review preview --json
-to inspect them, and
+and
 .B diffd transfer review retry --path PATH --event-id ID --execute
-to allow a later normal gated retry. No queue record is deleted, local file
-changed, cursor advanced, or transfer started by the retry command.
+to allow a later normal gated retry. New confirmed-missing sources are automatically retired by event ID, with no local file mutation or user action.
 .SH CONFIGURATION
 The default configuration directory is
 .I ~/.config/pcloud-tools
@@ -70,3 +69,6 @@ runtime, an unmet human gate, or a failed guarded operation.
 .BR pcloud-archive (1),
 .BR rclone (1),
 .BR man (1)
+
+.PP
+Confirmed missing download sources retire only their obsolete queue generation. Local files and newer events are preserved. Historical missing-source review markers are cleaned up by the next admitted automation tick.

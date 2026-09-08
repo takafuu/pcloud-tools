@@ -238,10 +238,10 @@ git diff --check
 設定したlocal `source_root` から `pcloud-crypt:` の `remote_root` へ一方向copy/checkする用途は `pcloud-manager` へ追加せず、別 command `/Users/takafumi/p-core/bin/pcloud-archive` が担当する。crypt mountは不要で、ローカル削除はremoteへ自動伝播しない。`man pcloud-archive`、`help --detail`、`info paths` から説明を再発見できる。man pageは任意で、未設置時はdoctor issueにしない。詳細は `/Users/takafumi/p-core/dev/#仕様書/pcloud-archive/` を読む。
 - failed check の `name` と `detail` を作業記録またはレビューコメントへ添えて reviewer/implementer 間で戻す
 
-## 転送元不在・表示待ちの再開地点
+## 古いdownload依頼・表示の再開地点
 
-`download_review.py`はremote-source-missingの世代限定review markerをremote-changes recordへ追加する。queue/local/cursorを保持し、次tickでは他のeligible転送を処理する。retryは`diffd transfer review preview|retry`を使い、raw queueの編集や旧event_idの再利用で代用しない。新世代へ古いmarkerを適用しない。child終了不明は引き続きtransfer recoveryの対象。
+v0.2.3では転送元不在を確認待ちに残さず、download_review.pyで一致するeventだけ自動除外する。旧版のconfirmed-missing markerもadmitted tickで除外し証跡をstateへ保存する。local/cursor/new eventは保持し、認証・通信・child終了不明を不在として扱わない。performance.obsoleteは成功・失敗と分離する。
 
-`service_daemon_plan.py`はplan単位でsuppression/upload-origin journalとignore ruleを読み直す。候補ごとの巨大JSON再parseや長寿命cacheへ戻さない。対応testは`tests/test_download_review.py`、`tests/test_plan_snapshots.py`、`tests/test_transfer_concurrency.py`。
+名前変更はdiffd_events.pyのremote_file_idとdiffidで集約し、service_daemon_plan.append_plan_recordのcoalesce_remote_fileで既存queueの古い同一file IDを置換する。追跡不能な旧recordの推測削除は禁止。transfer executor activeはstatusのtick lock観測値で、実行中を人の復旧待ちと誤表示しない。
 
-xbar sourceは `/Users/takafumi/p-core/dev/xbar/pcloud-status/`、仕様は `/Users/takafumi/p-core/dev/#仕様書/pcloud-status/`。UI cacheは即時表示・単独background refresh・期限付きで、古い値はその旨を表示する。UI cacheを転送判断に使わない。
+回帰検証はtest_download_review.py、test_diffd_coalesce.py、test_plan_snapshots.py、test_transfer_concurrency.py。pcloud-status別rootは要操作の件数・理由・確認先をメニュー最上部へ出す。残り作業と公開releaseは実態を検証して判断する。

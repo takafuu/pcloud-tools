@@ -346,7 +346,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
         "summary": [
             "diffd polls pCloud /diff and appends in-scope remote-change records.",
             "Inspect live status for the current launchd and transfer gate state.",
-            "A confirmed missing remote source is retained for review by event_id; other eligible downloads continue.",
+            "A confirmed missing remote source retires only its obsolete event_id; local files and newer events remain untouched.",
         ],
         "commands": [
             "pcloud-manager diffd status --xbar",

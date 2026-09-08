@@ -1,4 +1,4 @@
-"""Keep a missing remote source for review without consuming its event."""
+"""Retire obsolete download requests while preserving files and newer events."""
 
 from __future__ import annotations
 
@@ -121,3 +121,46 @@ def retry_review(path: Path, target: str, event_id: str, *, execute: bool) -> in
         if execute and matched:
             atomic_write_json(path, payload)
         return matched
+
+
+def discard_missing_source(path: Path, result: dict[str, object]) -> int:
+    """A confirmed absent source retires only this download generation."""
+    event_id = str(result.get("event_id") or "")
+    target = normalize_plan_path(result.get("path"))
+    if not event_id or not target or not missing_remote_source(result):
+        return 0
+    with writer_state_lock(path):
+        payload = read_review_queue(path)
+        retained = [item for item in payload if not (
+            isinstance(item, dict)
+            and item.get("event_id") == event_id
+            and normalize_plan_path(item.get("path")) == target
+            and item.get("action", "download") == "download"
+        )]
+        if len(retained) != len(payload):
+            atomic_write_json(path, retained)
+        return len(payload) - len(retained)
+
+
+def discard_legacy_missing_reviews(path: Path) -> list[dict[str, Any]]:
+    """Migrate v0.2.2's confirmed-missing holds; other reviews remain intact."""
+    with writer_state_lock(path):
+        payload = read_review_queue(path)
+        removed = [item for item in payload if (
+            isinstance(item, dict)
+            and item.get("action", "download") == "download"
+            and review_reason(item.get("event_id"), item)
+            and item[REVIEW_FIELD].get("returncode") in {3, 4}
+        )]
+        if removed:
+            ids = {item["event_id"] for item in removed}
+            retained = [item for item in payload if not any(item is old for old in removed)]
+            # Record the evidence before queue mutation so interruption is retryable.
+            atomic_write_json(path.parent / "obsolete-download-cleanup.json", {
+                "recorded_at": datetime.now(timezone.utc).isoformat(),
+                "reason": "confirmed missing source; obsolete request",
+                "event_ids": sorted(ids),
+                "records": removed,
+            })
+            atomic_write_json(path, retained)
+        return removed

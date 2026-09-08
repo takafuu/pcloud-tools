@@ -483,13 +483,29 @@ def append_plan_record(
     record: PlanRecord,
     *,
     include_enqueued_at: bool = False,
+    coalesce_remote_file: bool = False,
 ) -> PlanUpdateResult:
     with writer_state_lock(path):
         payload, issue = _read_json_list(path, key_prefix)
         if issue:
             return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
+        retained = payload
+        file_id = str((record.extra or {}).get("remote_file_id") or "")
+        diffid = str((record.extra or {}).get("diffid") or "")
+        if coalesce_remote_file and file_id.isdigit() and diffid.isdigit():
+            same_file = [item for item in payload if isinstance(item, dict)
+                         and str(item.get("remote_file_id")) == file_id]
+            # A replayed older response must not cancel a newer observation.
+            if any(str(item.get("diffid", "")).isdigit() and int(str(item["diffid"])) > int(diffid) for item in same_file):
+                return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(payload))
+            retained = [item for item in payload if not (
+                isinstance(item, dict)
+                and str(item.get("remote_file_id")) == file_id
+                and str(item.get("diffid", "")).isdigit()
+                and int(str(item["diffid"])) <= int(diffid)
+            )]
         updated = [
-            *payload,
+            *retained,
             _record_payload(
                 record.path,
                 record.action,

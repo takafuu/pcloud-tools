@@ -53,7 +53,7 @@ from ..download_suppression import (
     mark_upload_completed,
     suppression_status_details,
 )
-from ..download_review import mark_missing_source, missing_remote_source, review_reason, review_records, retry_review
+from ..download_review import discard_missing_source, discard_legacy_missing_reviews, missing_remote_source, review_reason, review_records, retry_review
 from ..gates import GATES, GateSpec, add_gate_review_args, validate_gate
 from ..io_utils import atomic_write_json
 from ..manager_ignore import manager_ignore_match
@@ -1470,12 +1470,16 @@ def _last_transfer_summary(payload: dict[str, object] | None) -> tuple[str, str]
     failed = 0
     succeeded = 0
     settling = 0
+    obsolete = 0
     for result in results:
         if not isinstance(result, dict):
             failed += 1
             continue
         if result.get("timed_out") is True:
             timed_out += 1
+            continue
+        if result.get("obsolete") is True:
+            obsolete += 1
             continue
         if result.get("settling_local") is True:
             settling += 1
@@ -1491,11 +1495,13 @@ def _last_transfer_summary(payload: dict[str, object] | None) -> tuple[str, str]
         status = "failed"
     elif settling:
         status = "settling"
+    elif obsolete and not succeeded:
+        status = "obsolete"
     else:
         status = "success"
     return (
         f"success: {succeeded}; settling: {settling}; failed: {failed}; "
-        f"timeout: {timed_out}; total: {len(results)}",
+        f"timeout: {timed_out}; obsolete: {obsolete}; total: {len(results)}",
         status,
     )
 
@@ -1774,12 +1780,13 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
     plan_details, plan_issues = _status_plan_details(load_result.config, state, service)
     gate_details = _status_gate_details(paths, load_result.config, service)
     recovery = inspect_recovery(load_result.config.state_dir, service.name)
+    executor_active = bool(transfer_tick_lock_status(load_result.config.state_dir, service.name).get("active"))
     issues = sort_issues(
         list(load_result.issues)
         + list(state.issues)
         + last_run_issues
         + plan_issues
-        + recovery_issues(recovery)
+        + ([] if executor_active else recovery_issues(recovery))
     )
     queued_label = "queued" if service.name == "pushd" else "remote"
     queued_count = plan_details.get("pending queue items", plan_details.get("remote changes", state.queue_length))
@@ -1806,6 +1813,7 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
             **gate_details,
             "transfer recovery state file": str(recovery.state_file),
             "transfer recovery pending attempts": len(recovery.candidates),
+            "transfer executor active": executor_active,
             "transfer recovery attempts": [
                 {
                     "attempt_id": candidate.attempt_id,
@@ -6888,7 +6896,7 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
                 }
             )
             continue
-        update = append_plan_record(plan.remote_changes_file, "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES", record)
+        update = append_plan_record(plan.remote_changes_file, "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES", record, coalesce_remote_file=True)
         if update.issue:
             issues.append(update.issue)
         else:
@@ -7946,20 +7954,15 @@ def _execute_transfer_commands_impl(
                 updated["conflict"] = True
         elif config is not None and direction == "download" and returncode != 0:
             clear_download_suppression_record(config, str(updated.get("path", "")))
-            if missing_remote_source(updated):
-                marked = mark_missing_source(config.state_dir / "diffd" / "remote-changes.json", updated)
-                if marked:
-                    updated.update({
-                        "manual_review": True,
-                        "missing_remote_source": True,
-                        "phase": "manual-review",
-                        "review_records_marked": marked,
-                    })
-                    callback_issues.append(ConfigIssue(
-                        key="PCLOUD_TOOLS_DIFFD_TRANSFER_MANUAL_REVIEW",
-                        level="warning",
-                        message="missing remote source retained for manual review; other transfers may continue",
-                    ))
+            if missing_remote_source(updated) and updated.get("event_id"):
+                discarded = discard_missing_source(config.state_dir / "diffd" / "remote-changes.json", updated)
+                updated.update({
+                    "obsolete": True,
+                    "missing_remote_source": True,
+                    "phase": "obsolete",
+                    "obsolete_reason": "remote-source-missing",
+                    "obsolete_records_discarded": discarded,
+                })
         if config is not None and direction == "upload" and returncode not in {0, None}:
             output = f"{updated.get('stdout', '')}\n{updated.get('stderr', '')}".lower()
             if "source file is being updated" in output:
@@ -9561,6 +9564,24 @@ def _transfer_automation_run_report(
     if cleanup_can_run:
         startup_cleanup_details, startup_cleanup_issues = _pushd_missing_local_startup_cleanup(load_result.config)
         issues.extend(startup_cleanup_issues)
+    obsolete_cleanup: dict[str, object] = {"discarded": 0}
+    if (
+        service.name == "diffd" and execute and config_valid
+        and real_gate_open and automation_gate_open and automation_run_gate_open
+        and shadow_check.get("status") == "ok" and consume_on_success
+        and max_records > 0 and not tick_busy and not has_errors(issues)
+    ):
+        try:
+            with transfer_tick_lock(load_result.config.state_dir, "diffd", blocking=False):
+                with writer_process_session(load_result.config.state_dir, "diffd", generation="diffd:obsolete-cleanup", blocking=False):
+                    _pending, pending_issue = _pending_transfer_recovery(load_result.config, "diffd")
+                    if pending_issue is None:
+                        retired = discard_legacy_missing_reviews(state.state_dir / "remote-changes.json")
+                        obsolete_cleanup = {"discarded": len(retired), "event_ids": [r["event_id"] for r in retired]}
+                    else:
+                        issues.append(pending_issue)
+        except TransferStateError as exc:
+            obsolete_cleanup["deferred"] = str(exc)
     if service.name == "pushd":
         plan, scope = build_pushd_plan(load_result.config, state)
         issues.extend(plan.issues)
@@ -9735,6 +9756,8 @@ def _transfer_automation_run_report(
     elif execute and runnable and planned_command_count == 0 and not has_errors(issues):
         transfer_results = []
     state_writes: list[str] = []
+    if obsolete_cleanup.get("discarded"):
+        state_writes.extend([str(state.state_dir / "remote-changes.json"), str(state.state_dir / "obsolete-download-cleanup.json")])
     if transfer_state_file is not None:
         state_writes.append(str(transfer_state_file))
     consume_state_write = str(consume_details.get("consume state writes", "none"))
@@ -9792,6 +9815,7 @@ def _transfer_automation_run_report(
         "deferred transfer record details": _plan_records(deferred_records),
         "manual review transfer record details": _plan_records(manual_review_records),
         "missing local startup cleanup": startup_cleanup_details,
+        "obsolete download cleanup": obsolete_cleanup,
         "transfer results": transfer_results,
         "performance": performance,
         "chat notify results": notify_details,

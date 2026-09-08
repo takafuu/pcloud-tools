@@ -127,11 +127,11 @@ def test_service_daemon_status_summarizes_last_transfer_state(tmp_path: Path) ->
     assert diffd_report["details"]["last transfer file"] == str(diffd_dir / "last-transfer.json")
     assert pushd_report["details"]["last transfer status"] == "success"
     assert pushd_report["details"]["last transfer summary"] == (
-        "success: 1; settling: 0; failed: 0; timeout: 0; total: 1"
+        "success: 1; settling: 0; failed: 0; timeout: 0; obsolete: 0; total: 1"
     )
     assert diffd_report["details"]["last transfer status"] == "timeout"
     assert diffd_report["details"]["last transfer summary"] == (
-        "success: 0; settling: 0; failed: 0; timeout: 1; total: 1"
+        "success: 0; settling: 0; failed: 0; timeout: 1; obsolete: 0; total: 1"
     )
     assert json.loads((pushd_dir / "last-transfer.json").read_text()) == pushd_payload
     assert json.loads((diffd_dir / "last-transfer.json").read_text()) == diffd_payload
