@@ -6354,6 +6354,11 @@ def _fetch_pcloud_listfolder_metadata(
     with urllib.request.urlopen(request, timeout=config.pcloud_api_timeout_seconds) as response:
         charset = response.headers.get_content_charset() or "utf-8"
         payload = json.loads(response.read().decode(charset))
+    if isinstance(payload, dict) and payload.get("result", 0) != 0:
+        # Do not echo remote error text: it can contain untrusted/private data.
+        result = payload.get("result")
+        code = str(result) if isinstance(result, int) else "invalid"
+        raise ValueError(f"pCloud listfolder failed with result {code} for folderid {folder_id}")
     metadata = payload.get("metadata") if isinstance(payload, dict) else None
     if not isinstance(metadata, dict):
         raise ValueError(f"pCloud listfolder metadata is missing for folderid {folder_id}")
@@ -6375,21 +6380,24 @@ def _resolve_pcloud_folder_path(
     folder_paths: dict[str, str],
     fetched_urls: list[str],
     resolving: set[str],
+    event_folders: dict[str, dict[str, object]] | None = None,
 ) -> str:
     if folder_id in folder_paths:
         return folder_paths[folder_id]
     if not folder_id or not folder_id.isdigit() or folder_id in resolving:
-        return ""
+        raise ValueError("pCloud folder ancestry is invalid or cyclic")
     resolving.add(folder_id)
-    metadata, redacted_url = _fetch_pcloud_listfolder_metadata(config, credential, folder_id)
-    fetched_urls.append(redacted_url)
+    metadata = (event_folders or {}).get(folder_id)
+    if metadata is None:
+        metadata, redacted_url = _fetch_pcloud_listfolder_metadata(config, credential, folder_id)
+        fetched_urls.append(redacted_url)
     name = str(metadata.get("name", "")).strip()
     parent_id = str(metadata.get("parentfolderid", "0")).strip()
     path = ""
     if name:
         if parent_id and parent_id != "0":
             parent_path = _resolve_pcloud_folder_path(
-                config, credential, parent_id, folder_paths, fetched_urls, resolving
+                config, credential, parent_id, folder_paths, fetched_urls, resolving, event_folders
             )
             path = normalize_plan_path(f"{parent_path}/{name}") if parent_path else normalize_plan_path(name)
         else:
@@ -6430,9 +6438,26 @@ def _resolve_diff_response_parent_folders(
 ) -> tuple[dict[str, str], list[str]]:
     resolved = dict(folder_paths)
     fetched_urls: list[str] = []
+    # Historical folders can already be deleted from the live namespace. Their
+    # diff metadata still describes the ancestry needed to replay that batch.
+    event_folders: dict[str, dict[str, object]] = {}
+    try:
+        payload = json.loads(response_text)
+    except json.JSONDecodeError:
+        payload = {}
+    entries = payload.get("entries", payload.get("changes", payload.get("diff", []))) if isinstance(payload, dict) else []
+    if isinstance(entries, list):
+        for entry in entries:
+            metadata = entry.get("metadata") if isinstance(entry, dict) else None
+            if isinstance(metadata, dict) and metadata.get("isfolder"):
+                folder_id = _folder_id_from_metadata(metadata)
+                if folder_id.isdigit():
+                    # First observation seeds ancestry; parsing applies later
+                    # rename/move events in their original order.
+                    event_folders.setdefault(folder_id, metadata)
     for folder_id in sorted(_diff_parent_folder_ids(response_text)):
         if folder_id not in resolved:
-            _resolve_pcloud_folder_path(config, credential, folder_id, resolved, fetched_urls, set())
+            _resolve_pcloud_folder_path(config, credential, folder_id, resolved, fetched_urls, set(), event_folders)
     return resolved, fetched_urls
 
 

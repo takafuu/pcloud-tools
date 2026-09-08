@@ -1,6 +1,60 @@
 from __future__ import annotations
 
 from conftest import *
+import pytest
+
+
+def test_diffd_resolves_historical_nested_folders_without_live_lookup(monkeypatch) -> None:
+    from pcloud_tools import cli_service_daemon as daemon
+    from pcloud_tools.diffd_events import parse_diff_response_text
+
+    def unexpected_lookup(*args):
+        pytest.fail("historical ancestry must not query a deleted live folder")
+
+    monkeypatch.setattr(daemon, "_fetch_pcloud_listfolder_metadata", unexpected_lookup)
+    response = json.dumps({"diffid": "100", "entries": [
+        {"event": "createfolder", "metadata": {
+            "folderid": 30, "parentfolderid": 10, "isfolder": True, "name": "Documents"}},
+        {"event": "createfolder", "metadata": {
+            "folderid": 20, "parentfolderid": 30, "isfolder": True, "name": "nested"}},
+        {"event": "createfile", "metadata": {
+            "parentfolderid": 20, "isfolder": False, "name": "saved.pdf"}},
+    ]})
+    before = {"10": ""}
+    paths, urls = daemon._resolve_diff_response_parent_folders(
+        SimpleNamespace(core_remote="pcloud:core"), None, response, before)
+    parsed = parse_diff_response_text(response, "fixture", paths)
+    assert before == {"10": ""}
+    assert urls == []
+    assert parsed.invalid == ()
+    assert [change.path for change in parsed.changes] == ["Documents/nested/saved.pdf"]
+
+
+def test_diffd_rejects_cyclic_historical_ancestry() -> None:
+    from pcloud_tools import cli_service_daemon as daemon
+
+    response = json.dumps({"entries": [
+        {"metadata": {"folderid": 20, "parentfolderid": 30, "isfolder": True, "name": "a"}},
+        {"metadata": {"folderid": 30, "parentfolderid": 20, "isfolder": True, "name": "b"}},
+    ]})
+    with pytest.raises(ValueError, match="invalid or cyclic"):
+        daemon._resolve_diff_response_parent_folders(
+            SimpleNamespace(core_remote="pcloud:core"), None, response, {})
+
+
+@pytest.mark.parametrize("result", [2000, 2003, 2005, 5000])
+def test_diffd_metadata_failure_reports_code_without_remote_error_text(monkeypatch, result) -> None:
+    from pcloud_tools import cli_service_daemon as daemon
+    from io import BytesIO
+
+    response = BytesIO(json.dumps({"result": result, "error": "private-token-value"}).encode())
+    response.headers = SimpleNamespace(get_content_charset=lambda: "utf-8")
+    monkeypatch.setattr(daemon.urllib.request, "urlopen", lambda *args, **kwargs: response)
+    config = SimpleNamespace(pcloud_api_base_url="https://example.invalid", pcloud_api_timeout_seconds=5)
+    credential = daemon.PcloudApiCredential("https://example.invalid", "access_token", "secret", "fixture", "fixture")
+    with pytest.raises(ValueError) as error:
+        daemon._fetch_pcloud_listfolder_metadata(config, credential, "20")
+    assert str(error.value) == f"pCloud listfolder failed with result {result} for folderid 20"
 
 
 def _without_generation(records: object) -> object:
@@ -782,7 +836,8 @@ def test_diffd_api_long_poll_reuses_folder_cache_across_runs(tmp_path: Path) -> 
     assert _without_generation(remote_changes) == [
         {"path": "Documents/from-cache.pdf", "action": "download", "reason": "diff:createfile"}
     ]
-def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path) -> None:
+@pytest.mark.parametrize("historical_folders", [False, True])
+def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path, historical_folders: bool) -> None:
     requests: list[tuple[str, dict[str, list[str]]]] = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -795,6 +850,12 @@ def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path
                     {
                         "diffid": "2228182",
                         "entries": [
+                            *([
+                                {"event": "createfolder", "metadata": {
+                                    "isfolder": True, "folderid": 30754773616,
+                                    "parentfolderid": 29925560641, "name": "Documents",
+                                }},
+                            ] if historical_folders else []),
                             {
                                 "diffid": 2228181,
                                 "event": "createfile",
@@ -808,7 +869,7 @@ def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path
                     }
                 ).encode()
             elif parsed.path == "/listfolder" and query.get("folderid") == ["30754773616"]:
-                body = json.dumps(
+                body = json.dumps({"result": 2005, "error": "Directory does not exist."} if historical_folders else
                     {
                         "metadata": {
                             "isfolder": True,
@@ -914,12 +975,12 @@ def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path
     assert payload["details"]["parsed diff changes"] == 1
     assert payload["details"]["invalid diff changes"] == 0
     assert payload["details"]["download records appended"] == 1
-    assert payload["details"]["folder metadata requests count"] == 2
+    assert payload["details"]["folder metadata requests count"] == (1 if historical_folders else 2)
     assert _without_generation(remote_changes) == [
         {"path": "Documents/IMG_001.jpeg", "action": "download", "reason": "diff:createfile"}
     ]
     assert folder_cache == {"29925560641": "", "30754773616": "Documents"}
-    assert [request[0] for request in requests] == ["/diff", "/listfolder", "/listfolder"]
+    assert [request[0] for request in requests] == ["/diff"] + ["/listfolder"] * (1 if historical_folders else 2)
     assert "topsecret-token" not in result.stdout
 def test_diffd_folder_cache_add_status_remove_is_dev_state_only(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
