@@ -158,5 +158,12 @@ def diff_changes_to_records(changes: tuple[DiffdRemoteChange, ...]) -> tuple[Pla
             action = "delete"
         elif "rename" in event or "move" in event:
             action = "rename"
-        records.append(PlanRecord(path=change.path, action=action, reason=f"diff:{change.event}"))
+        records.append(
+            PlanRecord(
+                path=change.path,
+                action=action,
+                reason=f"diff:{change.event}",
+                extra={"diffid": change.diffid},
+            )
+        )
     return tuple(records)

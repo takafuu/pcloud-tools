@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import os
 import re
-from dataclasses import dataclass
+from dataclasses import MISSING, dataclass, field
 from pathlib import Path
 from typing import Literal
 
@@ -28,9 +28,10 @@ class ConfigLoadResult:
     config: "AppConfig"
     source: str
     issues: tuple[ConfigIssue, ...]
+    source_layers: dict[str, str] = field(default_factory=dict)
 
 
-@dataclass(frozen=True)
+@dataclass(frozen=True, init=False)
 class AppConfig:
     env_file: Path
     core_dir: Path
@@ -69,6 +70,8 @@ class AppConfig:
     autosync_launchd_gate: str
     sync_migration_gate: str
     transfer_exec_timeout_seconds: int
+    pushd_transfer_concurrency: int = 1
+    diffd_transfer_concurrency: int = 1
     download_suppression_ttl_seconds: int
     pushd_missing_local_prune_ttl_seconds: int
     pushd_upload_settle_seconds: int
@@ -80,6 +83,53 @@ class AppConfig:
     pcloud_api_auth_param: str
     pcloud_api_token: str
     pcloud_api_timeout_seconds: int
+
+    def __init__(self, *args: object, **kwargs: object) -> None:
+        """Accept legacy positional construction and optional new settings.
+
+        The concurrency fields intentionally live at their contract position
+        so ``CONFIG_FIELD_SPECS`` and dataclass reflection retain one order.
+        A generated dataclass initializer cannot put defaults before the
+        existing required fields on Python 3.9, so this small initializer
+        keeps both the old positional shape and the keyword-based loader.
+        """
+        field_names = tuple(type(self).__dataclass_fields__)
+        concurrency_names = {"pushd_transfer_concurrency", "diffd_transfer_concurrency"}
+        legacy_names = tuple(name for name in field_names if name not in concurrency_names)
+        if not args:
+            positional_names = ()
+        elif len(args) == len(field_names):
+            positional_names = field_names
+        elif len(args) == len(legacy_names):
+            positional_names = legacy_names
+        else:
+            raise TypeError(
+                f"AppConfig expected {len(legacy_names)} or {len(field_names)} positional arguments, "
+                f"got {len(args)}"
+            )
+
+        values: dict[str, object] = dict(zip(positional_names, args))
+        unknown = set(kwargs) - set(field_names)
+        if unknown:
+            names = ", ".join(sorted(unknown))
+            raise TypeError(f"AppConfig got unexpected keyword argument(s): {names}")
+        duplicates = set(values).intersection(kwargs)
+        if duplicates:
+            names = ", ".join(sorted(duplicates))
+            raise TypeError(f"AppConfig got multiple values for argument(s): {names}")
+        values.update(kwargs)
+        for name in field_names:
+            if name in values:
+                continue
+            definition = type(self).__dataclass_fields__[name]
+            if definition.default is not MISSING:
+                values[name] = definition.default
+            elif definition.default_factory is not MISSING:  # pragma: no cover - no factory today
+                values[name] = definition.default_factory()
+            else:
+                raise TypeError(f"AppConfig missing required argument: {name}")
+        for name in field_names:
+            object.__setattr__(self, name, values[name])
 
 
 ConfigValueKind = Literal["path", "str", "int", "bool", "csv"]
@@ -140,6 +190,8 @@ CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("autosync_launchd_gate", "PCLOUD_TOOLS_AUTOSYNC_LAUNCHD_GATE", "str", ""),
     FieldSpec("sync_migration_gate", "PCLOUD_TOOLS_SYNC_MIGRATION_GATE", "str", ""),
     FieldSpec("transfer_exec_timeout_seconds", "PCLOUD_TOOLS_TRANSFER_EXEC_TIMEOUT_SECONDS", "int", "5"),
+    FieldSpec("pushd_transfer_concurrency", "PCLOUD_TOOLS_PUSHD_TRANSFER_CONCURRENCY", "int", "1"),
+    FieldSpec("diffd_transfer_concurrency", "PCLOUD_TOOLS_DIFFD_TRANSFER_CONCURRENCY", "int", "1"),
     FieldSpec("download_suppression_ttl_seconds", "PCLOUD_TOOLS_DOWNLOAD_SUPPRESSION_TTL_SECONDS", "int", "86400"),
     FieldSpec("pushd_missing_local_prune_ttl_seconds", "PCLOUD_TOOLS_PUSHD_MISSING_LOCAL_PRUNE_TTL_SECONDS", "int", "600"),
     FieldSpec("pushd_upload_settle_seconds", "PCLOUD_TOOLS_PUSHD_UPLOAD_SETTLE_SECONDS", "int", "30", "0"),
@@ -273,24 +325,44 @@ def load_config(paths: RuntimePaths) -> ConfigLoadResult:
     issues: list[ConfigIssue] = []
     env_values: dict[str, str] = {}
 
+    source_layers: dict[str, str] = {
+        spec.name: "default"
+        for spec in CONFIG_FIELD_SPECS
+    }
     try:
         env_values = parse_env_file(paths.env_file)
         values = {**defaults, **env_values}
+        for spec in CONFIG_FIELD_SPECS:
+            if spec.env_var and spec.env_var in env_values:
+                source_layers[spec.name] = "env-file"
 
         for key, value in os.environ.items():
             if key.startswith("PCLOUD_TOOLS_"):
                 values[key] = value
+        for spec in CONFIG_FIELD_SPECS:
+            if spec.env_var and spec.env_var in os.environ:
+                source_layers[spec.name] = "environment"
 
         config = _build_config_from_values(paths, values, defaults)
     except ConfigError as exc:
         issues.append(ConfigIssue(key="config", level="error", message=str(exc)))
         fallback = _build_fallback_config(paths, defaults)
         source = "env-error" if paths.env_file.exists() else "defaults"
-        return ConfigLoadResult(config=fallback, source=source, issues=tuple(issues))
+        return ConfigLoadResult(
+            config=fallback,
+            source=source,
+            issues=tuple(issues),
+            source_layers=source_layers,
+        )
 
     issues.extend(validate_config(config))
     source = "env" if paths.env_file.exists() else "defaults"
-    return ConfigLoadResult(config=config, source=source, issues=tuple(issues))
+    return ConfigLoadResult(
+        config=config,
+        source=source,
+        issues=tuple(issues),
+        source_layers=source_layers,
+    )
 
 
 def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> AppConfig:
@@ -345,6 +417,19 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
     ):
         if value < 1:
             issues.append(ConfigIssue(key=key, level="error", message=f"value must be >= 1: {value}"))
+
+    for key, value in (
+        ("PCLOUD_TOOLS_PUSHD_TRANSFER_CONCURRENCY", config.pushd_transfer_concurrency),
+        ("PCLOUD_TOOLS_DIFFD_TRANSFER_CONCURRENCY", config.diffd_transfer_concurrency),
+    ):
+        if value < 1 or value > 4:
+            issues.append(
+                ConfigIssue(
+                    key=key,
+                    level="error",
+                    message=f"transfer concurrency must be between 1 and 4: {value}",
+                )
+            )
 
     if config.pushd_upload_settle_seconds < 0:
         issues.append(

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import contextlib
 import json
 import os
 import plistlib
@@ -13,6 +14,7 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+import uuid
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -134,6 +136,24 @@ from ..service_daemon_plan import (
 )
 from ..service_daemon_state import ServiceDaemonState, read_service_daemon_state
 from ..sync_scope import ScopeBaseline, SyncScopeInfo, scope_issues, sync_allowlist_info
+from ..transfer_executor import run_transfer_batch, transfer_concurrency
+from ..transfer_recovery import inspect_recovery, recover_attempt, recovery_issues
+from ..transfer_state import (
+    consume_event_ids,
+    clear_attempt_child,
+    create_attempt,
+    ensure_event_ids,
+    mark_attempt_child,
+    read_attempts,
+    read_queue_snapshot,
+    state_lock,
+    TransferStateError,
+    writer_process_session,
+    transfer_tick_lock,
+    transfer_tick_lock_status,
+    transfer_path_lock,
+    update_attempt,
+)
 
 
 @dataclass(frozen=True)
@@ -310,6 +330,30 @@ def _add_transfer_automation_run_parser(transfer_subparsers: argparse._SubParser
     )
     parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+
+def _add_transfer_recovery_parser(transfer_subparsers: argparse._SubParsersAction) -> None:
+    recovery_parser = transfer_subparsers.add_parser(
+        "recovery", help="Inspect or explicitly release an interrupted transfer attempt."
+    )
+    recovery_subparsers = recovery_parser.add_subparsers(dest="recovery_command")
+    preview_parser = recovery_subparsers.add_parser(
+        "preview", help="Read-only inspection of attempts held for recovery."
+    )
+    preview_parser.add_argument("--attempt-id")
+    preview_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    preview_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+    run_parser = recovery_subparsers.add_parser(
+        "run", help="Release one attempt only after every explicit recovery check is supplied."
+    )
+    run_parser.add_argument("--attempt-id", required=True)
+    run_parser.add_argument("--child-exit-confirmed", action="store_true")
+    run_parser.add_argument("--writers-stopped", action="store_true")
+    run_parser.add_argument("--latest-event-ids-rechecked", action="store_true")
+    run_parser.add_argument("--local-fingerprints-rechecked", action="store_true")
+    run_parser.add_argument("--execute", action="store_true")
+    run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
+    run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
 
 
 def _add_automation_review_args(parser: argparse.ArgumentParser) -> None:
@@ -624,6 +668,7 @@ def _add_service_parser(
         transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         _add_transfer_automation_gate_parser(transfer_subparsers, direction="upload")
         _add_transfer_automation_run_parser(transfer_subparsers)
+        _add_transfer_recovery_parser(transfer_subparsers)
         transfer_real_run_parser = transfer_subparsers.add_parser(
             "real-run",
             help="Run guarded real upload execution only after the real-transfer gate is open.",
@@ -654,6 +699,12 @@ def _add_service_parser(
         )
         transfer_executor_parser.add_argument("--execute", action="store_true")
         transfer_executor_parser.add_argument("--consume-on-success", action="store_true")
+        transfer_executor_parser.add_argument(
+            "--max-records",
+            type=int,
+            default=1,
+            help="Maximum selected transfer records for this executor tick (concurrency is configured separately).",
+        )
         transfer_executor_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_executor_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_consume_parser = transfer_subparsers.add_parser(
@@ -928,6 +979,7 @@ def _add_service_parser(
         transfer_real_gate_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         _add_transfer_automation_gate_parser(transfer_subparsers, direction="download")
         _add_transfer_automation_run_parser(transfer_subparsers)
+        _add_transfer_recovery_parser(transfer_subparsers)
         transfer_real_run_parser = transfer_subparsers.add_parser(
             "real-run",
             help="Run guarded real download execution only after the real-transfer gate is open.",
@@ -958,6 +1010,12 @@ def _add_service_parser(
         )
         transfer_executor_parser.add_argument("--execute", action="store_true")
         transfer_executor_parser.add_argument("--consume-on-success", action="store_true")
+        transfer_executor_parser.add_argument(
+            "--max-records",
+            type=int,
+            default=1,
+            help="Maximum selected transfer records for this executor tick (concurrency is configured separately).",
+        )
         transfer_executor_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
         transfer_executor_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
         transfer_consume_parser = transfer_subparsers.add_parser(
@@ -1358,6 +1416,8 @@ def _state_details(state: ServiceDaemonState) -> dict[str, object]:
     else:
         process_state = "stale"
     transfer_summary, transfer_status = _last_transfer_summary(state.last_transfer)
+    performance = state.last_transfer.get("performance") if isinstance(state.last_transfer, dict) else None
+    performance_status = performance if isinstance(performance, dict) else "unknown"
 
     return {
         "state dir": str(state.state_dir),
@@ -1376,6 +1436,12 @@ def _state_details(state: ServiceDaemonState) -> dict[str, object]:
         "last transfer file": str(state.last_transfer_file),
         "last transfer summary": transfer_summary,
         "last transfer status": transfer_status,
+        "last transfer performance": performance_status,
+        "last transfer performance schema": (
+            performance.get("schema_version", "unknown")
+            if isinstance(performance, dict)
+            else "unknown"
+        ),
     }
 
 
@@ -1693,11 +1759,13 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
         last_run_details, last_run_issues = _diffd_last_api_poll_run_details(load_result.config)
     plan_details, plan_issues = _status_plan_details(load_result.config, state, service)
     gate_details = _status_gate_details(paths, load_result.config, service)
+    recovery = inspect_recovery(load_result.config.state_dir, service.name)
     issues = sort_issues(
         list(load_result.issues)
         + list(state.issues)
         + last_run_issues
         + plan_issues
+        + recovery_issues(recovery)
     )
     queued_label = "queued" if service.name == "pushd" else "remote"
     queued_count = plan_details.get("pending queue items", plan_details.get("remote changes", state.queue_length))
@@ -1722,6 +1790,19 @@ def _service_status_report(paths: RuntimePaths, service: ServiceDefinition) -> C
             **plan_details,
             **last_run_details,
             **gate_details,
+            "transfer recovery state file": str(recovery.state_file),
+            "transfer recovery pending attempts": len(recovery.candidates),
+            "transfer recovery attempts": [
+                {
+                    "attempt_id": candidate.attempt_id,
+                    "phase": candidate.phase,
+                    "status": candidate.status,
+                    "reason": candidate.reason,
+                    "child_pids": list(candidate.child_pids),
+                    "requires child exit confirmation": candidate.requires_child_exit_confirmation,
+                }
+                for candidate in recovery.candidates
+            ],
             **suppression_status_details(load_result.config),
             **chat_notify_status(load_result.config),
         },
@@ -1738,11 +1819,213 @@ def cmd_service_status(
     return exit_code_for_report(report)
 
 
-def _plan_records(records) -> list[dict[str, str]]:
+def _transfer_recovery_report(
+    args: argparse.Namespace,
+    paths: RuntimePaths,
+    service: ServiceDefinition,
+) -> CommandReport:
+    load_result = load_config(paths)
+    issues = list(load_result.issues)
+    attempt_id = str(getattr(args, "attempt_id", "") or "").strip() or None
+    report = inspect_recovery(load_result.config.state_dir, service.name)
+    candidates = tuple(
+        candidate for candidate in report.candidates if attempt_id is None or candidate.attempt_id == attempt_id
+    )
+    executed = False
+    result_details: dict[str, object] = {}
+    if getattr(args, "recovery_command", "") == "run" and getattr(args, "execute", False):
+        if len(candidates) != 1:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_TRANSFER_RECOVERY_ATTEMPT",
+                    level="error",
+                    message="recovery run requires exactly one unresolved attempt_id",
+                )
+            )
+        else:
+            candidate = candidates[0]
+            result = recover_attempt(
+                load_result.config.state_dir,
+                service.name,
+                candidate.attempt_id,
+                child_exit_confirmed=bool(getattr(args, "child_exit_confirmed", False)),
+                writers_stopped=bool(getattr(args, "writers_stopped", False)),
+                latest_event_ids_rechecked=bool(getattr(args, "latest_event_ids_rechecked", False)),
+                local_fingerprints_rechecked=bool(getattr(args, "local_fingerprints_rechecked", False)),
+            )
+            executed = result.issue is None
+            if result.issue:
+                issues.append(ConfigIssue(level=result.issue.level, key=result.issue.key, message=result.issue.message))
+            result_details = {
+                "attempt recovery phase": result.phase,
+                "attempt recovery status": result.status,
+                "attempt recovery file": str(result.file),
+            }
+            if result.issue:
+                result_details["attempt recovery issue"] = result.issue.message
+
+    details: dict[str, object] = {
+        "planned action": (
+            f"release {service.name} transfer attempt"
+            if getattr(args, "recovery_command", "") == "run"
+            else f"inspect {service.name} transfer recovery"
+        ),
+        "implementation status": (
+            "explicit recovery release; the scheduler must re-evaluate the current queue"
+            if executed
+            else "read-only transfer recovery inspection"
+        ),
+        "recovery command": getattr(args, "recovery_command", "preview"),
+        "execute requested": "yes" if getattr(args, "execute", False) else "no",
+        "state writes": str(report.state_file) if executed else "none",
+        "recovery state file": str(report.state_file),
+        "attempt filter": attempt_id or "all unresolved attempts",
+        "pending attempts": len(candidates),
+        "attempts": [
+            {
+                "attempt_id": candidate.attempt_id,
+                "service": candidate.service,
+                "phase": candidate.phase,
+                "status": candidate.status,
+                "reason": candidate.reason,
+                "child_pids": list(candidate.child_pids),
+                "requires child exit confirmation": candidate.requires_child_exit_confirmation,
+                "payload": candidate.payload,
+            }
+            for candidate in candidates
+        ],
+        "recovery checks required": [
+            "--child-exit-confirmed",
+            "--writers-stopped",
+            "--latest-event-ids-rechecked",
+            "--local-fingerprints-rechecked",
+        ],
+        **result_details,
+    }
+    if getattr(args, "recovery_command", "") == "run" and not getattr(args, "execute", False):
+        issues.append(
+            ConfigIssue(
+                key="PCLOUD_TOOLS_TRANSFER_RECOVERY_EXECUTE",
+                level="warning",
+                message="recovery run is preview-only until --execute is supplied",
+            )
+        )
+    issues.extend(recovery_issues(inspect_recovery(load_result.config.state_dir, service.name) if executed else report))
+    issues = sort_issues(issues)
+    return CommandReport(
+        command=f"{service.name} transfer recovery {getattr(args, 'recovery_command', 'preview')}",
+        status=status_from_issues(issues),
+        summary=(
+            f"{service.name} transfer recovery released an attempt"
+            if executed
+            else f"{service.name} transfer recovery preview is ready"
+        ),
+        details=details,
+        issues=report_issues(issues),
+        actions=_service_actions(paths, service),
+    )
+
+
+def _recovery_candidate_details(report: object) -> list[dict[str, object]]:
+    candidates = getattr(report, "candidates", ())
     return [
-        {"path": record.path, "action": record.action, "reason": record.reason}
-        for record in records
+        {
+            "attempt_id": candidate.attempt_id,
+            "service": candidate.service,
+            "phase": candidate.phase,
+            "status": candidate.status,
+            "reason": candidate.reason,
+            "child_pids": list(candidate.child_pids),
+            "requires child exit confirmation": candidate.requires_child_exit_confirmation,
+        }
+        for candidate in candidates
     ]
+
+
+def _pending_transfer_recovery(
+    config: AppConfig,
+    service_name: str,
+    *,
+    defer_if_tick_busy: bool = False,
+) -> tuple[object, ConfigIssue | None]:
+    recovery = inspect_recovery(config.state_dir, service_name)
+    if not recovery.candidates:
+        return recovery, None
+    if defer_if_tick_busy:
+        tick_status = transfer_tick_lock_status(config.state_dir, service_name)
+        if tick_status.get("active") and not tick_status.get("owned here"):
+            return recovery, None
+    return recovery, ConfigIssue(
+        key=f"PCLOUD_TOOLS_{service_name.upper()}_TRANSFER_RECOVERY_PENDING",
+        level="error",
+        message=(
+            f"{service_name} transfer execution is blocked while unresolved attempt(s) "
+            "await explicit recovery"
+        ),
+    )
+
+
+def _transfer_tick_busy(config: AppConfig, service_name: str) -> bool:
+    """Return whether another process currently owns this service's tick."""
+
+    status = transfer_tick_lock_status(config.state_dir, service_name)
+    return bool(status.get("active") and not status.get("owned here"))
+
+
+def _transfer_recovery_block_report(
+    args: argparse.Namespace,
+    paths: RuntimePaths,
+    service: ServiceDefinition,
+    *,
+    command: str,
+    summary: str,
+) -> CommandReport:
+    """Return a read-only refusal while an attempt awaits recovery."""
+
+    load_result = load_config(paths)
+    state = read_service_daemon_state(load_result.config, service.name)
+    recovery, pending_issue = _pending_transfer_recovery(load_result.config, service.name)
+    issues = [*load_result.issues, *state.issues]
+    issues.extend(recovery_issues(recovery))
+    if pending_issue is not None:
+        issues.append(pending_issue)
+    details: dict[str, object] = {
+        "planned action": f"refuse {command} while transfer recovery is pending",
+        "implementation status": "transfer execution is held until explicit recovery checks release the attempt",
+        "execute requested": "yes" if getattr(args, "execute", False) else "no",
+        "state writes": "none",
+        "transfer recovery state file": str(recovery.state_file),
+        "transfer recovery pending attempts": len(recovery.candidates),
+        "transfer recovery attempts": _recovery_candidate_details(recovery),
+        "blocked operations": [
+            "transfer child start",
+            "queue/change consumption",
+            "automatic retry of an unresolved attempt",
+        ],
+        "recovery command": f"{service.name} transfer recovery preview",
+    }
+    return CommandReport(
+        command=command,
+        status=status_from_issues(sort_issues(issues)),
+        summary=summary,
+        details=details,
+        issues=report_issues(sort_issues(issues)),
+        actions=_service_actions(paths, service),
+    )
+
+
+def _plan_records(records) -> list[dict[str, str]]:
+    payloads: list[dict[str, str]] = []
+    for record in records:
+        payload: dict[str, str] = {"path": record.path, "action": record.action, "reason": record.reason}
+        if getattr(record, "event_id", None):
+            payload["event_id"] = str(record.event_id)
+        if getattr(record, "enqueued_at", None):
+            payload["enqueued_at"] = str(record.enqueued_at)
+        if getattr(record, "observed_at", None):
+            payload["observed_at"] = str(record.observed_at)
+        payloads.append(payload)
+    return payloads
 
 
 def _pushd_backfill_dir_sort_key(name: str) -> tuple[int, str]:
@@ -2092,7 +2375,29 @@ def _opposite_transfer_candidates(config: AppConfig, service: ServiceDefinition)
     pushd_state = read_service_daemon_state(config, "pushd")
     pushd_plan, _scope = build_pushd_plan(config, pushd_state)
     present_records, _missing_records = _split_missing_local_upload_records(config, pushd_plan.upload_records)
-    return present_records
+    candidates = list(present_records)
+    candidate_paths = {record.path for record in candidates if record.path}
+    # A released download attempt must be re-evaluated against the baseline
+    # captured before the abrupt exit.  A changed destination is an explicit
+    # local edit, even when the normal pushd plan temporarily suppresses the
+    # matching upload because the download journal is still active.
+    for (_event_id, path, direction), (_attempt_id, baseline) in _released_recovery_baselines(
+        config.state_dir,
+        "diffd",
+    ).items():
+        if direction != "download" or path in candidate_paths:
+            continue
+        current = local_fingerprint(config.core_dir / path).as_dict()
+        if current != baseline:
+            candidates.append(
+                PlanRecord(
+                    path,
+                    "upload",
+                    "released download attempt has a changed local fingerprint",
+                )
+            )
+            candidate_paths.add(path)
+    return tuple(candidates)
 
 
 def _manual_review_issue(service: ServiceDefinition, count: int) -> ConfigIssue | None:
@@ -5019,7 +5324,7 @@ def _recent_resident_debounce_keys(state_file: Path, *, debounce_seconds: int, n
     return keys
 
 
-def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+def _pushd_fswatch_resident_run_report_impl(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     gate_report = _pushd_fswatch_resident_gate_report(args, paths)
     load_result = load_config(paths)
     config = load_result.config
@@ -5322,6 +5627,97 @@ def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimeP
         issues=report_issues(issues),
         actions=_service_actions(paths, _SERVICES["pushd"]),
     )
+
+
+def _writer_session_blocked_report(
+    gate_report: CommandReport,
+    paths: RuntimePaths,
+    *,
+    service_name: str,
+    command: str,
+    gate_issue_key: str,
+    run_gate_detail_key: str,
+    can_start_detail_key: str,
+    summary: str,
+    error: TransferStateError,
+) -> CommandReport:
+    """Return a controlled report when a long-lived writer cannot join.
+
+    Cutover holds the service lifetime gate exclusively.  A concurrent
+    resident writer must therefore stop before it starts its child process;
+    leaking the lock exception through the CLI would make that boundary
+    indistinguishable from an implementation failure.
+    """
+
+    details = dict(gate_report.details)
+    details.update(
+        {
+            "planned action": f"run {command}",
+            "implementation status": "writer process session unavailable; writer process was not started",
+            run_gate_detail_key: "blocked: writer process session unavailable",
+            can_start_detail_key: "no",
+            "execute requested": "yes",
+            "state writes": "none",
+            "writer process session status": "blocked",
+        }
+    )
+    issues = [
+        ConfigIssue(key=issue.key, level=issue.level, message=issue.message)
+        for issue in gate_report.issues
+        if issue.key != gate_issue_key
+    ]
+    issues.append(
+        ConfigIssue(
+            key=f"PCLOUD_TOOLS_{service_name.upper()}_WRITER_SESSION",
+            level="error",
+            message=f"{service_name} writer process session could not start: {error}",
+        )
+    )
+    issues = sort_issues(issues)
+    return CommandReport(
+        command=command,
+        status=status_from_issues(issues),
+        summary=summary,
+        details=details,
+        issues=report_issues(issues),
+        actions=_service_actions(paths, _SERVICES[service_name]),
+    )
+
+
+def _pushd_fswatch_resident_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    """Run the resident writer inside its service lifetime session."""
+
+    if not bool(getattr(args, "execute", False)):
+        return _pushd_fswatch_resident_run_report_impl(args, paths)
+
+    # Evaluate the read-only gate before taking a lifetime session.  A preview
+    # or a refused execution must never create a process lease.
+    gate_report = _pushd_fswatch_resident_gate_report(args, paths)
+    config = load_config(paths).config
+    gate_open = _resident_gate_open(config)
+    approval_status = str(gate_report.details.get("resident approval status", "pending"))
+    if not gate_open or approval_status != "complete-read-only":
+        return _pushd_fswatch_resident_run_report_impl(args, paths)
+    try:
+        with writer_process_session(
+            config.state_dir,
+            "pushd",
+            generation="pushd:fswatch-resident",
+            blocking=False,
+        ):
+            return _pushd_fswatch_resident_run_report_impl(args, paths)
+    except TransferStateError as exc:
+        return _writer_session_blocked_report(
+            gate_report,
+            paths,
+            service_name="pushd",
+            command="pushd fswatch resident-run",
+            gate_issue_key="PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE",
+            run_gate_detail_key="resident run gate status",
+            can_start_detail_key="resident can start",
+            summary="pushd fswatch resident execution is waiting for writer cutover",
+            error=exc,
+        )
 
 
 def cmd_pushd_fswatch(args: argparse.Namespace, paths: RuntimePaths) -> int | None:
@@ -6044,7 +6440,7 @@ def _api_long_poll_gate_open(config: AppConfig) -> bool:
     return config.diffd_api_long_poll_gate == GATES["diffd.api.long-poll"].expected_value
 
 
-def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     gate_report = _diffd_api_long_poll_gate_report(args, paths)
     load_result = load_config(paths)
     config = load_result.config
@@ -6543,6 +6939,42 @@ def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePath
     )
 
 
+def _diffd_api_long_poll_run_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    """Run the long-poll writer inside its service lifetime session."""
+
+    if not bool(getattr(args, "execute", False)):
+        return _diffd_api_long_poll_run_report_impl(args, paths)
+
+    # Evaluate the read-only gate before taking a lifetime session.  A preview
+    # or a refused execution must never create a process lease.
+    gate_report = _diffd_api_long_poll_gate_report(args, paths)
+    config = load_config(paths).config
+    gate_open = _api_long_poll_gate_open(config)
+    approval_status = str(gate_report.details.get("long-poll approval status", "pending"))
+    if not gate_open or approval_status != "complete-read-only":
+        return _diffd_api_long_poll_run_report_impl(args, paths)
+    try:
+        with writer_process_session(
+            config.state_dir,
+            "diffd",
+            generation="diffd:api-long-poll",
+            blocking=False,
+        ):
+            return _diffd_api_long_poll_run_report_impl(args, paths)
+    except TransferStateError as exc:
+        return _writer_session_blocked_report(
+            gate_report,
+            paths,
+            service_name="diffd",
+            command="diffd api-poll long-poll-run",
+            gate_issue_key="PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE",
+            run_gate_detail_key="long-poll run gate status",
+            can_start_detail_key="long-poll can start",
+            summary="diffd pCloud API long-poll execution is waiting for writer cutover",
+            error=exc,
+        )
+
+
 def _diffd_api_checkpoint_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
@@ -6782,16 +7214,28 @@ def _transfer_command_records(
     for record in records:
         local_path = str(config.core_dir / record.path)
         remote_path = _remote_path(config.core_remote, record.path)
+        common: dict[str, object] = {
+            "path": record.path,
+            "event_id": record.event_id or "",
+            "enqueued_at": record.enqueued_at or "",
+            "observed_at": record.observed_at or "",
+            "queue_action": (
+                str((record.extra or {}).get("_queue_action"))
+                if isinstance(record.extra, dict) and record.extra.get("_queue_action")
+                else record.action
+            ),
+        }
         if service.name == "pushd":
             command = [command_bin, "copyto", local_path, remote_path]
             direction = "upload"
             planned.append(
                 {
-                    "path": record.path,
+                    **common,
                     "direction": direction,
                     "reason": record.reason,
                     "local_path": local_path,
                     "remote_path": remote_path,
+                    "pre_transfer_fingerprint": local_fingerprint(Path(local_path)).as_dict(),
                     "command": command,
                 }
             )
@@ -6802,7 +7246,7 @@ def _transfer_command_records(
             direction = "download"
             planned.append(
                 {
-                    "path": record.path,
+                    **common,
                     "direction": direction,
                     "reason": record.reason,
                     "local_path": local_path,
@@ -6997,6 +7441,38 @@ def _fingerprint_payload(value: object) -> dict[str, object]:
     return value if isinstance(value, dict) else {}
 
 
+def _released_recovery_baselines(
+    state_dir: Path,
+    service_name: str,
+) -> dict[tuple[str, str, str], tuple[str, dict[str, object]]]:
+    """Return pre-transfer fingerprints retained by explicitly released attempts.
+
+    A recovery release only makes the queue eligible for re-evaluation.  If a
+    released download is selected again, its original baseline is still
+    needed to distinguish a user edit made after an abrupt exit from an
+    unchanged destination.  Event IDs keep this lookup generation-specific.
+    """
+
+    baselines: dict[tuple[str, str, str], tuple[str, dict[str, object]]] = {}
+    for attempt in read_attempts(state_dir, service_name):
+        if str(attempt.get("status", "")) != "released":
+            continue
+        attempt_id = str(attempt.get("attempt_id", ""))
+        records = attempt.get("records")
+        if not isinstance(records, list):
+            continue
+        for record in records:
+            if not isinstance(record, dict):
+                continue
+            event_id = str(record.get("event_id", "") or "").strip()
+            path = normalize_plan_path(record.get("path", ""))
+            direction = str(record.get("direction", "") or "").strip()
+            baseline = record.get("pre_transfer_fingerprint")
+            if event_id and path and direction and isinstance(baseline, dict):
+                baselines[(event_id, path, direction)] = (attempt_id, dict(baseline))
+    return baselines
+
+
 def _finalize_download_transfer(
     config: AppConfig,
     item: dict[str, object],
@@ -7027,7 +7503,8 @@ def _finalize_download_transfer(
         details["download finalize error"] = "staging file missing"
         return details, issues
 
-    before = _fingerprint_payload(item.get("pre_transfer_fingerprint"))
+    recovery_before = _fingerprint_payload(item.get("_recovery_pre_transfer_fingerprint"))
+    before = recovery_before or _fingerprint_payload(item.get("pre_transfer_fingerprint"))
     current = local_fingerprint(final_path).as_dict()
     if current == before:
         final_path.parent.mkdir(parents=True, exist_ok=True)
@@ -7043,6 +7520,8 @@ def _finalize_download_transfer(
                 "post_transfer_fingerprint": fingerprint.as_dict(),
             }
         )
+        if recovery_before:
+            details["recovery baseline fingerprint used"] = True
         return details, issues
 
     conflict_path = conflict_copy_path(final_path)
@@ -7069,6 +7548,9 @@ def _finalize_download_transfer(
             "conflict_fingerprint": fingerprint.as_dict(),
         }
     )
+    if recovery_before:
+        details["recovery baseline fingerprint used"] = True
+        details["recovery replay conflict"] = True
     issues.append(
         ConfigIssue(
             key="PCLOUD_TOOLS_DIFFD_DOWNLOAD_CONFLICT",
@@ -7079,7 +7561,7 @@ def _finalize_download_transfer(
     return details, issues
 
 
-def _execute_transfer_commands(
+def _execute_transfer_commands_serial_legacy(
     commands: list[dict[str, object]], *, timeout_seconds: int, config: AppConfig | None = None
 ) -> tuple[list[dict[str, object]], list[ConfigIssue]]:
     results: list[dict[str, object]] = []
@@ -7205,6 +7687,416 @@ def _execute_transfer_commands(
                 )
             )
     return results, issues
+
+
+def _execute_transfer_commands_impl(
+    commands: list[dict[str, object]],
+    *,
+    timeout_seconds: int,
+    config: AppConfig | None = None,
+    service: ServiceDefinition | None = None,
+    concurrency: int | None = None,
+) -> tuple[list[dict[str, object]], list[ConfigIssue], dict[str, object]]:
+    """Execute a selected transfer batch with bounded concurrency.
+
+    Queue and journal hooks run in ``after_item`` while the per-path lock is
+    held only for that short state transition.  The child itself never holds a
+    queue lock.  The third return value is additive execution telemetry used by
+    ``last-transfer.json``; callers that only need results can ignore it.
+    """
+
+    service_name = service.name if service is not None else "transfer"
+    selected_at = time.monotonic()
+    selected_at_utc = datetime.now(timezone.utc).isoformat()
+    prepared_commands: list[dict[str, object]] = []
+    queue_event_ids: dict[tuple[str, str], list[str]] = {}
+    released_recovery_baselines: dict[tuple[str, str, str], tuple[str, dict[str, object]]] = {}
+    if config is not None and service is not None:
+        _recovery, pending_recovery_issue = _pending_transfer_recovery(config, service_name)
+        if pending_recovery_issue is not None:
+            performance = {
+                "schema_version": "pcloud-tools-transfer-performance.v1",
+                "concurrency": concurrency or transfer_concurrency(config, service_name),
+                "peak_concurrency": 0,
+                "selected": len(commands),
+                "started": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "timeout": 0,
+                "deferred": len(commands),
+                "conflict": 0,
+            }
+            return [], [pending_recovery_issue], performance
+        state_for_events = read_service_daemon_state(config, service_name)
+        source_for_events = (
+            state_for_events.queue_file
+            if service_name == "pushd"
+            else state_for_events.state_dir / "remote-changes.json"
+        )
+        event_update = ensure_event_ids(
+            source_for_events,
+            f"PCLOUD_TOOLS_{service_name.upper()}_TRANSFER_STATE",
+            # An executable tick is the migration boundary for legacy queue
+            # records: assign IDs while holding the shared writer barrier so
+            # later consume cannot fall back to an unsafe path-only delete.
+            write=True,
+        )
+        if event_update.issue:
+            return [], [
+                ConfigIssue(
+                    level=event_update.issue.level,
+                    key=event_update.issue.key,
+                    message=event_update.issue.message,
+                )
+            ], {
+                "schema_version": "pcloud-tools-transfer-performance.v1",
+                "concurrency": concurrency or transfer_concurrency(config, service_name),
+                "peak_concurrency": 0,
+                "selected": len(commands),
+                "started": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "timeout": 0,
+                "deferred": len(commands),
+                "conflict": 0,
+            }
+        snapshot = read_queue_snapshot(
+            source_for_events,
+            f"PCLOUD_TOOLS_{service_name.upper()}_TRANSFER_STATE",
+        )
+        for queue_record in snapshot.records:
+            if queue_record.event_id:
+                queue_event_ids.setdefault((queue_record.path, queue_record.action), []).append(queue_record.event_id)
+                queue_event_ids.setdefault((queue_record.path, "*"), []).append(queue_record.event_id)
+        released_recovery_baselines = _released_recovery_baselines(
+            config.state_dir,
+            service_name,
+        )
+    for item in commands:
+        prepared = dict(item)
+        event_id = str(item.get("event_id") or "").strip()
+        if not event_id and config is not None and service is not None:
+            candidates = queue_event_ids.get(
+                (normalize_plan_path(item.get("path", "")), str(item.get("direction", ""))),
+                queue_event_ids.get((normalize_plan_path(item.get("path", "")), "*"), []),
+            )
+            if candidates:
+                event_id = candidates.pop(0)
+                prepared["event_id"] = event_id
+        if config is not None and service is not None and event_id:
+            baseline = released_recovery_baselines.get(
+                (
+                    event_id,
+                    normalize_plan_path(item.get("path", "")),
+                    str(item.get("direction", "") or "").strip(),
+                )
+            )
+            if baseline is not None:
+                recovery_attempt_id, recovery_fingerprint = baseline
+                prepared["_recovery_attempt_id"] = recovery_attempt_id
+                prepared["_recovery_pre_transfer_fingerprint"] = recovery_fingerprint
+        prepared.setdefault("attempt_id", event_id)
+        if str(prepared.get("direction", "")) == "download":
+            # event_id is absent on legacy records and attempt_id is shared by
+            # a batch, so keep an independent staging token per selected item.
+            prepared.setdefault("_staging_token", event_id or uuid.uuid4().hex)
+        prepared["selected_at"] = selected_at_utc
+        prepared["_selected_at_monotonic"] = selected_at
+        prepared_commands.append(prepared)
+
+    attempt_id = ""
+    if config is not None and service is not None and prepared_commands:
+        attempt = create_attempt(
+            config.state_dir,
+            service_name,
+            prepared_commands,
+            concurrency=concurrency or transfer_concurrency(config, service_name),
+        )
+        attempt_id = attempt.attempt_id
+        if attempt.issue:
+            return [], [ConfigIssue(level=attempt.issue.level, key=attempt.issue.key, message=attempt.issue.message)], {
+                "schema_version": "pcloud-tools-transfer-performance.v1",
+                "concurrency": concurrency or transfer_concurrency(config, service_name),
+                "peak_concurrency": 0,
+                "selected": len(prepared_commands),
+                "started": 0,
+                "succeeded": 0,
+                "failed": 0,
+                "timeout": 0,
+                "deferred": len(prepared_commands),
+                "conflict": 0,
+            }
+        for item in prepared_commands:
+            item["attempt_id"] = attempt_id
+        update_attempt(config.state_dir, service_name, attempt_id, phase="selected", status="in_progress")
+
+    def on_process_started(item: dict[str, object], pid: int) -> None:
+        del item
+        if config is None or service is None or not attempt_id:
+            return
+        mark_attempt_child(config.state_dir, service_name, attempt_id, pid, phase="running")
+
+    def on_process_finished(item: dict[str, object], pid: int) -> None:
+        del item
+        if config is None or service is None or not attempt_id:
+            return
+        clear_attempt_child(config.state_dir, service_name, attempt_id, pid)
+
+    def before_item(item: dict[str, object]) -> dict[str, object]:
+        updated = dict(item)
+        if updated.get("direction") == "download" and config is not None:
+            event_id = (
+                normalize_plan_path(updated.get("event_id", ""))
+                or str(updated.get("_staging_token") or "")
+                or str(updated.get("attempt_id") or "")
+            )
+            safe_id = "".join(char for char in event_id if char.isalnum())[:32] or uuid.uuid4().hex
+            original_staging = Path(str(updated.get("staging_path") or download_staging_dir(config) / "unknown.download"))
+            staging_path = original_staging.with_name(f"{original_staging.name}.{safe_id}.staging")
+            updated["staging_path"] = str(staging_path)
+            actual_command = updated.get("actual_command", updated.get("command", []))
+            if isinstance(actual_command, (list, tuple)) and len(actual_command) >= 4:
+                actual = list(actual_command)
+                actual[-1] = str(staging_path)
+                updated["actual_command"] = actual
+            mark_download_started(config, str(updated.get("path", "")))
+            staging_path.parent.mkdir(parents=True, exist_ok=True)
+        return updated
+
+    def after_item(result: dict[str, object]) -> tuple[dict[str, object], list[ConfigIssue]]:
+        updated = dict(result)
+        callback_issues: list[ConfigIssue] = []
+        direction = updated.get("direction")
+        returncode = updated.get("returncode")
+        path = normalize_plan_path(updated.get("path", ""))
+        if config is not None and direction == "upload" and returncode == 0:
+            before = updated.get("pre_transfer_fingerprint")
+            current = local_fingerprint(Path(str(updated.get("local_path") or "")))
+            updated["post_transfer_fingerprint"] = current.as_dict()
+            if isinstance(before, dict) and current.as_dict() != before:
+                candidate_journal_path = reset_upload_candidate_settling(config, path)
+                updated.update(
+                    {
+                        "source_changed_during_transfer": True,
+                        "settling_local": True,
+                        "tolerated": True,
+                        "retry_classification": "source-updated-during-transfer",
+                        "upload candidate journal file": str(candidate_journal_path),
+                        "phase": "deferred",
+                    }
+                )
+            else:
+                journal_path = mark_upload_completed(config, path, current)
+                candidate_journal_path = mark_upload_candidate_completed(config, path)
+                updated.update(
+                    {
+                        "upload origin journal state": "completed",
+                        "upload origin journal file": str(journal_path),
+                        "upload candidate journal state": "completed",
+                        "upload candidate journal file": str(candidate_journal_path),
+                    }
+                )
+        elif config is not None and direction == "download" and returncode == 0:
+            finalize_details, finalize_issues = _finalize_download_transfer(config, updated)
+            updated.update(finalize_details)
+            callback_issues.extend(finalize_issues)
+            if finalize_details.get("download conflict"):
+                updated["manual_review"] = True
+                updated["conflict"] = True
+        elif config is not None and direction == "download" and returncode != 0:
+            clear_download_suppression_record(config, str(updated.get("path", "")))
+        if config is not None and direction == "upload" and returncode not in {0, None}:
+            output = f"{updated.get('stdout', '')}\n{updated.get('stderr', '')}".lower()
+            if "source file is being updated" in output:
+                candidate_journal_path = reset_upload_candidate_settling(config, path)
+                updated.update(
+                    {
+                        "settling_local": True,
+                        "tolerated": True,
+                        "retry_classification": "source-updated-during-transfer",
+                        "upload candidate journal file": str(candidate_journal_path),
+                    }
+                )
+                callback_issues = [
+                    issue for issue in callback_issues
+                    if issue.key != "PCLOUD_TOOLS_TRANSFER_EXEC"
+                ]
+        if updated.get("selected_at") and updated.get("started_at"):
+            try:
+                started = datetime.fromisoformat(str(updated["started_at"]))
+                selected = datetime.fromisoformat(str(updated["selected_at"]))
+                updated["queue_wait_seconds"] = max(0.0, (started - selected).total_seconds())
+            except ValueError:
+                updated["queue_wait_seconds"] = None
+        return updated, callback_issues
+
+    lock_factory = None
+    if config is not None and service is not None:
+        def _path_lock_factory(item: dict[str, object]):
+            return transfer_path_lock(
+                config.state_dir,
+                service_name,
+                str(item.get("path", "")),
+                blocking=False,
+                timeout_seconds=0,
+            )
+
+        lock_factory = _path_lock_factory
+    session_context = (
+        writer_process_session(
+            config.state_dir,
+            service_name,
+            generation=f"{service_name}:executor",
+            blocking=False,
+        )
+        if config is not None and service is not None
+        else contextlib.nullcontext()
+    )
+    with session_context:
+        batch = run_transfer_batch(
+            prepared_commands,
+            timeout_seconds=timeout_seconds,
+            concurrency=concurrency or (transfer_concurrency(config, service_name) if config is not None else 1),
+            before_item=before_item,
+            after_item=after_item,
+            lock_factory=lock_factory,
+            on_process_started=on_process_started,
+            on_process_finished=on_process_finished,
+        )
+    settling_paths = {
+        normalize_plan_path(item.get("path", ""))
+        for item in batch.results
+        if item.get("settling_local")
+    }
+    if settling_paths:
+        batch.issues[:] = [
+            issue
+            for issue in batch.issues
+            if not (
+                issue.key == "PCLOUD_TOOLS_TRANSFER_EXEC"
+                and any(path and path in issue.message for path in settling_paths)
+            )
+        ]
+    if config is not None and service is not None and attempt_id:
+        child_uncertain = any(
+            isinstance(item.get("cleanup"), dict)
+            and not bool(item["cleanup"].get("terminated"))
+            for item in batch.results
+        ) or any(
+            bool(item.get("requires_child_exit_confirmation"))
+            or item.get("phase") == "child-uncertain"
+            for item in batch.results
+        )
+        cancelled = any(item.get("phase") == "cancelled" for item in batch.results)
+        status = (
+            "held"
+            if child_uncertain
+            else "cancelled"
+            if cancelled
+            else "completed"
+            if not any(issue.level == "error" for issue in batch.issues)
+            else "failed"
+        )
+        phase = "child-uncertain" if child_uncertain else status
+        attempt_fields: dict[str, object] = {
+            "performance": batch.performance,
+            "results": batch.results,
+        }
+        if not child_uncertain:
+            attempt_fields["child_pids"] = []
+        update_attempt(
+            config.state_dir,
+            service_name,
+            attempt_id,
+            phase=phase,
+            status=status,
+            **attempt_fields,
+        )
+    return batch.results, batch.issues, batch.performance
+
+
+def _execute_transfer_commands(
+    commands: list[dict[str, object]],
+    *,
+    timeout_seconds: int,
+    config: AppConfig | None = None,
+    service: ServiceDefinition | None = None,
+    concurrency: int | None = None,
+) -> tuple[list[dict[str, object]], list[ConfigIssue], dict[str, object]]:
+    """Serialize executor ticks for one service while retaining path locks.
+
+    The tick lock is separate from queue and journal locks, so a network wait
+    cannot block a watcher or poller from making a short state update.  A
+    competing tick is kept for the next scheduler cycle as deferred work.
+    """
+
+    if not commands:
+        return _execute_transfer_commands_impl(
+            commands,
+            timeout_seconds=timeout_seconds,
+            config=config,
+            service=service,
+            concurrency=concurrency,
+        )
+    if config is None or service is None:
+        return _execute_transfer_commands_impl(
+            commands,
+            timeout_seconds=timeout_seconds,
+            config=config,
+            service=service,
+            concurrency=concurrency,
+        )
+    try:
+        with transfer_tick_lock(config.state_dir, service.name, blocking=False):
+            return _execute_transfer_commands_impl(
+                commands,
+                timeout_seconds=timeout_seconds,
+                config=config,
+                service=service,
+                concurrency=concurrency,
+            )
+    except TransferStateError as exc:
+        # A lock conflict is normal scheduler backpressure; preserving the
+        # selected records as deferred avoids a recurring error notification.
+        now = datetime.now(timezone.utc).isoformat()
+        results = [
+            {
+                **item,
+                "attempt_id": str(item.get("attempt_id") or uuid.uuid4().hex),
+                "returncode": None,
+                "timed_out": False,
+                "deferred": True,
+                "deferred_reason": "executor tick already running",
+                "phase": "deferred",
+                "started_at": None,
+                "finished_at": now,
+                "execution_seconds": 0.0,
+                "stdout": "",
+                "stderr": "",
+            }
+            for item in commands
+        ]
+        performance = {
+            "schema_version": "pcloud-tools-transfer-performance.v1",
+            "batch_started_at": now,
+            "batch_elapsed_seconds": 0.0,
+            "concurrency": max(1, min(4, int(concurrency or transfer_concurrency(config, service.name)))),
+            "peak_concurrency": 0,
+            "selected": len(commands),
+            "started": 0,
+            "succeeded": 0,
+            "failed": 0,
+            "timeout": 0,
+            "deferred": len(commands),
+            "conflict": 0,
+        }
+        return results, [
+            ConfigIssue(
+                key="PCLOUD_TOOLS_TRANSFER_TICK_LOCK",
+                level="warning",
+                message=f"{service.name} transfer executor tick is already running: {exc}",
+            )
+        ], performance
 
 
 def _notify_abnormal_transfer_results(
@@ -7360,8 +8252,9 @@ def _read_chat_notify_journal(path: Path) -> dict[str, object]:
 
 
 def _write_chat_notify_journal(path: Path, journal: dict[str, object]) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, journal, ensure_ascii=True, sort_keys=True)
+    with state_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, journal, ensure_ascii=True, sort_keys=True)
 
 
 def _chat_notify_dedupe_key(
@@ -7415,6 +8308,7 @@ def _record_transfer_execution_state(
     results: list[dict[str, object]],
     *,
     mode: str = "dev-fake-rclone-transfer",
+    performance: dict[str, object] | None = None,
 ) -> Path:
     generated_at = datetime.now(timezone.utc).isoformat()
     payload = {
@@ -7424,9 +8318,12 @@ def _record_transfer_execution_state(
         "planned_transfer_commands": commands,
         "results": results,
     }
+    if performance is not None:
+        payload["performance"] = performance
     path = state.state_dir / "last-transfer.json"
-    path.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write_json(path, payload)
+    with state_lock(path):
+        path.parent.mkdir(parents=True, exist_ok=True)
+        atomic_write_json(path, payload)
     return path
 
 
@@ -7450,6 +8347,7 @@ def _successful_transfer_results(
             and item_direction == direction
             and item.get("returncode") == 0
             and not item.get("timed_out")
+            and not item.get("settling_local")
             and not item.get("manual_review")
             and not item.get("conflict")
         ):
@@ -7492,7 +8390,21 @@ def _consume_preview_report(paths: RuntimePaths, service: ServiceDefinition) -> 
     direction = "upload" if service.name == "pushd" else "download"
     successful, retained = _successful_transfer_results(state.last_transfer, direction)
     success_paths = {str(item.get("path", "")) for item in successful if item.get("path")}
-    planned_removals = tuple(record for record in source_records if record.path in success_paths)
+    success_event_ids = {
+        str(item.get("event_id") or "").strip()
+        for item in successful
+        if str(item.get("event_id") or "").strip()
+    }
+    source_event_ids = {record.event_id for record in source_records if record.event_id}
+    if success_event_ids and source_event_ids:
+        planned_removals = tuple(record for record in source_records if record.event_id in success_event_ids)
+    elif not source_event_ids:
+        # A legacy queue has no generation identity, so retain its historical
+        # path-only preview. Once IDs exist, a path match could consume a
+        # newer event and must remain unselected.
+        planned_removals = tuple(record for record in source_records if record.path in success_paths)
+    else:
+        planned_removals = ()
     matched_paths = {record.path for record in planned_removals}
     unmatched_successes = [
         item for item in successful
@@ -7512,6 +8424,7 @@ def _consume_preview_report(paths: RuntimePaths, service: ServiceDefinition) -> 
         "successful transfer results": len(successful),
         "retained transfer results": len(retained),
         "planned record removals": len(planned_removals),
+        "planned event_ids": sorted(success_event_ids),
         "unmatched successful transfers": len(unmatched_successes),
         "planned removal record details": _plan_records(planned_removals),
         "unmatched successful transfer details": unmatched_successes,
@@ -7547,6 +8460,11 @@ def _consume_run_report(
         for item in removals
         if isinstance(removals, list) and isinstance(item, dict) and item.get("path")
     ]
+    removal_event_ids = [
+        str(item.get("event_id", ""))
+        for item in removals
+        if isinstance(removals, list) and isinstance(item, dict) and item.get("event_id")
+    ]
 
     details["planned action"] = (
         f"remove {service.name} consumed transfer records"
@@ -7555,28 +8473,64 @@ def _consume_run_report(
     )
     details["consume gate status"] = "open: dev-state" if execute else "closed: preview-only"
     details["records to remove"] = len(removal_paths)
+    details["event_ids to remove"] = removal_event_ids
 
     if execute:
         load_result = load_config(paths)
+        recovery, pending_recovery_issue = _pending_transfer_recovery(
+            load_result.config,
+            service.name,
+        )
+        if pending_recovery_issue is not None:
+            issues.extend(recovery_issues(recovery))
+            issues.append(pending_recovery_issue)
         dev_issue = _dev_execute_issue(paths, load_result.config, f"{service.name} transfer consume run")
         if dev_issue:
             issues.append(dev_issue)
         if not has_errors(issues):
             before_count: int | None = None
             after_count: int | None = None
-            for path in removal_paths:
-                result = remove_plan_records(
+            if removal_event_ids:
+                result = consume_event_ids(
                     source_file,
+                    removal_event_ids,
                     f"PCLOUD_TOOLS_{service.name.upper()}_TRANSFER_CONSUME",
-                    path,
                     write=True,
                 )
-                if result.issue:
-                    issues.append(result.issue)
-                    break
-                if before_count is None:
-                    before_count = result.before_count
+                before_count = result.before_count
                 after_count = result.after_count
+                if result.issue:
+                    issues.append(
+                        ConfigIssue(level=result.issue.level, key=result.issue.key, message=result.issue.message)
+                    )
+                if result.stale_event_ids:
+                    issues.append(
+                        ConfigIssue(
+                            key="PCLOUD_TOOLS_TRANSFER_STALE_EVENT",
+                            level="warning",
+                            message="one or more selected event_id values were stale; current queue records were retained",
+                        )
+                    )
+            elif not removal_event_ids:
+                # The source may still be a legacy queue after a result was
+                # produced with a generated event_id (for example, an
+                # operator restored an old snapshot). In that case the
+                # planned records were selected by the legacy path policy and
+                # are safe to remove by path; a queue with IDs always yields
+                # removal_event_ids above.
+                for path in removal_paths:
+                    result = remove_plan_records(
+                        source_file,
+                        f"PCLOUD_TOOLS_{service.name.upper()}_TRANSFER_CONSUME",
+                        path,
+                        write=True,
+                    )
+                    if result.issue:
+                        issues.append(result.issue)
+                        break
+                    if before_count is None:
+                        before_count = result.before_count
+                    after_count = result.after_count
             details["records before"] = before_count if before_count is not None else 0
             details["records after"] = after_count if after_count is not None else 0
             details["state writes"] = str(source_file) if removal_paths else "none"
@@ -8407,39 +9361,86 @@ def _consume_successful_transfer_results(
     transfer_results: list[dict[str, object]],
 ) -> tuple[dict[str, object], list[ConfigIssue]]:
     source_file, source_records, source_issues = _consume_source_records(config, state, service)
-    success_paths = {
-        str(item.get("path", ""))
+    successful_results = [
+        item
         for item in transfer_results
         if (
             item.get("returncode") == 0
             and not item.get("timed_out")
+            and not item.get("settling_local")
             and not item.get("manual_review")
             and not item.get("conflict")
             and item.get("path")
         )
+    ]
+    success_paths = {
+        str(item.get("path", ""))
+        for item in successful_results
     }
-    planned_removals = tuple(record for record in source_records if record.path in success_paths)
     issues = list(source_issues)
+    success_event_ids = {
+        str(item.get("event_id") or "").strip()
+        for item in successful_results
+        if str(item.get("event_id") or "").strip()
+    }
+    source_event_ids = {record.event_id for record in source_records if record.event_id}
+    if success_event_ids and source_event_ids:
+        planned_removals = tuple(
+            record for record in source_records if record.event_id in success_event_ids
+        )
+    elif not source_event_ids:
+        # Legacy queues have no generation identity. Preserve their historical
+        # path-only consume behavior; once IDs exist, path-only consume could
+        # remove a newer record and is therefore withheld.
+        planned_removals = tuple(record for record in source_records if record.path in success_paths)
+    else:
+        planned_removals = ()
     before_count: int | None = None
     after_count: int | None = None
-    for record in planned_removals:
-        result = remove_plan_records(
+    stale_event_ids: tuple[str, ...] = ()
+    if success_event_ids and source_event_ids:
+        consumed = consume_event_ids(
             source_file,
+            success_event_ids,
             f"PCLOUD_TOOLS_{service.name.upper()}_TRANSFER_AUTOMATION_CONSUME",
-            record.path,
             write=True,
         )
-        if result.issue:
-            issues.append(result.issue)
-            break
-        if before_count is None:
-            before_count = result.before_count
-        after_count = result.after_count
+        before_count = consumed.before_count
+        after_count = consumed.after_count
+        stale_event_ids = consumed.stale_event_ids
+        if consumed.issue:
+            issues.append(
+                ConfigIssue(level=consumed.issue.level, key=consumed.issue.key, message=consumed.issue.message)
+            )
+        if stale_event_ids:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_TRANSFER_STALE_EVENT",
+                    level="warning",
+                    message="successful transfer event_id was no longer present; newer queue state was retained",
+                )
+            )
+    elif not source_event_ids:
+        for record in planned_removals:
+            result = remove_plan_records(
+                source_file,
+                f"PCLOUD_TOOLS_{service.name.upper()}_TRANSFER_AUTOMATION_CONSUME",
+                record.path,
+                write=True,
+            )
+            if result.issue:
+                issues.append(result.issue)
+                break
+            if before_count is None:
+                before_count = result.before_count
+            after_count = result.after_count
     details: dict[str, object] = {
         "consume source file": str(source_file),
         "successful transfer paths": sorted(success_paths),
         "records consumed": len(planned_removals) if not has_errors(issues) else 0,
         "consumed record details": _plan_records(planned_removals),
+        "consumed event_ids": sorted(success_event_ids),
+        "stale event_ids": list(stale_event_ids),
         "consume records before": before_count if before_count is not None else 0,
         "consume records after": after_count if after_count is not None else 0,
         "consume state writes": str(source_file) if planned_removals and not has_errors(issues) else "none",
@@ -8463,6 +9464,21 @@ def _transfer_automation_run_report(
     execute = getattr(args, "execute", False)
     consume_on_success = getattr(args, "consume_on_success", False)
     max_records = int(getattr(args, "max_records", 1))
+    if execute:
+        _recovery, pending_recovery_issue = _pending_transfer_recovery(
+            load_result.config,
+            service.name,
+            defer_if_tick_busy=True,
+        )
+        if pending_recovery_issue is not None:
+            return _transfer_recovery_block_report(
+                args,
+                paths,
+                service,
+                command=f"{service.name} transfer automation-run",
+                summary=f"{service.name} transfer automation-run refused until recovery completes",
+            )
+    tick_busy = _transfer_tick_busy(load_result.config, service.name) if execute else False
     issues = list(load_result.issues) + list(state.issues)
     shadow_check, shadow_issues = _shadow_report_check(
         getattr(args, "report_path", None),
@@ -8474,15 +9490,18 @@ def _transfer_automation_run_report(
     automation_run_gate_open = automation_run_gate_env == automation_run_spec.expected_value
     startup_cleanup_details: dict[str, object] = {"enabled": "no"}
     startup_cleanup_issues: list[ConfigIssue] = []
+    config_valid = not has_errors(load_result.issues)
     cleanup_can_run = (
         service.name == "pushd"
         and execute
+        and config_valid
         and real_gate_open
         and automation_gate_open
         and automation_run_gate_open
         and shadow_check.get("status") == "ok"
         and consume_on_success
         and max_records > 0
+        and not tick_busy
     )
     if cleanup_can_run:
         startup_cleanup_details, startup_cleanup_issues = _pushd_missing_local_startup_cleanup(load_result.config)
@@ -8602,6 +9621,18 @@ def _transfer_automation_run_report(
     commands = _transfer_command_records(load_result.config, service, executable_records, rclone_bin=rclone_bin)
     transfer_results: list[dict[str, object]] = []
     transfer_state_file: Path | None = None
+    performance: dict[str, object] = {
+        "schema_version": "pcloud-tools-transfer-performance.v1",
+        "concurrency": transfer_concurrency(load_result.config, service.name),
+        "peak_concurrency": 0,
+        "selected": execution_command_count,
+        "started": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "timeout": 0,
+        "deferred": len(deferred_records),
+        "conflict": 0,
+    }
     consume_details: dict[str, object] = {
         "records consumed": 0,
         "consume state writes": "none",
@@ -8618,10 +9649,11 @@ def _transfer_automation_run_report(
         and not rclone_issue
     )
     if execute and runnable and execution_command_count > 0 and not has_errors(issues):
-        transfer_results, execution_issues = _execute_transfer_commands(
+        transfer_results, execution_issues, performance = _execute_transfer_commands(
             commands,
             timeout_seconds=load_result.config.transfer_exec_timeout_seconds,
             config=load_result.config,
+            service=service,
         )
         transfer_state_file = _record_transfer_execution_state(
             state,
@@ -8629,6 +9661,7 @@ def _transfer_automation_run_report(
             commands,
             transfer_results,
             mode="real-rclone-automation-transfer",
+            performance=performance,
         )
         consume_details, consume_issues = _consume_successful_transfer_results(
             load_result.config,
@@ -8705,6 +9738,7 @@ def _transfer_automation_run_report(
         "manual review transfer record details": _plan_records(manual_review_records),
         "missing local startup cleanup": startup_cleanup_details,
         "transfer results": transfer_results,
+        "performance": performance,
         "chat notify results": notify_details,
         **consume_details,
         **chat_notify_status(load_result.config),
@@ -8734,6 +9768,21 @@ def _real_transfer_run_report(
     paths: RuntimePaths,
     service: ServiceDefinition,
 ) -> CommandReport:
+    if getattr(args, "execute", False):
+        load_result = load_config(paths)
+        _recovery, pending_recovery_issue = _pending_transfer_recovery(
+            load_result.config,
+            service.name,
+            defer_if_tick_busy=True,
+        )
+        if pending_recovery_issue is not None:
+            return _transfer_recovery_block_report(
+                args,
+                paths,
+                service,
+                command=f"{service.name} transfer real-run",
+                summary=f"{service.name} real transfer execution refused until recovery completes",
+            )
     check_report = _real_transfer_check_report(
         _real_gate_args(args, allow_confirmed_subset=True),
         paths,
@@ -8815,6 +9864,8 @@ def _real_transfer_run_report(
                 path=str(item.get("path", "")),
                 action=str(item.get("direction", "")),
                 reason=str(item.get("reason", "")),
+                event_id=str(item.get("event_id") or "") or None,
+                enqueued_at=str(item.get("enqueued_at") or "") or None,
             )
             for item in planned_commands
             if isinstance(item, dict) and item.get("path")
@@ -8823,16 +9874,29 @@ def _real_transfer_run_report(
     ) if rclone_bin else planned_commands
     transfer_results: list[dict[str, object]] = []
     transfer_state_file: Path | None = None
+    performance: dict[str, object] = {
+        "schema_version": "pcloud-tools-transfer-performance.v1",
+        "concurrency": transfer_concurrency(load_result.config, service.name),
+        "peak_concurrency": 0,
+        "selected": len(planned_commands),
+        "started": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "timeout": 0,
+        "deferred": 0,
+        "conflict": 0,
+    }
     consume_details: dict[str, object] = {
         "records consumed": 0,
         "consume state writes": "none",
     }
     notify_details: list[dict[str, object]] = []
     if execute and runnable and not has_errors(issues):
-        transfer_results, execution_issues = _execute_transfer_commands(
+        transfer_results, execution_issues, performance = _execute_transfer_commands(
             real_commands,
             timeout_seconds=load_result.config.transfer_exec_timeout_seconds,
             config=load_result.config,
+            service=service,
         )
         issues.extend(execution_issues)
         notify_details, notify_issues = _notify_abnormal_transfer_results(
@@ -8847,6 +9911,7 @@ def _real_transfer_run_report(
             real_commands,
             transfer_results,
             mode="real-rclone-transfer",
+            performance=performance,
         )
         if getattr(args, "consume_policy", None) == "remove-on-success-retain-on-failure" and not has_errors(issues):
             consume_details, consume_issues = _consume_successful_transfer_results(
@@ -8911,6 +9976,7 @@ def _real_transfer_run_report(
             "all planned transfer commands": all_planned_commands,
             "planned transfer commands": real_commands,
             "transfer results": transfer_results,
+            "performance": performance,
             "chat notify results": notify_details,
             "automatic queue/change consumption": (
                 "yes" if consume_details.get("consume state writes") != "none" else "no"
@@ -8944,9 +10010,25 @@ def _service_transfer_report(
     *,
     transfer_command: str,
     execute: bool = False,
+    max_records: int | None = None,
 ) -> CommandReport:
     load_result = load_config(paths)
     state = read_service_daemon_state(load_result.config, service.name)
+    if execute:
+        _recovery, pending_recovery_issue = _pending_transfer_recovery(
+            load_result.config,
+            service.name,
+            defer_if_tick_busy=True,
+        )
+        if pending_recovery_issue is not None:
+            return _transfer_recovery_block_report(
+                argparse.Namespace(execute=True),
+                paths,
+                service,
+                command=f"{service.name} transfer {transfer_command}",
+                summary=f"{service.name} transfer execution refused until recovery completes",
+            )
+    tick_busy = _transfer_tick_busy(load_result.config, service.name) if execute else False
     issues = list(load_result.issues) + list(state.issues)
     if service.name == "pushd":
         plan, scope = build_pushd_plan(load_result.config, state)
@@ -8956,7 +10038,9 @@ def _service_transfer_report(
             load_result.config, plan.upload_records
         )
         settled_upload_records, settling_upload_records = _split_settled_local_upload_records(
-            load_result.config, present_upload_records, write=execute
+            load_result.config,
+            present_upload_records,
+            write=execute and not tick_busy,
         )
         records, manual_review_records = _filter_manual_review_transfers(
             settled_upload_records,
@@ -9002,10 +10086,38 @@ def _service_transfer_report(
     if manual_review_issue:
         issues.append(manual_review_issue)
 
+    all_records = records
+    if max_records is not None:
+        selected_records = records[: max(0, int(max_records))]
+        deferred_records = records[max(0, int(max_records)) :]
+        if int(max_records) <= 0:
+            issues.append(
+                ConfigIssue(
+                    key="PCLOUD_TOOLS_TRANSFER_BATCH_LIMIT",
+                    level="error",
+                    message="transfer batch limit must be a positive integer",
+                )
+            )
+    else:
+        selected_records = records
+        deferred_records = ()
+
     execution_issue: ConfigIssue | None = None
     rclone_bin: str | None = None
     transfer_results: list[dict[str, object]] = []
     transfer_state_file: Path | None = None
+    performance: dict[str, object] = {
+        "schema_version": "pcloud-tools-transfer-performance.v1",
+        "concurrency": transfer_concurrency(load_result.config, service.name),
+        "peak_concurrency": 0,
+        "selected": len(selected_records),
+        "started": 0,
+        "succeeded": 0,
+        "failed": 0,
+        "timeout": 0,
+        "deferred": 0,
+        "conflict": 0,
+    }
     notify_details: list[dict[str, object]] = []
     if execute:
         execution_issue = _transfer_fake_rclone_issue(
@@ -9016,12 +10128,13 @@ def _service_transfer_report(
         else:
             rclone_bin = str(Path(load_result.config.rclone_bin).expanduser().resolve(strict=True))
 
-    commands = _transfer_command_records(load_result.config, service, records, rclone_bin=rclone_bin)
+    commands = _transfer_command_records(load_result.config, service, selected_records, rclone_bin=rclone_bin)
     if execute and not execution_issue and not has_errors(issues):
-        transfer_results, execution_issues = _execute_transfer_commands(
+        transfer_results, execution_issues, performance = _execute_transfer_commands(
             commands,
             timeout_seconds=load_result.config.transfer_exec_timeout_seconds,
             config=load_result.config,
+            service=service,
         )
         issues.extend(execution_issues)
         notify_details, notify_issues = _notify_abnormal_transfer_results(
@@ -9030,7 +10143,13 @@ def _service_transfer_report(
             transfer_results,
         )
         issues.extend(notify_issues)
-        transfer_state_file = _record_transfer_execution_state(state, service, commands, transfer_results)
+        transfer_state_file = _record_transfer_execution_state(
+            state,
+            service,
+            commands,
+            transfer_results,
+            performance=performance,
+        )
 
     if transfer_command == "preview":
         implementation_status = "transfer command preview only; rclone is not executed"
@@ -9079,8 +10198,13 @@ def _service_transfer_report(
         "core dir": str(load_result.config.core_dir),
         "core remote": load_result.config.core_remote,
         "planned transfer commands": commands,
+        "planned transfer command count": len(commands),
+        "deferred transfer command count": len(deferred_records),
+        "deferred transfer record details": _plan_records(deferred_records),
+        "total planned transfer records": len(all_records),
         "manual review transfer record details": _plan_records(manual_review_records),
         "chat notify results": notify_details,
+        "performance": performance,
         **chat_notify_status(load_result.config),
         **counts,
     }
@@ -9138,14 +10262,39 @@ def _transfer_executor_run_report(
 ) -> CommandReport:
     execute = getattr(args, "execute", False)
     consume_on_success = getattr(args, "consume_on_success", False)
+    max_records = int(getattr(args, "max_records", 1))
+    tick_busy = False
+    if execute:
+        load_result = load_config(paths)
+        tick_busy = _transfer_tick_busy(load_result.config, service.name)
+        _recovery, pending_recovery_issue = _pending_transfer_recovery(
+            load_result.config,
+            service.name,
+            defer_if_tick_busy=True,
+        )
+        if pending_recovery_issue is not None:
+            return _transfer_recovery_block_report(
+                args,
+                paths,
+                service,
+                command=f"{service.name} transfer executor-run",
+                summary=f"{service.name} transfer executor tick refused until recovery completes",
+            )
     startup_cleanup_details: dict[str, object] = {"enabled": "no"}
     startup_cleanup_issues: list[ConfigIssue] = []
-    if service.name == "pushd" and execute:
+    if service.name == "pushd" and execute and max_records > 0 and not tick_busy:
         load_result = load_config(paths)
         # Dev executor-run intentionally performs missing-local queue cleanup at tick start.
         # Public automation-run waits until its execution gates are open before mutating queue state.
-        startup_cleanup_details, startup_cleanup_issues = _pushd_missing_local_startup_cleanup(load_result.config)
-    preview_report = _service_transfer_report(paths, service, transfer_command="run", execute=False)
+        if not has_errors(load_result.issues):
+            startup_cleanup_details, startup_cleanup_issues = _pushd_missing_local_startup_cleanup(load_result.config)
+    preview_report = _service_transfer_report(
+        paths,
+        service,
+        transfer_command="run",
+        execute=False,
+        max_records=max_records,
+    )
     preview_details = dict(preview_report.details)
     manual_review_count = int(preview_details.get("manual review transfer records") or 0)
     planned_commands = preview_details.get("planned transfer commands")
@@ -9167,17 +10316,34 @@ def _transfer_executor_run_report(
 
     transfer_report = preview_report
     if execute and not manual_review_blocked and not has_errors(startup_cleanup_issues):
-        transfer_report = _service_transfer_report(paths, service, transfer_command="run", execute=True)
+        transfer_report = _service_transfer_report(
+            paths,
+            service,
+            transfer_command="run",
+            execute=True,
+            max_records=max_records,
+        )
         issues = [*_config_issues_from_report(transfer_report), *startup_cleanup_issues]
 
     transfer_errors = any(issue.level == "error" for issue in transfer_report.issues)
+    transfer_details = dict(transfer_report.details)
+    transfer_direction = "upload" if service.name == "pushd" else "download"
+    successful_transfer_results, _retained_transfer_results = _successful_transfer_results(
+        {"results": transfer_details.get("transfer results")},
+        transfer_direction,
+    )
     consume_report: CommandReport | None = None
-    if execute and consume_on_success and not transfer_errors and planned_command_count > 0:
+    if (
+        execute
+        and consume_on_success
+        and not transfer_errors
+        and planned_command_count > 0
+        and successful_transfer_results
+    ):
         consume_args = argparse.Namespace(execute=True, json=True, xbar=False)
         consume_report = _consume_run_report(consume_args, paths, service)
         issues.extend(_config_issues_from_report(consume_report))
 
-    transfer_details = dict(transfer_report.details)
     consume_details = dict(consume_report.details) if consume_report else {}
     state_writes: list[str] = []
     transfer_state_writes = str(transfer_details.get("state writes", "none"))
@@ -9205,6 +10371,7 @@ def _transfer_executor_run_report(
         "real execution can run": "no",
         "execute requested": "yes" if execute else "no",
         "consume on success requested": "yes" if consume_on_success else "no",
+        "executor batch limit": max_records,
         "state writes": state_writes if state_writes else "none",
         "planned transfer command count": planned_command_count,
         "manual review transfer records": manual_review_count,
@@ -9238,6 +10405,9 @@ def _transfer_executor_run_report(
                 "queued items",
                 "execution gate",
                 "transfer results",
+                "performance",
+                "deferred transfer command count",
+                "total planned transfer records",
             }
         }
     )
@@ -9277,6 +10447,10 @@ def cmd_service_transfer(
         return exit_code_for_report(report)
     if args.transfer_command == "automation-run":
         report = _transfer_automation_run_report(args, paths, service)
+        print_report(report, args)
+        return exit_code_for_report(report)
+    if args.transfer_command == "recovery" and getattr(args, "recovery_command", None) in {"preview", "run"}:
+        report = _transfer_recovery_report(args, paths, service)
         print_report(report, args)
         return exit_code_for_report(report)
     if args.transfer_command == "real-run":

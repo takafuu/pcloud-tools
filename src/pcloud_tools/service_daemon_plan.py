@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import fnmatch
+import contextlib
 import json
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -14,6 +15,7 @@ from .io_utils import atomic_write_json, atomic_write_text
 from .manager_ignore import manager_ignore_match
 from .service_daemon_state import ServiceDaemonState
 from .sync_scope import SyncScopeInfo, sync_allowlist_info
+from .transfer_state import new_event_id, writer_state_lock
 
 
 @dataclass(frozen=True)
@@ -21,6 +23,10 @@ class PlanRecord:
     path: str
     action: str
     reason: str
+    event_id: str | None = None
+    enqueued_at: str | None = None
+    observed_at: str | None = None
+    extra: dict[str, Any] | None = None
 
 
 @dataclass(frozen=True)
@@ -178,7 +184,8 @@ def _write_upload_candidate_journal(
         "generated_at": _now(),
         "records": [records[key] for key in sorted(records)],
     }
-    return atomic_write_json(path, payload, sort_keys=True)
+    with writer_state_lock(path):
+        return atomic_write_json(path, payload, sort_keys=True)
 
 
 def upload_candidate_was_uploaded(config: AppConfig, path: str) -> bool:
@@ -186,7 +193,7 @@ def upload_candidate_was_uploaded(config: AppConfig, path: str) -> bool:
     return bool(entry and entry.get("uploaded_at"))
 
 
-def classify_upload_candidates(
+def _classify_upload_candidates_unlocked(
     config: AppConfig,
     records: tuple[PlanRecord, ...],
     *,
@@ -235,6 +242,7 @@ def classify_upload_candidates(
         same_fingerprint = previous == fingerprint and stable_since is not None
         if not same_fingerprint:
             stable_since = now
+        assert stable_since is not None
 
         updated[path] = {
             "path": path,
@@ -244,11 +252,18 @@ def classify_upload_candidates(
             **({"uploaded_at": uploaded_at} if uploaded_at else {}),
         }
         stable_age = max(0, int((now - stable_since).total_seconds()))
-        effective_record = (
-            PlanRecord(path, "upload", record.reason)
-            if fswatch_candidate and record.action in {"delete", "rename"}
-            else record
-        )
+        effective_record = record
+        if fswatch_candidate and record.action in {"delete", "rename"}:
+            extra = dict(record.extra or {})
+            extra.setdefault("_queue_action", record.action)
+            effective_record = PlanRecord(
+                path,
+                "upload",
+                record.reason,
+                event_id=record.event_id,
+                enqueued_at=record.enqueued_at,
+                extra=extra,
+            )
         if settle_seconds > 0 and stable_age < settle_seconds:
             settling.append(
                 PlanRecord(
@@ -274,33 +289,63 @@ def classify_upload_candidates(
     )
 
 
+def classify_upload_candidates(
+    config: AppConfig,
+    records: tuple[PlanRecord, ...],
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = False,
+) -> UploadCandidateClassification:
+    # Preview and status commands must stay side-effect free.  Acquiring the
+    # persistent journal lock creates its parent directory even when no
+    # journal exists, so only take the lock for the write path.
+    if not write:
+        return _classify_upload_candidates_unlocked(
+            config,
+            records,
+            observed_at=observed_at,
+            write=False,
+        )
+    with writer_state_lock(_upload_candidate_journal_path(config)):
+        return _classify_upload_candidates_unlocked(
+            config,
+            records,
+            observed_at=observed_at,
+            write=write,
+        )
+
+
 def reset_upload_candidate_settling(config: AppConfig, path: str) -> Path:
     normalized = normalize_plan_path(path)
-    journal = _read_upload_candidate_journal(config)
-    existing = dict(journal.get(normalized, {}))
-    now_text = _now()
-    journal[normalized] = {
-        "path": normalized,
-        "fingerprint": _fingerprint_payload(local_fingerprint(config.core_dir / normalized)),
-        "stable_since": now_text,
-        "observed_at": now_text,
-        **({"uploaded_at": existing["uploaded_at"]} if existing.get("uploaded_at") else {}),
-    }
-    return _write_upload_candidate_journal(config, journal)
+    journal_path = _upload_candidate_journal_path(config)
+    with writer_state_lock(journal_path):
+        journal = _read_upload_candidate_journal(config)
+        existing = dict(journal.get(normalized, {}))
+        now_text = _now()
+        journal[normalized] = {
+            "path": normalized,
+            "fingerprint": _fingerprint_payload(local_fingerprint(config.core_dir / normalized)),
+            "stable_since": now_text,
+            "observed_at": now_text,
+            **({"uploaded_at": existing["uploaded_at"]} if existing.get("uploaded_at") else {}),
+        }
+        return _write_upload_candidate_journal(config, journal)
 
 
 def mark_upload_candidate_completed(config: AppConfig, path: str) -> Path:
     normalized = normalize_plan_path(path)
-    journal = _read_upload_candidate_journal(config)
-    now_text = _now()
-    journal[normalized] = {
-        "path": normalized,
-        "fingerprint": _fingerprint_payload(local_fingerprint(config.core_dir / normalized)),
-        "stable_since": now_text,
-        "observed_at": now_text,
-        "uploaded_at": now_text,
-    }
-    return _write_upload_candidate_journal(config, journal)
+    journal_path = _upload_candidate_journal_path(config)
+    with writer_state_lock(journal_path):
+        journal = _read_upload_candidate_journal(config)
+        now_text = _now()
+        journal[normalized] = {
+            "path": normalized,
+            "fingerprint": _fingerprint_payload(local_fingerprint(config.core_dir / normalized)),
+            "stable_since": now_text,
+            "observed_at": now_text,
+            "uploaded_at": now_text,
+        }
+        return _write_upload_candidate_journal(config, journal)
 
 
 def _read_json_list(path: Path, key_prefix: str) -> tuple[list[Any], ConfigIssue | None]:
@@ -339,10 +384,15 @@ def _record_from_item(item: Any, default_action: str = "sync") -> PlanRecord:
     if isinstance(item, str):
         return PlanRecord(path=normalize_plan_path(item), action=default_action, reason="-")
     if isinstance(item, dict):
+        known = {"path", "action", "op", "reason", "event_id", "enqueued_at", "observed_at"}
         return PlanRecord(
             path=normalize_plan_path(item.get("path", "")),
             action=str(item.get("action", item.get("op", default_action))),
             reason=str(item.get("reason", "-")),
+            event_id=str(item.get("event_id")).strip() if item.get("event_id") else None,
+            enqueued_at=str(item.get("enqueued_at")).strip() if item.get("enqueued_at") else None,
+            observed_at=str(item.get("observed_at")).strip() if item.get("observed_at") else None,
+            extra={key: value for key, value in item.items() if key not in known},
         )
     return PlanRecord(path="", action=default_action, reason="invalid queue item")
 
@@ -390,15 +440,34 @@ def _record_payload(
     reason: str,
     *,
     enqueued_at: str | None = None,
-) -> dict[str, str]:
-    payload = {"path": path, "action": action, "reason": reason}
+    event_id: str | None = None,
+    observed_at: str | None = None,
+    extra: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    payload: dict[str, Any] = dict(extra or {})
+    payload.update({"path": path, "action": action, "reason": reason})
     if enqueued_at:
         payload["enqueued_at"] = enqueued_at
+    if event_id:
+        payload["event_id"] = event_id
+    if observed_at:
+        payload["observed_at"] = observed_at
     return payload
 
 
-def record_payloads(records: tuple[PlanRecord, ...]) -> list[dict[str, str]]:
-    return [_record_payload(record.path, record.action, record.reason) for record in records]
+def record_payloads(records: tuple[PlanRecord, ...]) -> list[dict[str, Any]]:
+    return [
+        _record_payload(
+            record.path,
+            record.action,
+            record.reason,
+            enqueued_at=record.enqueued_at,
+            event_id=record.event_id,
+            observed_at=record.observed_at,
+            extra=record.extra,
+        )
+        for record in records
+    ]
 
 
 def append_plan_record(
@@ -408,20 +477,24 @@ def append_plan_record(
     *,
     include_enqueued_at: bool = False,
 ) -> PlanUpdateResult:
-    payload, issue = _read_json_list(path, key_prefix)
-    if issue:
-        return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
-    updated = [
-        *payload,
-        _record_payload(
-            record.path,
-            record.action,
-            record.reason,
-            enqueued_at=_now() if include_enqueued_at else None,
-        ),
-    ]
-    atomic_write_json(path, updated)
-    return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
+    with writer_state_lock(path):
+        payload, issue = _read_json_list(path, key_prefix)
+        if issue:
+            return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
+        updated = [
+            *payload,
+            _record_payload(
+                record.path,
+                record.action,
+                record.reason,
+                enqueued_at=_now() if include_enqueued_at else record.enqueued_at,
+                event_id=record.event_id or new_event_id(),
+                observed_at=record.observed_at or _now(),
+                extra=record.extra,
+            ),
+        ]
+        atomic_write_json(path, updated)
+        return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
 
 
 def append_plan_record_with_policy(
@@ -432,71 +505,105 @@ def append_plan_record_with_policy(
     max_records: int,
     enqueued_at: str | None = None,
 ) -> PlanAppendPolicyResult:
-    payload, issue = _read_json_list(path, key_prefix)
-    if issue:
-        return PlanAppendPolicyResult(
-            file=path,
-            before_count=0,
-            after_count=0,
-            appended=False,
-            skipped_reason="state read failed",
-            issue=issue,
-        )
-    before_count = len(payload)
-    for item in payload:
-        existing = _record_from_item(item, record.action)
-        if existing.path == record.path and existing.action == record.action:
+    with writer_state_lock(path):
+        payload, issue = _read_json_list(path, key_prefix)
+        if issue:
+            return PlanAppendPolicyResult(
+                file=path,
+                before_count=0,
+                after_count=0,
+                appended=False,
+                skipped_reason="state read failed",
+                issue=issue,
+            )
+        before_count = len(payload)
+        replacement_index: int | None = None
+        replacement: dict[str, Any] | None = None
+        for index, item in enumerate(payload):
+            existing = _record_from_item(item, record.action)
+            if existing.path == record.path and existing.action == record.action:
+                replacement_index = index
+                existing_payload = dict(item) if isinstance(item, dict) else {}
+                first_enqueued_at = existing.enqueued_at or enqueued_at or record.enqueued_at or _now()
+                replacement = _record_payload(
+                    record.path,
+                    record.action,
+                    record.reason,
+                    enqueued_at=first_enqueued_at,
+                    event_id=record.event_id or new_event_id(),
+                    observed_at=record.observed_at or _now(),
+                    extra={**existing_payload, **(record.extra or {})},
+                )
+                break
+        if replacement_index is not None and replacement is not None:
+            updated = list(payload)
+            updated[replacement_index] = replacement
+            atomic_write_json(path, updated)
+            return PlanAppendPolicyResult(
+                file=path,
+                before_count=before_count,
+                after_count=before_count,
+                appended=True,
+                skipped_reason="replaced generation",
+            )
+        if max_records >= 0 and before_count >= max_records:
             return PlanAppendPolicyResult(
                 file=path,
                 before_count=before_count,
                 after_count=before_count,
                 appended=False,
-                skipped_reason="duplicate path/action",
+                skipped_reason="queue limit reached",
+                issue=ConfigIssue(
+                    key=key_prefix,
+                    level="warning",
+                    message=f"plan state already has {before_count} records; limit is {max_records}",
+                ),
             )
-    if max_records >= 0 and before_count >= max_records:
+        updated = [
+            *payload,
+            _record_payload(
+                record.path,
+                record.action,
+                record.reason,
+                enqueued_at=enqueued_at or record.enqueued_at,
+                event_id=record.event_id or new_event_id(),
+                observed_at=record.observed_at or _now(),
+                extra=record.extra,
+            ),
+        ]
+        atomic_write_json(path, updated)
         return PlanAppendPolicyResult(
             file=path,
             before_count=before_count,
-            after_count=before_count,
-            appended=False,
-            skipped_reason="queue limit reached",
-            issue=ConfigIssue(
-                key=key_prefix,
-                level="warning",
-                message=f"plan state already has {before_count} records; limit is {max_records}",
-            ),
+            after_count=len(updated),
+            appended=True,
+            skipped_reason="",
         )
-    updated = [*payload, _record_payload(record.path, record.action, record.reason, enqueued_at=enqueued_at)]
-    atomic_write_json(path, updated)
-    return PlanAppendPolicyResult(
-        file=path,
-        before_count=before_count,
-        after_count=len(updated),
-        appended=True,
-        skipped_reason="",
-    )
 
 
 def clear_plan_records(path: Path, key_prefix: str) -> PlanUpdateResult:
-    payload, issue = _read_json_list(path, key_prefix)
-    if issue:
-        return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
-    atomic_write_json(path, [])
-    return PlanUpdateResult(file=path, before_count=len(payload), after_count=0)
+    with writer_state_lock(path):
+        payload, issue = _read_json_list(path, key_prefix)
+        if issue:
+            return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
+        atomic_write_json(path, [])
+        return PlanUpdateResult(file=path, before_count=len(payload), after_count=0)
 
 
 def remove_plan_records(path: Path, key_prefix: str, target_path: str, *, write: bool = True) -> PlanUpdateResult:
-    payload, issue = _read_json_list(path, key_prefix)
-    if issue:
-        return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
-    normalized_target = normalize_plan_path(target_path)
-    updated = [
-        item for item in payload
-        if normalize_plan_path(item.get("path", "") if isinstance(item, dict) else item) != normalized_target
-    ]
-    if write:
-        atomic_write_json(path, updated)
-    return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
+    lock_context = writer_state_lock(path) if write else contextlib.nullcontext()
+    with lock_context:
+        payload, issue = _read_json_list(path, key_prefix)
+        if issue:
+            return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
+        normalized_target = normalize_plan_path(target_path)
+        updated = [
+            item for item in payload
+            if normalize_plan_path(item.get("path", "") if isinstance(item, dict) else item) != normalized_target
+        ]
+        if write:
+            atomic_write_json(path, updated)
+        return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
 
 
 def remove_plan_record_exact(
@@ -509,28 +616,30 @@ def remove_plan_record_exact(
     write: bool = True,
     max_records: int | None = 1,
 ) -> PlanUpdateResult:
-    payload, issue = _read_json_list(path, key_prefix)
-    if issue:
-        return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
-    normalized_target = normalize_plan_path(target_path)
-    normalized_action = str(target_action or "").strip()
-    updated: list[Any] = []
-    removed = 0
-    for item in payload:
-        record = _record_from_item(item, "upload")
-        matches = (
-            record.path == normalized_target
-            and record.action == normalized_action
-            and (target_reason is None or record.reason == target_reason)
-            and (max_records is None or removed < max_records)
-        )
-        if matches:
-            removed += 1
-            continue
-        updated.append(item)
-    if write:
-        atomic_write_json(path, updated)
-    return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
+    lock_context = writer_state_lock(path) if write else contextlib.nullcontext()
+    with lock_context:
+        payload, issue = _read_json_list(path, key_prefix)
+        if issue:
+            return PlanUpdateResult(file=path, before_count=0, after_count=0, issue=issue)
+        normalized_target = normalize_plan_path(target_path)
+        normalized_action = str(target_action or "").strip()
+        updated: list[Any] = []
+        removed = 0
+        for item in payload:
+            record = _record_from_item(item, "upload")
+            matches = (
+                record.path == normalized_target
+                and record.action == normalized_action
+                and (target_reason is None or record.reason == target_reason)
+                and (max_records is None or removed < max_records)
+            )
+            if matches:
+                removed += 1
+                continue
+            updated.append(item)
+        if write:
+            atomic_write_json(path, updated)
+        return PlanUpdateResult(file=path, before_count=len(payload), after_count=len(updated))
 
 
 def _configured_trash_relative_root(config: AppConfig) -> str:
@@ -581,12 +690,19 @@ def _queue_item_with_missing_since(item: object, record: PlanRecord, missing_sin
         updated = dict(item)
         updated["missing_since"] = missing_since
         return updated
-    payload = _record_payload(record.path, record.action, record.reason)
+    payload = _record_payload(
+        record.path,
+        record.action,
+        record.reason,
+        event_id=record.event_id,
+        enqueued_at=record.enqueued_at,
+        extra=record.extra,
+    )
     payload["missing_since"] = missing_since
     return payload
 
 
-def annotate_missing_local_upload_records(
+def _annotate_missing_local_upload_records_unlocked(
     config: AppConfig,
     queue_file: Path,
     key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
@@ -635,6 +751,24 @@ def annotate_missing_local_upload_records(
     )
 
 
+def annotate_missing_local_upload_records(
+    config: AppConfig,
+    queue_file: Path,
+    key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = True,
+) -> MissingLocalQueueCleanupResult:
+    with writer_state_lock(queue_file):
+        return _annotate_missing_local_upload_records_unlocked(
+            config,
+            queue_file,
+            key_prefix,
+            observed_at=observed_at,
+            write=write,
+        )
+
+
 def cleanup_stale_missing_local_upload_records(
     config: AppConfig,
     queue_file: Path,
@@ -672,7 +806,7 @@ def cleanup_stale_missing_local_upload_records(
     )
 
 
-def prune_stale_missing_local_upload_records(
+def _prune_stale_missing_local_upload_records_unlocked(
     config: AppConfig,
     queue_file: Path,
     key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
@@ -731,7 +865,25 @@ def prune_stale_missing_local_upload_records(
     )
 
 
-def force_prune_missing_local_upload_records(
+def prune_stale_missing_local_upload_records(
+    config: AppConfig,
+    queue_file: Path,
+    key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
+    *,
+    observed_at: datetime | str | None = None,
+    write: bool = True,
+) -> MissingLocalQueueCleanupResult:
+    with writer_state_lock(queue_file):
+        return _prune_stale_missing_local_upload_records_unlocked(
+            config,
+            queue_file,
+            key_prefix,
+            observed_at=observed_at,
+            write=write,
+        )
+
+
+def _force_prune_missing_local_upload_records_unlocked(
     config: AppConfig,
     queue_file: Path,
     key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
@@ -770,6 +922,22 @@ def force_prune_missing_local_upload_records(
         fresh_missing_count=0,
         stale_missing_count=pruned_count,
     )
+
+
+def force_prune_missing_local_upload_records(
+    config: AppConfig,
+    queue_file: Path,
+    key_prefix: str = "PCLOUD_TOOLS_PUSHD_QUEUE",
+    *,
+    write: bool = True,
+) -> MissingLocalQueueCleanupResult:
+    with writer_state_lock(queue_file):
+        return _force_prune_missing_local_upload_records_unlocked(
+            config,
+            queue_file,
+            key_prefix,
+            write=write,
+        )
 
 
 def cleanup_missing_local_upload_records_for_executor_start(
@@ -828,9 +996,12 @@ def record_dry_run_state(
         "recorded_at": generated_at,
         "cursor": cursor,
     }
-    atomic_write_json(state.last_plan_file, plan_payload)
-    atomic_write_json(state.last_event_file, event_payload)
-    atomic_write_text(state.cursor_file, f"{cursor}\n")
+    with writer_state_lock(state.last_plan_file):
+        atomic_write_json(state.last_plan_file, plan_payload)
+    with writer_state_lock(state.last_event_file):
+        atomic_write_json(state.last_event_file, event_payload)
+    with writer_state_lock(state.cursor_file):
+        atomic_write_text(state.cursor_file, f"{cursor}\n")
     return DryRunStateResult(
         last_plan_file=state.last_plan_file,
         last_event_file=state.last_event_file,

@@ -101,7 +101,7 @@ def add_status_doctor_parsers(subparsers: argparse._SubParsersAction) -> None:
     )
 
 
-def _config_summary(paths: RuntimePaths) -> dict[str, str]:
+def _config_summary(paths: RuntimePaths) -> dict[str, object]:
     load_result = load_config(paths)
     config = load_result.config
     return {
@@ -114,6 +114,11 @@ def _config_summary(paths: RuntimePaths) -> dict[str, str]:
         "core remote": config.core_remote,
         "vault layer": "enabled" if config.enable_vault_layer else "disabled",
         "crypt layer": "enabled" if config.enable_crypt_layer else "disabled",
+        "pushd transfer concurrency": config.pushd_transfer_concurrency,
+        "pushd transfer concurrency source": load_result.source_layers.get("pushd_transfer_concurrency", "unknown"),
+        "diffd transfer concurrency": config.diffd_transfer_concurrency,
+        "diffd transfer concurrency source": load_result.source_layers.get("diffd_transfer_concurrency", "unknown"),
+        "transfer concurrency effective range": "1-4",
     }
 
 
@@ -271,6 +276,11 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "diffd poll interval seconds": config.diffd_poll_interval_seconds,
             "diffd batch limit": config.diffd_batch_limit,
             "transfer exec timeout seconds": config.transfer_exec_timeout_seconds,
+            "pushd transfer concurrency": config.pushd_transfer_concurrency,
+            "pushd transfer concurrency source": load_result.source_layers.get("pushd_transfer_concurrency", "unknown"),
+            "diffd transfer concurrency": config.diffd_transfer_concurrency,
+            "diffd transfer concurrency source": load_result.source_layers.get("diffd_transfer_concurrency", "unknown"),
+            "transfer concurrency effective range": "1-4",
             "download suppression ttl seconds": config.download_suppression_ttl_seconds,
             "pCloud API base URL": config.pcloud_api_base_url,
             "pCloud API auth parameter": config.pcloud_api_auth_param,
@@ -289,6 +299,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "implementation package": str(Path(__file__).resolve().parents[1]),
             "workspace": str(paths.workspace_root),
             "config source": load_result.source,
+            "config source layers": load_result.source_layers,
             "config dir": str(paths.config_dir),
             "env file": str(paths.env_file),
             "state dir": str(config.state_dir),
@@ -305,6 +316,11 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "autosync plist": autosync.plist,
             "pushd state dir": str(config.state_dir / "pushd"),
             "diffd state dir": str(config.state_dir / "diffd"),
+            "pushd transfer concurrency": config.pushd_transfer_concurrency,
+            "pushd transfer concurrency source": load_result.source_layers.get("pushd_transfer_concurrency", "unknown"),
+            "diffd transfer concurrency": config.diffd_transfer_concurrency,
+            "diffd transfer concurrency source": load_result.source_layers.get("diffd_transfer_concurrency", "unknown"),
+            "transfer concurrency effective range": "1-4",
             "daemon state dir": str(config.state_dir / "daemon"),
             "log policy": "logs stay local; reports redact pCloud API tokens",
             "sensitive data policy": "secrets are read on demand and redacted in info output",
@@ -457,6 +473,9 @@ def _service_queue_overview(config: AppConfig) -> tuple[dict[str, object], list[
         "pull planned": len(planned_downloads),
         "pull skipped": diffd_plan.skipped_count,
         "pull manual review": len(manual_downloads),
+        "push transfer concurrency": config.pushd_transfer_concurrency,
+        "diff transfer concurrency": config.diffd_transfer_concurrency,
+        "transfer concurrency effective range": "1-4",
     }
     if missing_uploads:
         details.update(
@@ -576,6 +595,7 @@ def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandRepo
         "vault": _mount_status_label(layer_states["vault"]),
         "crypt": _mount_status_label(layer_states["crypt"]),
         **queue_details,
+        **_config_summary(paths),
     }
     if args.detail:
         details.update(
@@ -858,6 +878,11 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "autosync runs": autosync.runs,
         "autosync label": autosync.label,
         "autosync plist": autosync.plist,
+        "pushd transfer concurrency": config.pushd_transfer_concurrency,
+        "pushd transfer concurrency source": load_result.source_layers.get("pushd_transfer_concurrency", "unknown"),
+        "diffd transfer concurrency": config.diffd_transfer_concurrency,
+        "diffd transfer concurrency source": load_result.source_layers.get("diffd_transfer_concurrency", "unknown"),
+        "transfer concurrency effective range": "1-4",
         **queue_details,
     }
     if repaired_items:

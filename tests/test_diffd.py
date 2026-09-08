@@ -3,6 +3,17 @@ from __future__ import annotations
 from conftest import *
 
 
+def _without_generation(records: object) -> object:
+    if not isinstance(records, list):
+        return records
+    return [
+        {key: value for key, value in item.items() if key not in {"event_id", "observed_at", "diffid"}}
+        if isinstance(item, dict)
+        else item
+        for item in records
+    ]
+
+
 def test_diffd_preview_builds_remote_and_pending_download_plan(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -479,9 +490,9 @@ def test_diffd_api_long_poll_run_executes_fixture_in_dev_state(tmp_path: Path) -
     assert payload["details"]["download records appended"] == 1
     assert payload["details"]["skipped download records"] == 1
     assert payload["details"]["written diffid"] == "123"
-    assert remote_changes == [{"path": "Documents/from-api.pdf", "action": "download", "reason": "diff:modified"}]
+    assert _without_generation(remote_changes) == [{"path": "Documents/from-api.pdf", "action": "download", "reason": "diff:modified"}]
     assert diffid == "123"
-    assert run_state["appended_records"] == remote_changes
+    assert run_state["appended_records"] == _without_generation(remote_changes)
     assert run_state["written_diffid"] == "123"
 
 
@@ -566,7 +577,7 @@ def test_diffd_api_long_poll_noop_delete_coalesces_pending_download_when_local_m
     assert payload["details"]["download records appended"] == 0
     assert payload["details"]["noop remote delete records"] == 1
     assert payload["details"]["coalesced existing remote-change records"] == 1
-    assert remote_changes == [{"path": "Documents/keep.pdf", "action": "download", "reason": "diff:createfile"}]
+    assert _without_generation(remote_changes) == [{"path": "Documents/keep.pdf", "action": "download", "reason": "diff:createfile"}]
     assert run_state["noop_delete_records"] == [
         {"path": "Documents/transient.pdf", "action": "delete", "reason": "remote delete has no local target"}
     ]
@@ -664,7 +675,7 @@ def test_diffd_api_long_poll_parses_pcloud_metadata_paths(tmp_path: Path) -> Non
     assert payload["details"]["invalid diff changes"] == 0
     assert payload["details"]["download records appended"] == 1
     assert payload["details"]["skipped download records"] == 1
-    assert remote_changes == [
+    assert _without_generation(remote_changes) == [
         {"path": "Documents/from-metadata.pdf", "action": "download", "reason": "diff:createfile"}
     ]
 def test_diffd_api_long_poll_reuses_folder_cache_across_runs(tmp_path: Path) -> None:
@@ -768,7 +779,7 @@ def test_diffd_api_long_poll_reuses_folder_cache_across_runs(tmp_path: Path) -> 
     assert second_payload["details"]["parsed diff changes"] == 1
     assert second_payload["details"]["invalid diff changes"] == 0
     assert folder_cache == {"42": "Documents"}
-    assert remote_changes == [
+    assert _without_generation(remote_changes) == [
         {"path": "Documents/from-cache.pdf", "action": "download", "reason": "diff:createfile"}
     ]
 def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path) -> None:
@@ -904,7 +915,7 @@ def test_diffd_api_long_poll_resolves_live_parent_folder_metadata(tmp_path: Path
     assert payload["details"]["invalid diff changes"] == 0
     assert payload["details"]["download records appended"] == 1
     assert payload["details"]["folder metadata requests count"] == 2
-    assert remote_changes == [
+    assert _without_generation(remote_changes) == [
         {"path": "Documents/IMG_001.jpeg", "action": "download", "reason": "diff:createfile"}
     ]
     assert folder_cache == {"29925560641": "", "30754773616": "Documents"}
@@ -1163,7 +1174,7 @@ def test_diffd_api_long_poll_run_executes_live_api_against_local_server(tmp_path
     assert requests[0]["limit"] == ["100"]
     assert payload["details"]["download records appended"] == 1
     assert payload["details"]["skipped download records"] == 1
-    assert remote_changes == [{"path": "Documents/from-live-api.pdf", "action": "download", "reason": "diff:modified"}]
+    assert _without_generation(remote_changes) == [{"path": "Documents/from-live-api.pdf", "action": "download", "reason": "diff:modified"}]
     assert diffid == "456"
     assert run_state["live_api"] is True
     assert run_state["written_diffid"] == "456"
@@ -1274,7 +1285,7 @@ def test_diffd_api_long_poll_live_catchup_requires_separate_gate_and_iterates(
     assert payload["details"]["download records appended"] == 1
     assert payload["details"]["skipped download records"] == 1
     assert [request["diffid"] for request in requests] == [["0"], ["100"]]
-    assert remote_changes == [{"path": "Documents/current.pdf", "action": "download", "reason": "diff:modified"}]
+    assert _without_generation(remote_changes) == [{"path": "Documents/current.pdf", "action": "download", "reason": "diff:modified"}]
     assert diffid == "200"
     assert run_state["iterations_processed"] == 2
     assert run_state["written_diffid"] == "200"
@@ -1571,7 +1582,7 @@ def test_diffd_api_long_poll_run_uses_rclone_config_credentials(tmp_path: Path) 
     assert "rclone-secret" not in result.stdout
     assert "should-not-be-read" not in result.stdout
     assert requests[0]["access_token"] == ["rclone-secret"]
-    assert remote_changes == [
+    assert _without_generation(remote_changes) == [
         {"path": "Documents/from-rclone-config.pdf", "action": "download", "reason": "diff:created"}
     ]
 def test_diffd_plan_suppresses_fresh_completed_upload_until_local_file_changes(tmp_path: Path) -> None:

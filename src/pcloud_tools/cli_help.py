@@ -378,12 +378,15 @@ _TOPICS: dict[str, dict[str, Any]] = {
         "summary": [
             "Transfer surfaces preview rclone copyto commands and real-transfer gates.",
             "Real transfer execution is separate from queue/diff daemon operation.",
+            "pushd and diffd transfer concurrency are configured by PCLOUD_TOOLS_PUSHD_TRANSFER_CONCURRENCY and PCLOUD_TOOLS_DIFFD_TRANSFER_CONCURRENCY (1-4, default 1); --max-records limits selected records independently.",
         ],
         "commands": [
             "pcloud-manager pushd transfer preview",
             "pcloud-manager diffd transfer preview",
             "pcloud-manager pushd transfer check",
             "pcloud-manager diffd transfer check",
+            "pcloud-manager pushd transfer executor-run --max-records 10",
+            "pcloud-manager diffd transfer executor-run --max-records 10",
         ],
         "safety": [
             "Do not consume queue/change records unless the approved consume policy says so.",

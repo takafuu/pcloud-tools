@@ -4,6 +4,17 @@ from conftest import *
 from datetime import timedelta
 
 
+def _without_generation(records: object) -> object:
+    if not isinstance(records, list):
+        return records
+    return [
+        {key: value for key, value in item.items() if key not in {"event_id", "observed_at", "diffid"}}
+        if isinstance(item, dict)
+        else item
+        for item in records
+    ]
+
+
 def test_transfer_automation_run_is_guarded_and_consumes_successes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
@@ -100,7 +111,7 @@ def test_transfer_automation_run_is_guarded_and_consumes_successes(tmp_path: Pat
     assert refused_payload["details"]["state writes"] == "none"
     assert refused_payload["details"]["automatic real transfer execution"] == "no"
     assert refused_payload["details"]["automatic queue/change consumption"] == "no"
-    assert json.loads((pushd_dir / "queue.json").read_text()) == [
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == [
         {"path": "Documents/auto-upload.txt", "action": "upload", "reason": "test"}
     ]
     assert not (pushd_dir / "last-transfer.json").exists()
@@ -115,7 +126,7 @@ def test_transfer_automation_run_is_guarded_and_consumes_successes(tmp_path: Pat
     assert diffd_payload["details"]["execution transfer command count"] == 1
     assert diffd_payload["details"]["deferred transfer command count"] == 1
     assert diffd_payload["details"]["records consumed"] == 1
-    assert json.loads((diffd_dir / "remote-changes.json").read_text()) == [
+    assert _without_generation(json.loads((diffd_dir / "remote-changes.json").read_text())) == [
         {"path": "Documents/auto-download-2.txt", "action": "download", "reason": "test"}
     ]
     assert (diffd_dir / "last-transfer.json").exists()
@@ -265,7 +276,7 @@ def test_transfer_real_run_executes_only_after_explicit_real_gate_with_stub_rclo
     assert "Documents/real-run.txt pcloud:core/Documents/real-run.txt" in real_log.read_text()
     assert transfer_state["mode"] == "real-rclone-transfer"
     assert transfer_state["results"][0]["returncode"] == 0
-    assert json.loads((pushd_dir / "queue.json").read_text()) == []
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == []
 def test_transfer_real_run_can_select_confirmed_target_from_multiple_planned_records(
     tmp_path: Path,
 ) -> None:
@@ -347,7 +358,7 @@ def test_transfer_real_run_can_select_confirmed_target_from_multiple_planned_rec
     assert transfer_state["planned_transfer_commands"][0]["path"] == "Documents/selected-real-run.txt"
     assert payload["details"]["automatic queue/change consumption"] == "yes"
     assert payload["details"]["records consumed"] == 1
-    assert json.loads((pushd_dir / "queue.json").read_text()) == [
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == [
         {"path": "Documents/retained-real-run.txt", "action": "upload", "reason": "test"}
     ]
 def test_transfer_run_without_execute_is_preview_only(tmp_path: Path) -> None:
@@ -553,8 +564,8 @@ def test_transfer_executor_run_executes_and_consumes_dev_state_only(tmp_path: Pa
     assert pushd_payload["details"]["real transfer automation gate status"] == "closed"
     assert diffd_payload["details"]["real transfer automation gate status"] == "closed"
     assert len(fake_calls) == 2
-    assert json.loads((pushd_dir / "queue.json").read_text()) == []
-    assert json.loads((diffd_dir / "remote-changes.json").read_text()) == []
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == []
+    assert _without_generation(json.loads((diffd_dir / "remote-changes.json").read_text())) == []
 
 
 def test_pushd_executor_defers_unsettled_local_uploads_without_rclone(tmp_path: Path) -> None:
@@ -595,7 +606,7 @@ def test_pushd_executor_defers_unsettled_local_uploads_without_rclone(tmp_path: 
     assert payload["details"]["settling local upload records"] == 1
     assert payload["details"]["records consumed"] == 0
     assert not fake_log.exists()
-    assert json.loads((pushd_dir / "queue.json").read_text()) == queue_payload
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == _without_generation(queue_payload)
 
 
 def test_pushd_executor_uses_two_unchanged_fingerprint_observations(tmp_path: Path) -> None:
@@ -740,7 +751,7 @@ def test_pushd_source_updated_rclone_result_returns_to_settling_without_error_or
     assert transfer_result["retry_classification"] == "source-updated-during-transfer"
     assert status_payload["details"]["last transfer status"] == "settling"
     assert not (pushd_dir / "chat-notify-journal.json").exists()
-    assert json.loads((pushd_dir / "queue.json").read_text()) == queue_payload
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == _without_generation(queue_payload)
     assert fake_log.exists()
 
 
@@ -1071,7 +1082,7 @@ def test_diffd_download_conflict_creates_copy_and_retains_remote_change(tmp_path
     assert target.read_text() == "local edit during download\n"
     assert conflict_path.exists()
     assert conflict_path.read_text() == "downloaded remote content\n"
-    assert json.loads((diffd_dir / "remote-changes.json").read_text()) == remote_records
+    assert _without_generation(json.loads((diffd_dir / "remote-changes.json").read_text())) == _without_generation(remote_records)
     journal = json.loads((diffd_dir / "download-suppression-journal.json").read_text())
     assert journal["records"][0]["state"] == "conflict"
     assert "copyto pcloud:core/Documents/conflict.txt" in fake_log.read_text()
@@ -1186,7 +1197,7 @@ def test_transfer_consume_preview_reports_successful_records_without_writes(tmp_
     assert payload["details"]["successful transfer results"] == 1
     assert payload["details"]["planned record removals"] == 1
     assert payload["details"]["planned removal record details"][0]["path"] == "Documents/upload.pdf"
-    assert json.loads((pushd_dir / "queue.json").read_text()) == queue_payload
+    assert _without_generation(json.loads((pushd_dir / "queue.json").read_text())) == _without_generation(queue_payload)
 def test_transfer_consume_run_execute_removes_only_successful_matched_records(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
@@ -1262,7 +1273,7 @@ def test_transfer_consume_run_execute_removes_only_successful_matched_records(tm
     assert payload["details"]["records before"] == 2
     assert payload["details"]["records after"] == 1
     assert payload["details"]["state writes"].endswith("/pushd/queue.json")
-    assert remaining == [{"path": "Documents/keep.pdf", "action": "upload", "reason": "not-transferred"}]
+    assert _without_generation(remaining) == [{"path": "Documents/keep.pdf", "action": "upload", "reason": "not-transferred"}]
 def test_transfer_run_refuses_unsafe_state_dir_before_fake_rclone(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     unsafe_state_dir = tmp_path / "fake-live"

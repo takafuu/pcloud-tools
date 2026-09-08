@@ -4,6 +4,17 @@ from conftest import *
 from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
+
+def _without_generation(records: object) -> object:
+    if not isinstance(records, list):
+        return records
+    return [
+        {key: value for key, value in item.items() if key not in {"event_id", "observed_at", "diffid"}}
+        if isinstance(item, dict)
+        else item
+        for item in records
+    ]
+
 from pcloud_tools.service_daemon_plan import (
     annotate_missing_local_upload_records,
     cleanup_stale_missing_local_upload_records,
@@ -653,7 +664,122 @@ def test_pushd_fswatch_resident_run_executes_fake_fswatch_in_dev_state(tmp_path:
     assert queue_payload[0]["action"] == "upload"
     assert queue_payload[0]["reason"] == "fswatch"
     _assert_utc_iso_datetime(queue_payload[0]["enqueued_at"])
-    assert resident_state["appended_records"] == queue_payload
+    assert _without_generation(resident_state["appended_records"]) == _without_generation(queue_payload)
+
+
+def test_pushd_fswatch_resident_session_fences_cutover_until_runner_stops(tmp_path: Path) -> None:
+    env = _base_env(
+        tmp_path,
+        {"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "operator-approved-fswatch-resident-v1"},
+    )
+    state_dir = _use_default_dev_state_dir(env)
+    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
+    (workspace / "Documents").mkdir()
+    (workspace / "Documents" / "first.txt").write_text("first\n")
+    (workspace / "Documents" / "second.txt").write_text("second\n")
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    release = tmp_path / "fswatch.release"
+    fswatch = bin_dir / "fswatch"
+    fswatch.write_text(
+        "#!/bin/sh\n"
+        "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/first.txt\"\n"
+        "while [ ! -f \"$FSWATCH_RELEASE\" ]; do sleep 0.01; done\n"
+        "printf '%s\\n' \"$PCLOUD_TOOLS_WORKSPACE_ROOT/Documents/second.txt\"\n"
+    )
+    fswatch.chmod(0o755)
+    env["PATH"] = f"{bin_dir}:{env.get('PATH', '')}"
+    env["FSWATCH_RELEASE"] = str(release)
+    shadow_report = tmp_path / "shadow-validation-fswatch-cutover.json"
+    shadow_workspace = tmp_path / "pcloud-shadow-validation-fswatch-cutover" / "workspace"
+    shadow_report.write_text(
+        json.dumps(
+            {
+                "status": "ok",
+                "workspace": str(shadow_workspace),
+                "state_dir": str(shadow_workspace / ".dev-state" / "state"),
+                "checks": [
+                    {"name": "temporary workspace guard", "status": "ok"},
+                    {"name": "temporary state dir guard", "status": "ok"},
+                    {"name": "unsafe state dir guard", "status": "ok"},
+                ],
+            }
+        )
+    )
+    runner = subprocess.Popen(
+        [
+            sys.executable,
+            "-m",
+            "pcloud_tools.cli",
+            "pushd",
+            "fswatch",
+            "resident-run",
+            "--report-path",
+            str(shadow_report),
+            "--operator-reviewed-probe",
+            "--reviewer-approved-queue-policy",
+            "--reviewer-approved-process-policy",
+            "--max-events",
+            "2",
+            "--execute",
+            "--json",
+        ],
+        cwd=tmp_path,
+        env=env,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    cutover_code = (
+        "from pathlib import Path\n"
+        "import sys\n"
+        "from pcloud_tools.transfer_state import TransferStateError, writer_cutover_session\n"
+        "try:\n"
+        "    with writer_cutover_session(Path(sys.argv[1]), 'pushd', blocking=False):\n"
+        "        Path(sys.argv[2]).write_text('acquired')\n"
+        "except TransferStateError as exc:\n"
+        "    Path(sys.argv[2]).write_text('blocked:' + str(exc))\n"
+    )
+    try:
+        queue_file = state_dir / "pushd" / "queue.json"
+        deadline = time.monotonic() + 8.0
+        while time.monotonic() < deadline and not queue_file.exists() and runner.poll() is None:
+            time.sleep(0.01)
+        assert queue_file.exists(), runner.communicate(timeout=5)
+        assert len(json.loads(queue_file.read_text())) == 1
+        blocked_file = tmp_path / "cutover-blocked"
+        blocked = subprocess.run(
+            [sys.executable, "-c", cutover_code, str(state_dir), str(blocked_file)],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+        )
+        assert blocked.returncode == 0
+        assert blocked_file.read_text().startswith("blocked:")
+        assert runner.poll() is None
+
+        release.write_text("release")
+        stdout, stderr = runner.communicate(timeout=10)
+        assert not stderr
+        payload = json.loads(stdout)
+        assert runner.returncode == 0
+        assert payload["status"] in {"ok", "warning"}
+        assert len(json.loads(queue_file.read_text())) == 2
+
+        acquired_file = tmp_path / "cutover-acquired"
+        acquired = subprocess.run(
+            [sys.executable, "-c", cutover_code, str(state_dir), str(acquired_file)],
+            cwd=tmp_path,
+            env=env,
+            check=False,
+        )
+        assert acquired.returncode == 0
+        assert acquired_file.read_text() == "acquired"
+    finally:
+        release.touch()
+        if runner.poll() is None:
+            runner.terminate()
+            runner.communicate(timeout=5)
 
 
 def test_pushd_fswatch_resident_run_reports_unbounded_fswatch_failure(tmp_path: Path) -> None:
@@ -890,7 +1016,7 @@ def test_pushd_fswatch_resident_run_debounces_same_run_upload_events(tmp_path: P
     assert resident_state["debounce_records"] == [
         {"path": "Documents/from-fswatch.txt", "action": "upload", "reason": "recent resident append"}
     ]
-def test_pushd_fswatch_resident_run_skips_existing_duplicate_queue_records(tmp_path: Path) -> None:
+def test_pushd_fswatch_resident_run_replaces_existing_queue_generation(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,
         {"PCLOUD_TOOLS_PUSHD_FSWATCH_RESIDENT_GATE": "operator-approved-fswatch-resident-v1"},
@@ -956,10 +1082,13 @@ def test_pushd_fswatch_resident_run_skips_existing_duplicate_queue_records(tmp_p
     queue_payload = json.loads(queue_file.read_text())
 
     assert result.returncode == 0
-    assert payload["details"]["queue records appended"] == 0
-    assert payload["details"]["duplicate events skipped"] == 1
+    assert payload["details"]["queue records appended"] == 1
+    assert payload["details"]["duplicate events skipped"] == 0
     assert payload["details"]["debounce events skipped"] == 0
-    assert queue_payload == [{"path": "Documents/from-fswatch.txt", "action": "upload", "reason": "seed"}]
+    assert queue_payload[0]["path"] == "Documents/from-fswatch.txt"
+    assert queue_payload[0]["action"] == "upload"
+    assert queue_payload[0]["reason"] == "fswatch"
+    assert queue_payload[0]["event_id"]
 def test_pushd_fswatch_resident_run_debounces_recent_prior_run(tmp_path: Path) -> None:
     env = _base_env(
         tmp_path,
@@ -1107,7 +1236,7 @@ def test_pushd_fswatch_resident_run_respects_queue_limit(tmp_path: Path) -> None
     assert payload["status"] == "warning"
     assert payload["details"]["queue records appended"] == 0
     assert payload["details"]["queue limit skips"] == 1
-    assert queue_payload == [{"path": "Documents/existing.txt", "action": "upload", "reason": "seed"}]
+    assert _without_generation(queue_payload) == [{"path": "Documents/existing.txt", "action": "upload", "reason": "seed"}]
 def test_pushd_plan_suppresses_fresh_completed_download_until_local_file_changes(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
     state_dir = _use_default_dev_state_dir(env)
@@ -1530,7 +1659,6 @@ def _missing_local_test_config(env: dict[str, str], ttl_seconds: int = 600) -> S
 
 def test_pushd_missing_local_cleanup_annotates_fresh_records_without_pruning(tmp_path: Path) -> None:
     env = _base_env(tmp_path)
-    workspace = Path(env["PCLOUD_TOOLS_WORKSPACE_ROOT"])
     state_dir = Path(env["PCLOUD_TOOLS_STATE_DIR"])
     queue_file = state_dir / "pushd" / "queue.json"
     queue_file.parent.mkdir(parents=True)

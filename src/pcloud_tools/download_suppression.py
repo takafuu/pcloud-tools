@@ -8,6 +8,7 @@ from typing import Literal
 
 from .config import AppConfig, ConfigIssue
 from .io_utils import atomic_write_json
+from .transfer_state import writer_state_lock
 
 JournalKind = Literal["download_suppression", "upload_origin"]
 
@@ -251,7 +252,8 @@ def _write_journal(config: AppConfig, kind: JournalKind, records: tuple[Suppress
         "ttl_seconds": config.download_suppression_ttl_seconds,
         "records": [_payload_from_record(record) for record in records],
     }
-    return atomic_write_json(path, payload)
+    with writer_state_lock(path):
+        return atomic_write_json(path, payload)
 
 
 def read_download_suppression_journal(config: AppConfig) -> SuppressionJournal:
@@ -280,14 +282,16 @@ def _replace_record(
 
 def mark_download_started(config: AppConfig, path: str) -> Path:
     normalized = normalize_plan_path(path)
-    journal = read_download_suppression_journal(config)
-    record = SuppressionRecord(
-        path=normalized,
-        state="in-progress",
-        direction="download",
-        started_at=_now_text(),
-    )
-    return write_download_suppression_journal(config, _replace_record(journal.records, record))
+    journal_path = download_suppression_journal_path(config)
+    with writer_state_lock(journal_path):
+        journal = read_download_suppression_journal(config)
+        record = SuppressionRecord(
+            path=normalized,
+            state="in-progress",
+            direction="download",
+            started_at=_now_text(),
+        )
+        return write_download_suppression_journal(config, _replace_record(journal.records, record))
 
 
 def mark_download_completed(config: AppConfig, path: str, fingerprint: LocalFingerprint) -> Path:
@@ -307,17 +311,19 @@ def _mark_completed(
     direction: str,
 ) -> Path:
     normalized = normalize_plan_path(path)
-    journal = _read_journal(config, kind)
-    existing = next((record for record in journal.records if record.path == normalized), None)
-    record = SuppressionRecord(
-        path=normalized,
-        state="completed",
-        direction=direction,
-        started_at=existing.started_at if existing else _now_text(),
-        completed_at=_now_text(),
-        local_fingerprint=fingerprint,
-    )
-    return _write_journal(config, kind, _replace_record(journal.records, record))
+    journal_path = _journal_path(config, kind)
+    with writer_state_lock(journal_path):
+        journal = _read_journal(config, kind)
+        existing = next((record for record in journal.records if record.path == normalized), None)
+        record = SuppressionRecord(
+            path=normalized,
+            state="completed",
+            direction=direction,
+            started_at=existing.started_at if existing else _now_text(),
+            completed_at=_now_text(),
+            local_fingerprint=fingerprint,
+        )
+        return _write_journal(config, kind, _replace_record(journal.records, record))
 
 
 def mark_download_conflict(
@@ -328,25 +334,29 @@ def mark_download_conflict(
     fingerprint: LocalFingerprint,
 ) -> Path:
     normalized = normalize_plan_path(path)
-    journal = read_download_suppression_journal(config)
-    existing = next((record for record in journal.records if record.path == normalized), None)
-    record = SuppressionRecord(
-        path=normalized,
-        state="conflict",
-        direction="download",
-        started_at=existing.started_at if existing else _now_text(),
-        completed_at=_now_text(),
-        local_fingerprint=fingerprint,
-        conflict_path=normalize_plan_path(conflict_path),
-    )
-    return write_download_suppression_journal(config, _replace_record(journal.records, record))
+    journal_path = download_suppression_journal_path(config)
+    with writer_state_lock(journal_path):
+        journal = read_download_suppression_journal(config)
+        existing = next((record for record in journal.records if record.path == normalized), None)
+        record = SuppressionRecord(
+            path=normalized,
+            state="conflict",
+            direction="download",
+            started_at=existing.started_at if existing else _now_text(),
+            completed_at=_now_text(),
+            local_fingerprint=fingerprint,
+            conflict_path=normalize_plan_path(conflict_path),
+        )
+        return write_download_suppression_journal(config, _replace_record(journal.records, record))
 
 
 def clear_download_suppression_record(config: AppConfig, path: str) -> Path:
     normalized = normalize_plan_path(path)
-    journal = read_download_suppression_journal(config)
-    retained = tuple(record for record in journal.records if record.path != normalized)
-    return write_download_suppression_journal(config, retained)
+    journal_path = download_suppression_journal_path(config)
+    with writer_state_lock(journal_path):
+        journal = read_download_suppression_journal(config)
+        retained = tuple(record for record in journal.records if record.path != normalized)
+        return write_download_suppression_journal(config, retained)
 
 
 def download_suppression_match(

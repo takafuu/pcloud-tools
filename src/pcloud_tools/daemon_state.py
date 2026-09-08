@@ -8,6 +8,7 @@ from typing import Any
 
 from .config import AppConfig, ConfigIssue
 from .io_utils import atomic_write_json, atomic_write_text
+from .transfer_state import state_lock
 
 
 @dataclass(frozen=True)
@@ -173,35 +174,42 @@ def read_daemon_state(config: AppConfig) -> DaemonState:
 def write_diffid(config: AppConfig, diffid: str) -> str:
     normalized = normalize_diffid(diffid)
     files = _state_files(config)
-    atomic_write_text(files["diffid"], f"{normalized}\n")
+    with state_lock(files["diffid"]):
+        atomic_write_text(files["diffid"], f"{normalized}\n")
     return normalized
 
 
 def set_auto_download(config: AppConfig, enabled: bool) -> None:
     files = _state_files(config)
-    atomic_write_text(files["auto_download"], "on\n" if enabled else "off\n")
+    with state_lock(files["auto_download"]):
+        atomic_write_text(files["auto_download"], "on\n" if enabled else "off\n")
 
 
 def add_pending_download(
     config: AppConfig, path: str, diffid: str = "-", reason: str = "remote-change"
 ) -> PendingDownload:
-    state = read_daemon_state(config)
-    item = PendingDownload(path=path, diffid=diffid, reason=reason, recorded_at=_now())
-    payload = [asdict(existing) for existing in state.pending_downloads]
-    payload.append(asdict(item))
-    atomic_write_json(state.pending_downloads_file, payload)
+    files = _state_files(config)
+    with state_lock(files["pending_downloads"]):
+        state = read_daemon_state(config)
+        item = PendingDownload(path=path, diffid=diffid, reason=reason, recorded_at=_now())
+        payload = [asdict(existing) for existing in state.pending_downloads]
+        payload.append(asdict(item))
+        atomic_write_json(state.pending_downloads_file, payload)
     return item
 
 
 def clear_pending_downloads(config: AppConfig) -> int:
-    state = read_daemon_state(config)
-    count = len(state.pending_downloads)
-    atomic_write_json(state.pending_downloads_file, [])
+    files = _state_files(config)
+    with state_lock(files["pending_downloads"]):
+        state = read_daemon_state(config)
+        count = len(state.pending_downloads)
+        atomic_write_json(state.pending_downloads_file, [])
     return count
 
 
 def record_notification(config: AppConfig, message: str, level: str = "info") -> NotificationRecord:
     record = NotificationRecord(message=message, level=level, recorded_at=_now())
     files = _state_files(config)
-    atomic_write_json(files["notification"], asdict(record))
+    with state_lock(files["notification"]):
+        atomic_write_json(files["notification"], asdict(record))
     return record
