@@ -46,9 +46,9 @@ The installer bootstraps a pinned `uv` and Python runtime when needed. macOS `la
 The recommended first installation pins the release version and lets you inspect the installer before running it:
 
 ```sh
-curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.1.1/install.sh -o pcloud-tools-install.sh
+curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.2.0/install.sh -o pcloud-tools-install.sh
 less pcloud-tools-install.sh
-sh pcloud-tools-install.sh --version v0.1.1
+sh pcloud-tools-install.sh --version v0.2.0
 rm pcloud-tools-install.sh
 ```
 
@@ -91,6 +91,48 @@ pcloud-manager help --detail
 pcloud-manager info paths
 pcloud-manager gates
 ```
+
+## Concurrent transfers (v0.2.0)
+
+Upload and download executors support one to four concurrent transfers per service. Both default to one, so installing the release keeps serial execution until configuration is changed:
+
+```dotenv
+PCLOUD_TOOLS_PUSHD_TRANSFER_CONCURRENCY=1
+PCLOUD_TOOLS_DIFFD_TRANSFER_CONCURRENCY=1
+```
+
+Set either value to `2` or `4` in the existing `.env` to enable bounded parallel execution on the next tick. `--max-records` limits how many records a tick selects; concurrency limits how many selected transfers run at once. Manual `real-run` remains limited to the single confirmed file. Invalid settings are rejected before transfers or state updates.
+
+The executor uses process and path locks, consumes only the selected queue event generation, preserves files edited during transfers, and holds incomplete attempts for explicit recovery. Status reports expose configured concurrency, observed peak concurrency, elapsed time, and success/deferred/conflict counts. Preview and inspection do not start transfers or rewrite state. See the [recovery and writer-stop procedure](docs/spec/利用ガイド.md#本番用検証レポートと切り戻し).
+
+Validation includes 261 tests and independent review of concurrency, queue generations, process cleanup, crash recovery, and writer cutover. In a local 12-file fixture with a fixed 0.18-second delay per fake-rclone transfer, three runs per setting produced these median wall times through the development CLI:
+
+| Direction | Concurrency 1 | Concurrency 2 | Concurrency 4 |
+| --- | ---: | ---: | ---: |
+| Upload | 2.912 s | 1.621 s | 0.964 s |
+| Download | 2.918 s | 1.619 s | 0.960 s |
+
+These measurements demonstrate scheduling overlap; they are not a claim about pCloud network throughput. Existing gates, sync scope, archive encryption, and deletion policies remain in effect.
+
+## Upgrade and rollback
+
+Use versioned releases and keep the previous wheel or installer bundle. Before upgrading or downgrading, stop every process that can write the same queue or journals: watcher, poller, executors, manual transfers, and backfill. Let started transfers finish or confirm their child processes have exited. Save the current runtime, public wrappers, service definitions, configuration, and queue/journal state in a private backup outside this repository.
+
+Install a pinned release using the inspected installer, or a saved wheel:
+
+```sh
+sh pcloud-tools-install.sh --version v0.2.0
+# Or use an already verified local wheel:
+sh pcloud-tools-install.sh --wheel /path/to/pcloud_tools-0.2.0-py3-none-any.whl
+```
+
+Verify `pcloud-manager --version`, `pcloud-manager info`, and `pcloud-manager doctor`, then restore the previously loaded services. Keep the installed runtime independent of the source checkout. To return to the previous package, repeat the writer-stop and backup procedure and install the pinned previous release:
+
+```sh
+sh pcloud-tools-install.sh --version v0.1.1
+```
+
+Changing concurrency back to `1` is the normal performance rollback and takes effect on the next tick without a package downgrade. Installing an older package does not undo local or remote file changes. Do not replace current queues with an older backup after new work has occurred without reconciling those changes first. Never run old and new writers against the same state simultaneously.
 
 ## Configure pcloud-archive
 
