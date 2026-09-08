@@ -10,9 +10,16 @@ from typing import Any
 
 from .config import AppConfig, ConfigIssue
 from .daemon_state import DaemonState
-from .download_suppression import LocalFingerprint, download_suppression_match, local_fingerprint, upload_origin_match
+from .download_suppression import (
+    LocalFingerprint,
+    download_suppression_match,
+    local_fingerprint,
+    read_download_suppression_journal,
+    read_upload_origin_journal,
+    upload_origin_match,
+)
 from .io_utils import atomic_write_json, atomic_write_text
-from .manager_ignore import manager_ignore_match
+from .manager_ignore import load_manager_ignore_rules, manager_ignore_match
 from .service_daemon_state import ServiceDaemonState
 from .sync_scope import SyncScopeInfo, sync_allowlist_info
 from .transfer_state import new_event_id, writer_state_lock
@@ -1033,6 +1040,10 @@ def build_pushd_plan_from_records(
     upload: list[PlanRecord] = []
     excluded: list[PlanRecord] = []
     invalid: list[PlanRecord] = []
+    # One snapshot per plan, never a process-wide cache: the next plan and
+    # each execution-time recheck see fresh journal and ignore-file state.
+    suppression = {item.path: item for item in read_download_suppression_journal(config).records}
+    ignore_rules = load_manager_ignore_rules(config)
     for record in records:
         if not record.path:
             invalid.append(record)
@@ -1044,12 +1055,12 @@ def build_pushd_plan_from_records(
             excluded.append(PlanRecord(record.path, record.action, "default exclude"))
         elif _is_partial_transfer_path(record.path):
             excluded.append(PlanRecord(record.path, record.action, "partial transfer file"))
-        elif (ignore_match := manager_ignore_match(config, record.path)) and ignore_match.ignored:
+        elif (ignore_match := manager_ignore_match(config, record.path, rules=ignore_rules)) and ignore_match.ignored:
             excluded.append(PlanRecord(record.path, record.action, ignore_match.reason))
         elif _is_local_upload_directory(config, record):
             excluded.append(PlanRecord(record.path, record.action, "directory upload not supported"))
         elif record.action == "upload" and (
-            suppressed_match := download_suppression_match(config, record.path)
+            suppressed_match := download_suppression_match(config, record.path, records_by_path=suppression)
         )[0]:
             _suppressed, reason, _journal_record = suppressed_match
             excluded.append(PlanRecord(record.path, record.action, reason or "download suppression journal"))
@@ -1104,6 +1115,8 @@ def build_diffd_plan_from_records(
     scope = sync_allowlist_info(config)
     download_records: list[PlanRecord] = []
     skipped_records: list[PlanRecord] = []
+    upload_origins = {item.path: item for item in read_upload_origin_journal(config).records}
+    ignore_rules = load_manager_ignore_rules(config)
     for record in (*remote_records, *pending_records):
         if not record.path:
             skipped_records.append(record)
@@ -1115,10 +1128,10 @@ def build_diffd_plan_from_records(
             skipped_records.append(PlanRecord(record.path, record.action, "default exclude"))
         elif _is_partial_transfer_path(record.path):
             skipped_records.append(PlanRecord(record.path, record.action, "partial transfer file"))
-        elif (ignore_match := manager_ignore_match(config, record.path)) and ignore_match.ignored:
+        elif (ignore_match := manager_ignore_match(config, record.path, rules=ignore_rules)) and ignore_match.ignored:
             skipped_records.append(PlanRecord(record.path, record.action, ignore_match.reason))
         elif record.action == "download" and record.reason == "diff:createfile" and (
-            upload_match := upload_origin_match(config, record.path)
+            upload_match := upload_origin_match(config, record.path, records_by_path=upload_origins)
         )[0]:
             _matched, reason, _journal_record = upload_match
             skipped_records.append(PlanRecord(record.path, record.action, reason or "upload origin journal"))

@@ -362,12 +362,15 @@ def clear_download_suppression_record(config: AppConfig, path: str) -> Path:
 def download_suppression_match(
     config: AppConfig,
     path: str,
+    *,
+    records_by_path: dict[str, SuppressionRecord] | None = None,
 ) -> tuple[bool, str, SuppressionRecord | None]:
     normalized = normalize_plan_path(path)
     if not normalized:
         return False, "", None
-    journal = read_download_suppression_journal(config)
-    record = next((item for item in reversed(journal.records) if item.path == normalized), None)
+    if records_by_path is None:
+        records_by_path = {item.path: item for item in read_download_suppression_journal(config).records}
+    record = records_by_path.get(normalized)
     if record is None:
         return False, "", None
     if record.state == "in-progress":
@@ -382,12 +385,15 @@ def download_suppression_match(
 def upload_origin_match(
     config: AppConfig,
     path: str,
+    *,
+    records_by_path: dict[str, SuppressionRecord] | None = None,
 ) -> tuple[bool, str, SuppressionRecord | None]:
     normalized = normalize_plan_path(path)
     if not normalized:
         return False, "", None
-    journal = read_upload_origin_journal(config)
-    record = next((item for item in reversed(journal.records) if item.path == normalized), None)
+    if records_by_path is None:
+        records_by_path = {item.path: item for item in read_upload_origin_journal(config).records}
+    record = records_by_path.get(normalized)
     if record is None:
         return False, "", None
     if record.state == "completed" and record.local_fingerprint:

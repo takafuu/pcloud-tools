@@ -434,6 +434,11 @@ def _run_one(
                 issues.extend(callback_issues)
             elif isinstance(after, dict):
                 result = after
+            if result.get("missing_remote_source"):
+                # The exact queue generation has been retained for review.
+                # Keep the nonzero result/failed metric, but don't repeatedly
+                # fail an otherwise runnable batch on this missing source.
+                issues = [issue for issue in issues if issue.key != "PCLOUD_TOOLS_TRANSFER_EXEC"]
         return result, issues
     finally:
         if process is not None:
@@ -554,7 +559,10 @@ def run_transfer_batch(
     )
     timeout = sum(1 for item in results if item.get("timed_out"))
     deferred = sum(1 for item in results if item.get("deferred"))
-    conflicts = sum(1 for item in results if item.get("conflict") or item.get("manual_review"))
+    conflicts = sum(
+        1 for item in results
+        if item.get("conflict") or (item.get("manual_review") and not item.get("missing_remote_source"))
+    )
     failures = sum(
         1
         for item in results
@@ -574,6 +582,7 @@ def run_transfer_batch(
         "timeout": timeout,
         "deferred": deferred,
         "conflict": conflicts,
+        "manual_review": sum(1 for item in results if item.get("manual_review")),
     }
     return TransferBatchResult(results=results, issues=issues, performance=performance)
 

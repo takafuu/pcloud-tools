@@ -15,7 +15,7 @@ import urllib.error
 import urllib.parse
 import urllib.request
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -53,6 +53,7 @@ from ..download_suppression import (
     mark_upload_completed,
     suppression_status_details,
 )
+from ..download_review import mark_missing_source, missing_remote_source, review_reason, review_records, retry_review
 from ..gates import GATES, GateSpec, add_gate_review_args, validate_gate
 from ..io_utils import atomic_write_json
 from ..manager_ignore import manager_ignore_match
@@ -354,6 +355,18 @@ def _add_transfer_recovery_parser(transfer_subparsers: argparse._SubParsersActio
     run_parser.add_argument("--execute", action="store_true")
     run_parser.add_argument("--json", action="store_true", help="Emit structured JSON output.")
     run_parser.add_argument("--xbar", action="store_true", help="Emit xbar menu output.")
+
+
+def _add_download_review_parser(transfer_subparsers: argparse._SubParsersAction) -> None:
+    parser = transfer_subparsers.add_parser("review", help="Inspect missing-source events or allow one exact event to retry.")
+    commands = parser.add_subparsers(dest="review_command")
+    preview = commands.add_parser("preview", help="Read missing-source review records without changing the queue.")
+    preview.add_argument("--json", action="store_true")
+    retry = commands.add_parser("retry", help="Clear one event's review marker; retain its queue record and local file.")
+    retry.add_argument("--path", required=True)
+    retry.add_argument("--event-id", required=True)
+    retry.add_argument("--execute", action="store_true", help="Allow the next normal gated tick to re-evaluate this event.")
+    retry.add_argument("--json", action="store_true")
 
 
 def _add_automation_review_args(parser: argparse.ArgumentParser) -> None:
@@ -980,6 +993,7 @@ def _add_service_parser(
         _add_transfer_automation_gate_parser(transfer_subparsers, direction="download")
         _add_transfer_automation_run_parser(transfer_subparsers)
         _add_transfer_recovery_parser(transfer_subparsers)
+        _add_download_review_parser(transfer_subparsers)
         transfer_real_run_parser = transfer_subparsers.add_parser(
             "real-run",
             help="Run guarded real download execution only after the real-transfer gate is open.",
@@ -2308,6 +2322,8 @@ def _diffd_plan_summary(plan: DiffdPlan) -> str:
 
 
 def _transfer_manual_review_reason(record: PlanRecord, opposite_paths: set[str]) -> str:
+    if reason := review_reason(record.event_id, record.extra):
+        return reason
     action = record.action.strip().lower().replace("_", "-")
     if any(token in action for token in _MANUAL_REVIEW_ACTION_TOKENS):
         return f"{record.action} action requires manual review"
@@ -2328,7 +2344,7 @@ def _filter_manual_review_transfers(
     for record in records:
         reason = _transfer_manual_review_reason(record, opposite_paths)
         if reason:
-            manual_review_records.append(PlanRecord(record.path, record.action, reason))
+            manual_review_records.append(replace(record, reason=reason))
         else:
             transfer_records.append(record)
     return tuple(transfer_records), tuple(manual_review_records)
@@ -7930,6 +7946,20 @@ def _execute_transfer_commands_impl(
                 updated["conflict"] = True
         elif config is not None and direction == "download" and returncode != 0:
             clear_download_suppression_record(config, str(updated.get("path", "")))
+            if missing_remote_source(updated):
+                marked = mark_missing_source(config.state_dir / "diffd" / "remote-changes.json", updated)
+                if marked:
+                    updated.update({
+                        "manual_review": True,
+                        "missing_remote_source": True,
+                        "phase": "manual-review",
+                        "review_records_marked": marked,
+                    })
+                    callback_issues.append(ConfigIssue(
+                        key="PCLOUD_TOOLS_DIFFD_TRANSFER_MANUAL_REVIEW",
+                        level="warning",
+                        message="missing remote source retained for manual review; other transfers may continue",
+                    ))
         if config is not None and direction == "upload" and returncode not in {0, None}:
             output = f"{updated.get('stdout', '')}\n{updated.get('stderr', '')}".lower()
             if "source file is being updated" in output:
@@ -7967,27 +7997,16 @@ def _execute_transfer_commands_impl(
             )
 
         lock_factory = _path_lock_factory
-    session_context = (
-        writer_process_session(
-            config.state_dir,
-            service_name,
-            generation=f"{service_name}:executor",
-            blocking=False,
-        )
-        if config is not None and service is not None
-        else contextlib.nullcontext()
+    batch = run_transfer_batch(
+        prepared_commands,
+        timeout_seconds=timeout_seconds,
+        concurrency=concurrency or (transfer_concurrency(config, service_name) if config is not None else 1),
+        before_item=before_item,
+        after_item=after_item,
+        lock_factory=lock_factory,
+        on_process_started=on_process_started,
+        on_process_finished=on_process_finished,
     )
-    with session_context:
-        batch = run_transfer_batch(
-            prepared_commands,
-            timeout_seconds=timeout_seconds,
-            concurrency=concurrency or (transfer_concurrency(config, service_name) if config is not None else 1),
-            before_item=before_item,
-            after_item=after_item,
-            lock_factory=lock_factory,
-            on_process_started=on_process_started,
-            on_process_finished=on_process_finished,
-        )
     settling_paths = {
         normalize_plan_path(item.get("path", ""))
         for item in batch.results
@@ -8071,16 +8090,16 @@ def _execute_transfer_commands(
             service=service,
             concurrency=concurrency,
         )
+    sessions = contextlib.ExitStack()
     try:
-        with transfer_tick_lock(config.state_dir, service.name, blocking=False):
-            return _execute_transfer_commands_impl(
-                commands,
-                timeout_seconds=timeout_seconds,
-                config=config,
-                service=service,
-                concurrency=concurrency,
-            )
+        sessions.enter_context(transfer_tick_lock(config.state_dir, service.name, blocking=False))
+        # Acquire the writer boundary before generating IDs or recording an
+        # attempt. A busy cutover must not leave a never-started attempt held.
+        sessions.enter_context(writer_process_session(
+            config.state_dir, service.name, generation=f"{service.name}:executor", blocking=False,
+        ))
     except TransferStateError as exc:
+        sessions.close()
         # A lock conflict is normal scheduler backpressure; preserving the
         # selected records as deferred avoids a recurring error notification.
         now = datetime.now(timezone.utc).isoformat()
@@ -8122,6 +8141,17 @@ def _execute_transfer_commands(
                 message=f"{service.name} transfer executor tick is already running: {exc}",
             )
         ], performance
+    except BaseException:
+        sessions.close()
+        raise
+    with sessions:
+        return _execute_transfer_commands_impl(
+            commands,
+            timeout_seconds=timeout_seconds,
+            config=config,
+            service=service,
+            concurrency=concurrency,
+        )
 
 
 def _notify_abnormal_transfer_results(
@@ -8138,7 +8168,7 @@ def _notify_abnormal_transfer_results(
     for result in transfer_results:
         if not isinstance(result, dict):
             continue
-        if result.get("settling_local"):
+        if result.get("settling_local") or result.get("missing_remote_source"):
             continue
         path = normalize_plan_path(result.get("path", ""))
         message = ""
@@ -10447,9 +10477,49 @@ def _transfer_executor_run_report(
     )
 
 
+def _download_review_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
+    loaded = load_config(paths)
+    issues = list(loaded.issues)
+    queue_path = loaded.config.state_dir / "diffd" / "remote-changes.json"
+    execute = bool(getattr(args, "execute", False))
+    details: dict[str, object] = {"queue file": str(queue_path), "state writes": "none"}
+    try:
+        if args.review_command == "retry" and not has_errors(issues):
+            matched = retry_review(queue_path, args.path, args.event_id, execute=execute)
+            details.update({"matched records": matched, "path": args.path, "event_id": args.event_id})
+            if not matched:
+                issues.append(ConfigIssue(
+                    key="PCLOUD_TOOLS_DIFFD_REVIEW_EVENT",
+                    level="error",
+                    message="no review marker matches this path and current event_id; refresh review preview",
+                ))
+            elif execute:
+                details["state writes"] = str(queue_path)
+        records = review_records(queue_path)
+        details.update({"review records": records, "review count": len(records), "transfer started": False})
+    except TransferStateError as exc:
+        issues.append(ConfigIssue(key="PCLOUD_TOOLS_DIFFD_REVIEW_STATE", level="error", message=str(exc)))
+    return CommandReport(
+        command=f"diffd transfer review {args.review_command}",
+        status=status_from_issues(issues),
+        summary=(
+            "matching event may retry on the next normal gated tick"
+            if execute and not has_errors(issues)
+            else "read-only download review inspection"
+        ),
+        details=details,
+        issues=report_issues(issues),
+        actions=[],
+    )
+
+
 def cmd_service_transfer(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int | None:
+    if args.transfer_command == "review" and service.name == "diffd" and getattr(args, "review_command", None) in {"preview", "retry"}:
+        report = _download_review_report(args, paths)
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.transfer_command == "preview":
         report = _service_transfer_report(paths, service, transfer_command="preview")
         _print_transfer_preview_report(report, args)

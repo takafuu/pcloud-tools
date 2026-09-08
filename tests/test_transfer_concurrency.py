@@ -29,6 +29,34 @@ from pcloud_tools.transfer_state import (
 )
 
 
+def test_writer_cutover_conflict_never_enters_attempt_creation(tmp_path: Path, monkeypatch) -> None:
+    import contextlib
+    from types import SimpleNamespace
+    from pcloud_tools import cli_service_daemon as daemon
+
+    @contextlib.contextmanager
+    def busy_session(*args, **kwargs):
+        raise TransferStateError("writer cutover is active")
+        yield  # pragma: no cover
+
+    def unexpected_execution(*args, **kwargs):
+        pytest.fail("queue migration and attempt creation must wait for writer admission")
+
+    monkeypatch.setattr(daemon, "writer_process_session", busy_session)
+    monkeypatch.setattr(daemon, "_execute_transfer_commands_impl", unexpected_execution)
+    result, issues, performance = daemon._execute_transfer_commands(
+        [{"path": "Documents/a.txt", "command": ["never-run"]}],
+        timeout_seconds=5,
+        config=SimpleNamespace(state_dir=tmp_path, diffd_transfer_concurrency=1),
+        service=SimpleNamespace(name="diffd"),
+    )
+    assert result[0]["deferred"] is True
+    assert performance["started"] == 0
+    assert all(issue.level != "error" for issue in issues)
+    assert not (tmp_path / "diffd/transfer-attempts.json").exists()
+    assert not transfer_tick_lock_status(tmp_path, "diffd")["active"]
+
+
 def _sleep_commands(count: int) -> list[dict[str, object]]:
     return [
         {

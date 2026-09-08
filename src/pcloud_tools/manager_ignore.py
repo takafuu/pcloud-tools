@@ -70,9 +70,14 @@ def _matches_pattern(path: str, pattern: str) -> bool:
     return False
 
 
-def manager_ignore_match(config: AppConfig, path: str) -> ManagerIgnoreMatch | None:
+def manager_ignore_match(
+    config: AppConfig,
+    path: str,
+    *,
+    rules: tuple[ManagerIgnoreRule, ...] | None = None,
+) -> ManagerIgnoreMatch | None:
     matched: ManagerIgnoreRule | None = None
-    for rule in load_manager_ignore_rules(config):
+    for rule in load_manager_ignore_rules(config) if rules is None else rules:
         if _matches_pattern(path, rule.pattern):
             matched = rule
     if matched is None:

@@ -329,7 +329,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
     "pushd": {
         "summary": [
             "pushd tracks local filesystem events and appends upload queue records.",
-            "Current live launchd state is queue-only; automatic upload transfer remains closed.",
+            "Inspect live status for the current launchd and transfer gate state.",
         ],
         "commands": [
             "pcloud-manager pushd status --xbar",
@@ -345,17 +345,21 @@ _TOPICS: dict[str, dict[str, Any]] = {
     "diffd": {
         "summary": [
             "diffd polls pCloud /diff and appends in-scope remote-change records.",
-            "Current live launchd state is bounded API one-shot; automatic download transfer remains closed.",
+            "Inspect live status for the current launchd and transfer gate state.",
+            "A confirmed missing remote source is retained for review by event_id; other eligible downloads continue.",
         ],
         "commands": [
             "pcloud-manager diffd status --xbar",
             "pcloud-manager diffd preview --json",
             "pcloud-manager diffd launchd status --json",
             "pcloud-manager diffd transfer check",
+            "pcloud-manager diffd transfer review preview --json",
+            "pcloud-manager diffd transfer review retry --path Documents/example.txt --event-id CURRENT_EVENT_ID",
         ],
         "safety": [
             "Do not execute download transfers automatically from remote-change records.",
             "Live API use stays bounded and human-gated.",
+            "Review retry needs --execute to clear the matching marker; it never deletes a queue record, changes a local file, advances the cursor, or starts a transfer.",
         ],
     },
     "launchd": {
@@ -387,6 +391,7 @@ _TOPICS: dict[str, dict[str, Any]] = {
             "pcloud-manager diffd transfer check",
             "pcloud-manager pushd transfer executor-run --max-records 10",
             "pcloud-manager diffd transfer executor-run --max-records 10",
+            "pcloud-manager diffd transfer review preview --json",
         ],
         "safety": [
             "Do not consume queue/change records unless the approved consume policy says so.",

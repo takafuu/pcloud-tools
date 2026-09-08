@@ -33,6 +33,8 @@ Optional `vault` and `crypt` mount layers avoid `rclone mount`: the tool runs `r
 
 `pcloud-tools` is an alias of `pcloud-manager`.
 
+Missing remote download sources are retained for review by queue event ID, allowing other eligible downloads to continue. Inspect them with `pcloud-manager diffd transfer review preview --json`; use `review retry --path <path> --event-id <current-id> --execute` to permit a later gated retry without deleting the queue record or changing local files.
+
 ## Requirements
 
 - macOS or Linux
@@ -46,9 +48,9 @@ The installer bootstraps a pinned `uv` and Python runtime when needed. macOS `la
 The recommended first installation pins the release version and lets you inspect the installer before running it:
 
 ```sh
-curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.2.1/install.sh -o pcloud-tools-install.sh
+curl -LfsS https://raw.githubusercontent.com/takafuu/pcloud-tools/v0.2.2/install.sh -o pcloud-tools-install.sh
 less pcloud-tools-install.sh
-sh pcloud-tools-install.sh --version v0.2.1
+sh pcloud-tools-install.sh --version v0.2.2
 rm pcloud-tools-install.sh
 ```
 
@@ -121,9 +123,9 @@ Use versioned releases and keep the previous wheel or installer bundle. Before u
 Install a pinned release using the inspected installer, or a saved wheel:
 
 ```sh
-sh pcloud-tools-install.sh --version v0.2.1
+sh pcloud-tools-install.sh --version v0.2.2
 # Or use an already verified local wheel:
-sh pcloud-tools-install.sh --wheel /path/to/pcloud_tools-0.2.1-py3-none-any.whl
+sh pcloud-tools-install.sh --wheel /path/to/pcloud_tools-0.2.2-py3-none-any.whl
 ```
 
 Verify `pcloud-manager --version`, `pcloud-manager info`, and `pcloud-manager doctor`, then restore the previously loaded services. Keep the installed runtime independent of the source checkout. To return to the previous package, repeat the writer-stop and backup procedure and install the pinned previous release:

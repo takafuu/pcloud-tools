@@ -27,6 +27,13 @@ to inspect human approval gates. Use subsystem status commands such as
 and
 .B diffd status --xbar
 for compact menu-bar output.
+.PP
+Missing remote download sources are held for review by event ID. Use
+.B diffd transfer review preview --json
+to inspect them, and
+.B diffd transfer review retry --path PATH --event-id ID --execute
+to allow a later normal gated retry. No queue record is deleted, local file
+changed, cursor advanced, or transfer started by the retry command.
 .SH CONFIGURATION
 The default configuration directory is
 .I ~/.config/pcloud-tools

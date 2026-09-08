@@ -1,6 +1,6 @@
 # pcloud-manager AI向け概要
 
-Last updated: 2026-09-07
+Last updated: 2026-09-08
 
 追加worktreeは `/Users/takafumi/p-core/dev/pcloud-tools-dev/<worktree>/` に集約する。これは `~/dev/pcloud-tools-dev/<worktree>/` と同じ場所（`~/dev` は `/Users/takafumi/p-core/dev` へのsymlink）。`~/dev` 直下へworktreeを増やさない。主checkoutは `/Users/takafumi/p-core/dev/pcloud-tools/` に維持する。
 
@@ -35,7 +35,7 @@ releaseはsemantic version tagで管理する。GitHub-only distributionで、ra
 
 - `daemon`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_daemon.py`
 - `mode`: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_mode.py`
-- `pushd` / `diffd` daemon surfaces: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_service_daemon.py`
+- `pushd` / `diffd` daemon surfaces: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/cli_service_daemon/__init__.py`
 - pushd/diffd state reader: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/service_daemon_state.py`
 - download suppression/conflict and upload-origin journals: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/download_suppression.py`
 - abnormal chat notify helper: `/Users/takafumi/p-core/dev/pcloud-tools/src/pcloud_tools/chat_notify.py`
@@ -237,3 +237,11 @@ git diff --check
 
 設定したlocal `source_root` から `pcloud-crypt:` の `remote_root` へ一方向copy/checkする用途は `pcloud-manager` へ追加せず、別 command `/Users/takafumi/p-core/bin/pcloud-archive` が担当する。crypt mountは不要で、ローカル削除はremoteへ自動伝播しない。`man pcloud-archive`、`help --detail`、`info paths` から説明を再発見できる。man pageは任意で、未設置時はdoctor issueにしない。詳細は `/Users/takafumi/p-core/dev/#仕様書/pcloud-archive/` を読む。
 - failed check の `name` と `detail` を作業記録またはレビューコメントへ添えて reviewer/implementer 間で戻す
+
+## 転送元不在・表示待ちの再開地点
+
+`download_review.py`はremote-source-missingの世代限定review markerをremote-changes recordへ追加する。queue/local/cursorを保持し、次tickでは他のeligible転送を処理する。retryは`diffd transfer review preview|retry`を使い、raw queueの編集や旧event_idの再利用で代用しない。新世代へ古いmarkerを適用しない。child終了不明は引き続きtransfer recoveryの対象。
+
+`service_daemon_plan.py`はplan単位でsuppression/upload-origin journalとignore ruleを読み直す。候補ごとの巨大JSON再parseや長寿命cacheへ戻さない。対応testは`tests/test_download_review.py`、`tests/test_plan_snapshots.py`、`tests/test_transfer_concurrency.py`。
+
+xbar sourceは `/Users/takafumi/p-core/dev/xbar/pcloud-status/`、仕様は `/Users/takafumi/p-core/dev/#仕様書/pcloud-status/`。UI cacheは即時表示・単独background refresh・期限付きで、古い値はその旨を表示する。UI cacheを転送判断に使わない。
