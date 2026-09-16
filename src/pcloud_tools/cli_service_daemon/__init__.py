@@ -336,6 +336,8 @@ def _add_transfer_automation_run_parser(transfer_subparsers: argparse._SubParser
 def _add_transfer_recovery_parser(transfer_subparsers: argparse._SubParsersAction) -> None:
     from ..cli_conflict import add_parser as add_conflict_parser
     add_conflict_parser(transfer_subparsers)
+    from ..cli_manual_pull import add_parser as add_manual_pull_parser
+    add_manual_pull_parser(transfer_subparsers)
     recovery_parser = transfer_subparsers.add_parser(
         "recovery", help="Inspect or explicitly release an interrupted transfer attempt."
     )
@@ -1719,6 +1721,8 @@ def _status_plan_details(
     return {
         "plan summary": _diffd_plan_summary(plan),
         "daemon diffid": daemon_state.diffid,
+        "download mode": config.diffd_download_mode,
+        "cloud review count": len({r.path for r in plan.download_records}),
         "folder cache entries": len(folder_cache),
         "remote changes": plan.remote_change_count,
         "pending downloads": plan.pending_download_count,
@@ -9514,6 +9518,11 @@ def _transfer_automation_run_report(
     service: ServiceDefinition,
 ) -> CommandReport:
     load_result = load_config(paths)
+    if service.name == "diffd" and load_result.config.diffd_download_mode == "manual":
+        return CommandReport(command="diffd transfer automation-run", status="error" if has_errors(load_result.issues) else "ok",
+                             summary="クラウド変更は確認待ちです。自動ダウンロードは無効です。",
+                             details={"download mode": "manual", "transfer started": False, "state writes": "none"},
+                             issues=report_issues(load_result.issues), actions=[])
     state = read_service_daemon_state(load_result.config, service.name)
     real_transfer_spec = GATES["real_transfer.execution"]
     real_gate_env = os.environ.get(real_transfer_spec.env_var)
@@ -10542,6 +10551,19 @@ def _download_review_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
 def cmd_service_transfer(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int | None:
+    if args.transfer_command == "manual":
+        from ..cli_manual_pull import run as run_manual_pull
+        try:
+            if service.name != "diffd":
+                raise ValueError("manual cloud review is available under diffd only")
+            details = run_manual_pull(args, paths)
+            report = CommandReport(command=f"diffd transfer manual {args.manual_command}", status="ok",
+                                   summary=details.get("message", "クラウド変更の確認"), details=details, issues=[], actions=[])
+        except (OSError, ValueError, TransferStateError) as exc:
+            report = CommandReport(command="diffd transfer manual", status="error", summary=str(exc), details={},
+                                   issues=report_issues([ConfigIssue(key="PCLOUD_TOOLS_MANUAL_PULL",level="error",message=str(exc))]),actions=[])
+        print_report(report,args)
+        return exit_code_for_report(report)
     if args.transfer_command == "resolve":
         from ..cli_conflict import run as run_resolution
         try:

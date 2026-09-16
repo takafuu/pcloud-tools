@@ -349,10 +349,14 @@ _TOPICS: dict[str, dict[str, Any]] = {
     "diffd": {
         "summary": [
             "diffd polls pCloud /diff and appends in-scope remote-change records.",
+            "PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE=manual disables automatic downloads; select changes explicitly in the cloud inbox.",
             "Inspect live status for the current launchd and transfer gate state.",
             "A confirmed missing remote source retires only its obsolete event_id; local files and newer events remain untouched.",
         ],
         "commands": [
+            "pcloud-manager diffd transfer manual list --json",
+            "pcloud-manager diffd transfer manual preview --path Documents/example.txt --choice pull --json",
+            "pcloud-manager diffd transfer manual apply --path Documents/example.txt --choice pull --token PREVIEW_TOKEN --execute",
             "pcloud-manager diffd status --xbar",
             "pcloud-manager diffd preview --json",
             "pcloud-manager diffd launchd status --json",

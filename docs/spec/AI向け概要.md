@@ -249,3 +249,14 @@ v0.2.3では転送元不在を確認待ちに残さず、download_review.pyで�
 ## 個別競合解消
 
 0.2.4は `pushd|diffd transfer resolve list|preview|apply` を提供します。repository root基準の `src/pcloud_tools/conflict_resolution.py` → `cli_conflict.py` → `tests/test_conflict_resolution.py` を参照。xbar project rootの `resolve_ui.py` が選択・確認を行います。両版を私有stateへ退避し、世代照合後に1つのqueueだけをatomic更新します。scope・gate・cursorは不変。planned件数が大量になる原因調査とは別です。
+
+
+## 手動で選択するクラウド取り込み（0.2.5）
+
+`PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE=manual` は自動download executorを転送・queue消費なしで終了させる。API pollerは変更検出を続け、xbarにクラウド変更件数を表示する。互換既定値は `auto`。自動pushは継続するが、検出済みの同じパスのcloud変更は従来の競合保留対象となる。検出前の変更まで保護する保証はない。
+
+xbarの「クラウド変更」からTerminalでファイル番号を選び、サイズと更新日時を見て、クラウド版を取り込む・ローカル版を採用する・保留から選ぶ。CLIは `diffd transfer manual list --json`、`preview --path PATH --choice pull|local --json`、`apply --path PATH --choice pull|local --token TOKEN --execute`。preview tokenはパス・設定・両側の内容・queue世代に結び付く。確認後に変化した場合は再確認が必要。
+
+明示的な採用前に両版をstate配下の `manual-pulls/` に退避する。pullは一時ファイルから置換し、取り込みの再uploadを抑止する。localはuploadを予約する。元からローカルにないファイルでlocalを選ぶこと、delete/rename、symlink、scope外はこの入口では扱わない。保留・取消では転送しない。失敗時はreceiptと未確定attemptを保持して自動再試行せず復旧対象とする。退避は自動削除しない。
+
+ファイル移動・改名ではmtimeだけで同一ファイルと判断しない。移動先の内容とcloud保存を確認して旧パスを別途整理する。cloudだけにあるファイルを自動pullで復活させない。同期除外のdirectoryを変更するときは既存queueにも同じscopeを適用する。

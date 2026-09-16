@@ -83,6 +83,7 @@ class AppConfig:
     pcloud_api_auth_param: str
     pcloud_api_token: str
     pcloud_api_timeout_seconds: int
+    diffd_download_mode: str = "auto"
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         """Accept legacy positional construction and optional new settings.
@@ -95,13 +96,16 @@ class AppConfig:
         """
         field_names = tuple(type(self).__dataclass_fields__)
         concurrency_names = {"pushd_transfer_concurrency", "diffd_transfer_concurrency"}
-        legacy_names = tuple(name for name in field_names if name not in concurrency_names)
+        previous_names = tuple(name for name in field_names if name != "diffd_download_mode")
+        legacy_names = tuple(name for name in previous_names if name not in concurrency_names)
         if not args:
             positional_names = ()
         elif len(args) == len(field_names):
             positional_names = field_names
         elif len(args) == len(legacy_names):
             positional_names = legacy_names
+        elif len(args) == len(previous_names):
+            positional_names = previous_names
         else:
             raise TypeError(
                 f"AppConfig expected {len(legacy_names)} or {len(field_names)} positional arguments, "
@@ -203,6 +207,7 @@ CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("pcloud_api_auth_param", "PCLOUD_TOOLS_PCLOUD_API_AUTH_PARAM", "str", "auth"),
     FieldSpec("pcloud_api_token", "PCLOUD_TOOLS_PCLOUD_API_TOKEN", "str", ""),
     FieldSpec("pcloud_api_timeout_seconds", "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS", "int", "30"),
+    FieldSpec("diffd_download_mode", "PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE", "str", "auto"),
 )
 
 
@@ -371,6 +376,8 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
 
 def validate_config(config: AppConfig) -> list[ConfigIssue]:
     issues: list[ConfigIssue] = []
+    if config.diffd_download_mode not in {"auto", "manual"}:
+        issues.append(ConfigIssue(key="PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE", level="error", message="download mode must be auto or manual"))
 
     if not config.env_file.exists():
         issues.append(
