@@ -237,6 +237,7 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
                 _path_entry(config.allowlist_file, "sync scope file"),
                 _path_entry(config.manager_ignore_file, "manager ignore file"),
                 _path_entry(config.state_dir, "runtime state directory"),
+                _path_entry(config.state_dir / "conflict-resolutions", "conflict originals and decision receipts (private; retained until manually removed)"),
                 _path_entry(config.log_dir, "runtime log directory"),
                 _path_entry(sync_filter_file(config), "generated rclone filter file"),
                 _path_entry(config.autosync_plist, "autosync LaunchAgent plist"),

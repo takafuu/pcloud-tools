@@ -334,6 +334,8 @@ def _add_transfer_automation_run_parser(transfer_subparsers: argparse._SubParser
 
 
 def _add_transfer_recovery_parser(transfer_subparsers: argparse._SubParsersAction) -> None:
+    from ..cli_conflict import add_parser as add_conflict_parser
+    add_conflict_parser(transfer_subparsers)
     recovery_parser = transfer_subparsers.add_parser(
         "recovery", help="Inspect or explicitly release an interrupted transfer attempt."
     )
@@ -10540,6 +10542,19 @@ def _download_review_report(args: argparse.Namespace, paths: RuntimePaths) -> Co
 def cmd_service_transfer(
     args: argparse.Namespace, paths: RuntimePaths, service: ServiceDefinition
 ) -> int | None:
+    if args.transfer_command == "resolve":
+        from ..cli_conflict import run as run_resolution
+        try:
+            details = run_resolution(args, paths)
+            report = CommandReport(command=f"{service.name} transfer resolve {args.resolve_command}",
+                                   status="ok", summary=details.get("message", "競合解消の確認"),
+                                   details=details, issues=[], actions=[])
+        except (OSError, ValueError, TransferStateError) as exc:
+            report = CommandReport(command=f"{service.name} transfer resolve {args.resolve_command}",
+                                   status="error", summary=str(exc), details={},
+                                   issues=report_issues([ConfigIssue(key="PCLOUD_TOOLS_CONFLICT_RESOLUTION", level="error", message=str(exc))]), actions=[])
+        print_report(report, args)
+        return exit_code_for_report(report)
     if args.transfer_command == "review" and service.name == "diffd" and getattr(args, "review_command", None) in {"preview", "retry"}:
         report = _download_review_report(args, paths)
         print_report(report, args)

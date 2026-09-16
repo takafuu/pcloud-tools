@@ -245,3 +245,7 @@ v0.2.3では転送元不在を確認待ちに残さず、download_review.pyで�
 名前変更はdiffd_events.pyのremote_file_idとdiffidで集約し、service_daemon_plan.append_plan_recordのcoalesce_remote_fileで既存queueの古い同一file IDを置換する。追跡不能な旧recordの推測削除は禁止。transfer executor activeはstatusのtick lock観測値で、実行中を人の復旧待ちと誤表示しない。
 
 回帰検証はtest_download_review.py、test_diffd_coalesce.py、test_plan_snapshots.py、test_transfer_concurrency.py。pcloud-status別rootは要操作の件数・理由・確認先をメニュー最上部へ出す。残り作業と公開releaseは実態を検証して判断する。
+
+## 個別競合解消
+
+0.2.4は `pushd|diffd transfer resolve list|preview|apply` を提供します。repository root基準の `src/pcloud_tools/conflict_resolution.py` → `cli_conflict.py` → `tests/test_conflict_resolution.py` を参照。xbar project rootの `resolve_ui.py` が選択・確認を行います。両版を私有stateへ退避し、世代照合後に1つのqueueだけをatomic更新します。scope・gate・cursorは不変。planned件数が大量になる原因調査とは別です。

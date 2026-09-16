@@ -336,10 +336,14 @@ _TOPICS: dict[str, dict[str, Any]] = {
             "pcloud-manager pushd preview --json",
             "pcloud-manager pushd launchd status --json",
             "pcloud-manager pushd transfer check",
+            "pcloud-manager pushd transfer resolve list --json",
+            "pcloud-manager pushd transfer resolve preview --path Documents/example.txt --strategy both --json",
+            "pcloud-manager pushd transfer resolve apply --path Documents/example.txt --strategy both --token PREVIEW_TOKEN --execute",
         ],
         "safety": [
             "Do not execute upload transfers automatically from queued records.",
             "Delete/rename events go to manual review instead of automatic upload work.",
+            "Resolve requires an explicit local/cloud/both choice and the exact preview token. Both originals are backed up under state/conflict-resolutions; only one queue is changed. Normal transfer gates remain in force.",
         ],
     },
     "diffd": {
