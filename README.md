@@ -35,6 +35,31 @@ Optional `vault` and `crypt` mount layers avoid `rclone mount`: the tool runs `r
 
 Confirmed missing remote download sources are automatically retired by queue event ID. Other events and local files remain intact; no user action is needed. File IDs coalesce obsolete names into the latest queued name. Authentication, network failures, and unresolved conflicts remain pending.
 
+## Resolve a file conflict
+
+The conflict-resolution commands require pcloud-manager 0.2.4 or later. The pinned v0.2.3 installation example below does not include this feature. To install this source revision, build a wheel with `./scripts/build-release-bundle.sh` and follow the [upgrade procedure](#upgrade-and-rollback) using `install.sh --wheel`.
+
+These commands handle regular files with changes queued on both sides. Inspect the current versions before choosing which content to keep:
+
+```sh
+pcloud-manager pushd transfer resolve list --json
+pcloud-manager pushd transfer resolve preview --path Documents/example.txt --strategy both --json
+# Replace PREVIEW_TOKEN with the token returned by the preview:
+pcloud-manager pushd transfer resolve apply --path Documents/example.txt --strategy both --token PREVIEW_TOKEN --execute --json
+```
+
+| Strategy | Result |
+| --- | --- |
+| `local` | Keep the local version and release its queued upload. |
+| `cloud` | Release the queued download to the original local path. |
+| `both` | Keep the local version under a `.local-conflict-<id>` filename, queue that copy for upload, and release the download to the original path. |
+
+Every choice first saves both original versions under the configured state directory's `conflict-resolutions/<id>/`, together with a decision receipt. Use `pcloud-manager info paths` to find the backup location. These private backups are retained until manually removed.
+
+The preview token binds the choice to the inspected file versions and queued records. Detected changes, backup failures, running transfer batches, or unresolved attempts block application. A successful apply updates the queue; it does not mean synchronization has finished. Existing transfer gates and scheduling still apply. Deletes, renames, missing files, symlinks, and unsupported remote hashes need separate review.
+
+On macOS, the companion [pcloud-status xbar plugin](https://github.com/takafuu/pcloud-status) provides the same choices through **要操作 → 競合を解消…**. The menu label and flow described here are for the conflict-resolution implementation shipped with this source revision.
+
 ## Requirements
 
 - macOS or Linux
