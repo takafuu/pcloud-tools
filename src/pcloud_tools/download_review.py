@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Any
 
 from .download_suppression import normalize_plan_path
-from .io_utils import atomic_write_json
+from .io_utils import atomic_write_json, read_json_state
 from .transfer_state import TransferStateError, writer_state_lock
 
 
@@ -52,7 +52,7 @@ def review_reason(event_id: str | None, extra: dict[str, Any] | None) -> str:
 
 def read_review_queue(path: Path) -> list[Any]:
     try:
-        payload = json.loads(path.read_text())
+        payload = read_json_state(path)
     except FileNotFoundError:
         return []
     except (OSError, json.JSONDecodeError) as exc:

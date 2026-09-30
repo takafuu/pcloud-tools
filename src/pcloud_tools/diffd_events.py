@@ -15,6 +15,9 @@ class DiffdRemoteChange:
     diffid: str
     raw: str
     file_id: str = ""
+    modified: object = None
+    size: object = None
+    event_time: object = None
 
 
 @dataclass(frozen=True)
@@ -30,20 +33,40 @@ class DiffdResponseParseResult:
     changes: tuple[DiffdRemoteChange, ...]
     invalid: tuple[InvalidDiffdRemoteChange, ...]
     folder_paths: dict[str, str]
+    requires_reconciliation: bool = False
 
 
 def _string(value: object, default: str = "") -> str:
     return str(value if value is not None else default).strip()
 
 
+def _path_requires_rclone_resolution(value: str) -> bool:
+    # /diff names are pCloud-native, whereas lsjson uses rclone Standard
+    # names. pCloud's default encoding also replaces BackSlash. A native
+    # escape (including its quote rune) is ambiguous without the backend
+    # configuration; let rclone resolve it in a scoped inventory instead of
+    # consuming an event against a different, apparently absent path.
+    # https://rclone.org/pcloud/#encoding
+    return (value != value.strip()
+            or any(ord(c) < 32 or 0x2400 <= ord(c) <= 0x241f
+                   or c in "\\\x7f‛／＼␡" for c in value)
+            or any(part in {"．", "．．"} for part in value.split("/")))
+
+
 def _metadata_path(item: dict[str, Any], folder_paths: dict[str, str]) -> str:
     metadata = item.get("metadata")
     if not isinstance(metadata, dict):
         return ""
-    path = normalize_plan_path(metadata.get("path", ""))
-    if path:
-        return path
-    name = _string(metadata.get("name"))
+    raw_path = metadata.get("path", "")
+    if raw_path:
+        return str(raw_path)
+    name = metadata.get("name", "")
+    if not isinstance(name, str):
+        return ""
+    if _path_requires_rclone_resolution(name):
+        # Legacy plan-path parsing cannot represent these names losslessly.
+        # Request a full rclone inventory instead of targeting a different name.
+        return ""
     if not name:
         return ""
     parent_id = _string(metadata.get("parentfolderid"), "0")
@@ -81,6 +104,9 @@ def _change_from_mapping(
         path_value = _metadata_path(item, folder_paths or {})
     if not path_value:
         path_value = item.get("name", "")
+    raw_path = str(path_value or "")
+    if _path_requires_rclone_resolution(raw_path):
+        return InvalidDiffdRemoteChange(raw=raw, reason="path requires lossless rclone reconciliation")
     path = normalize_plan_path(path_value)
     if not path:
         return InvalidDiffdRemoteChange(raw=raw, reason="missing or unsafe path")
@@ -88,7 +114,9 @@ def _change_from_mapping(
     file_id = _string(metadata.get("fileid")) if isinstance(metadata, dict) else ""
     if not file_id.isdigit():
         file_id = ""
-    return DiffdRemoteChange(path=path, event=event or "change", diffid=diffid or default_diffid, raw=raw, file_id=file_id)
+    return DiffdRemoteChange(path=path, event=event or "change", diffid=diffid or default_diffid, raw=raw, file_id=file_id,
+                            modified=metadata.get("modified") if isinstance(metadata, dict) else None,
+                            size=metadata.get("size") if isinstance(metadata, dict) else None, event_time=item.get("time"))
 
 
 def _payload_entries(payload: Any) -> tuple[str, list[Any]] | InvalidDiffdRemoteChange:
@@ -146,6 +174,8 @@ def parse_diff_response_text(
         changes=tuple(item for item in parsed if isinstance(item, DiffdRemoteChange)),
         invalid=tuple(item for item in parsed if isinstance(item, InvalidDiffdRemoteChange)),
         folder_paths=folder_paths,
+        requires_reconciliation=any(isinstance(i, InvalidDiffdRemoteChange) for i in parsed) or any(isinstance(i, dict) and (i.get("event") == "reset" or
+            isinstance(i.get("metadata"), dict) and i["metadata"].get("isfolder")) for i in items),
     )
 
 
@@ -179,7 +209,11 @@ def diff_changes_to_records(changes: tuple[DiffdRemoteChange, ...]) -> tuple[Pla
                 path=change.path,
                 action=action,
                 reason=f"diff:{change.event}",
-                extra={"diffid": change.diffid, **({"remote_file_id": change.file_id} if change.file_id else {})},
+                extra={"diffid": change.diffid,
+                       **({"remote_modified": change.modified} if change.modified is not None else {}),
+                       **({"remote_size": change.size} if change.size is not None else {}),
+                       **({"remote_event_time": change.event_time} if change.event_time is not None else {}),
+                       **({"remote_file_id": change.file_id} if change.file_id else {})},
             )
         )
     return tuple(records)

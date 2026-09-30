@@ -1,5 +1,9 @@
 from __future__ import annotations
 
+# Bound foreground latency while rebuilding the full synchronization baseline.
+EVENT_RECONCILE_BATCH_LIMIT = 100
+EVENT_RECHECK_BATCH_LIMIT = 100
+
 import os
 import re
 from dataclasses import MISSING, dataclass, field
@@ -84,6 +88,9 @@ class AppConfig:
     pcloud_api_token: str
     pcloud_api_timeout_seconds: int
     diffd_download_mode: str = "auto"
+    conflict_same_time: str = "local"
+    conflict_retention_days: int = 14
+    conflict_max_bytes: int = 100_000_000_000
 
     def __init__(self, *args: object, **kwargs: object) -> None:
         """Accept legacy positional construction and optional new settings.
@@ -96,7 +103,7 @@ class AppConfig:
         """
         field_names = tuple(type(self).__dataclass_fields__)
         concurrency_names = {"pushd_transfer_concurrency", "diffd_transfer_concurrency"}
-        previous_names = tuple(name for name in field_names if name != "diffd_download_mode")
+        previous_names = tuple(name for name in field_names if name not in {"diffd_download_mode", "conflict_same_time", "conflict_retention_days", "conflict_max_bytes"})
         legacy_names = tuple(name for name in previous_names if name not in concurrency_names)
         if not args:
             positional_names = ()
@@ -134,6 +141,11 @@ class AppConfig:
                 raise TypeError(f"AppConfig missing required argument: {name}")
         for name in field_names:
             object.__setattr__(self, name, values[name])
+
+    @property
+    def sync_policy(self) -> str:
+        """Event mode is an explicit replacement of the previous auto/manual policy."""
+        return "event" if self.diffd_download_mode == "event" else "legacy"
 
 
 ConfigValueKind = Literal["path", "str", "int", "bool", "csv"]
@@ -208,6 +220,9 @@ CONFIG_FIELD_SPECS: tuple[FieldSpec, ...] = (
     FieldSpec("pcloud_api_token", "PCLOUD_TOOLS_PCLOUD_API_TOKEN", "str", ""),
     FieldSpec("pcloud_api_timeout_seconds", "PCLOUD_TOOLS_PCLOUD_API_TIMEOUT_SECONDS", "int", "30"),
     FieldSpec("diffd_download_mode", "PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE", "str", "auto"),
+    FieldSpec("conflict_same_time", "PCLOUD_TOOLS_CONFLICT_SAME_TIME", "str", "local"),
+    FieldSpec("conflict_retention_days", "PCLOUD_TOOLS_CONFLICT_RETENTION_DAYS", "int", "14"),
+    FieldSpec("conflict_max_bytes", "PCLOUD_TOOLS_CONFLICT_MAX_BYTES", "int", "100000000000"),
 )
 
 
@@ -376,8 +391,8 @@ def _build_fallback_config(paths: RuntimePaths, defaults: dict[str, str]) -> App
 
 def validate_config(config: AppConfig) -> list[ConfigIssue]:
     issues: list[ConfigIssue] = []
-    if config.diffd_download_mode not in {"auto", "manual"}:
-        issues.append(ConfigIssue(key="PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE", level="error", message="download mode must be auto or manual"))
+    if config.diffd_download_mode not in {"auto", "manual", "event"}:
+        issues.append(ConfigIssue(key="PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE", level="error", message="download mode must be auto (legacy), manual, or event (bidirectional newer-version policy)"))
 
     if not config.env_file.exists():
         issues.append(
@@ -438,6 +453,11 @@ def validate_config(config: AppConfig) -> list[ConfigIssue]:
                 )
             )
 
+    if config.conflict_same_time not in {'local', 'cloud'}:
+        issues.append(ConfigIssue(key='PCLOUD_TOOLS_CONFLICT_SAME_TIME', level='error', message='expected local or cloud'))
+    for key, value in [('PCLOUD_TOOLS_CONFLICT_RETENTION_DAYS', config.conflict_retention_days), ('PCLOUD_TOOLS_CONFLICT_MAX_BYTES', config.conflict_max_bytes)]:
+        if value < 0:
+            issues.append(ConfigIssue(key=key, level='error', message='expected a nonnegative value'))
     if config.pushd_upload_settle_seconds < 0:
         issues.append(
             ConfigIssue(

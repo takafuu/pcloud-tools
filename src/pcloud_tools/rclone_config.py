@@ -60,3 +60,16 @@ def load_rclone_pcloud_credentials(config: AppConfig) -> RclonePcloudCredentials
         access_token=access_token,
         source_path=path,
     )
+
+
+def remote_backend_type(remote: str) -> str:
+    """Read only the backend name; never expose credentials in reports."""
+    if ":" not in remote:
+        return "local"
+    name = remote_name_from_remote(remote)
+    parser = configparser.ConfigParser(interpolation=None)
+    try:
+        parser.read(rclone_config_path())
+        return parser.get(name, "type", fallback="").strip()
+    except (OSError, configparser.Error):
+        return ""

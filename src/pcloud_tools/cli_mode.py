@@ -132,6 +132,10 @@ def _launchctl_print(launchctl_bin: str | None, label: str) -> dict[str, object]
 
 
 def _read_json_list_count(path: Path) -> tuple[int, ConfigIssue | None]:
+    from .sqlite_state import database_for
+    store = database_for(path)
+    if store:
+        return store.count('queue', path.parent.name), None
     if not path.exists():
         return 0, None
     try:

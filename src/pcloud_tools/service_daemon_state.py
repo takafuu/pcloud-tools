@@ -99,11 +99,13 @@ def read_service_daemon_state(config: AppConfig, name: str) -> ServiceDaemonStat
     if pid_issue:
         issues.append(pid_issue)
 
-    queue_payload, queue_issue = _read_json(files["queue"], name)
+    from .sqlite_state import database_for
+    store = database_for(files['queue'])
+    queue_payload, queue_issue = ([], None) if store else _read_json(files['queue'], name)
     if queue_issue:
         issues.append(queue_issue)
     if isinstance(queue_payload, list):
-        queue_length = len(queue_payload)
+        queue_length = store.count('queue', name) if store else len(queue_payload)
     elif queue_payload is None:
         queue_length = 0
     else:

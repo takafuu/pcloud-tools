@@ -48,7 +48,8 @@ def test_public_cli_reports_release_version(tmp_path: Path) -> None:
     )
 
     assert result.returncode == 0
-    assert result.stdout.strip() == "pcloud-manager 0.2.4"
+    from pcloud_tools import __version__
+    assert result.stdout.strip() == f"pcloud-manager {__version__}"
 
 
 def test_configured_public_entrypoint_wins_over_path_lookup(

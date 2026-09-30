@@ -1094,9 +1094,11 @@ def _copy_command(profile: ArchiveProfile, local_path: Path, relative: str, bwli
 
 
 def _check_command(profile: ArchiveProfile, local_path: Path, relative: str) -> list[str]:
+    from .rclone_config import remote_backend_type
+    backend = remote_backend_type(profile.remote_root)
     return [
         profile.rclone_bin,
-        "check",
+        "cryptcheck" if backend == "crypt" else "check",
         str(local_path),
         _remote_target(profile, relative, local_path),
         "--one-way",

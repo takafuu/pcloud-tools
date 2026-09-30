@@ -3,6 +3,8 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import sqlite3
+from .sqlite_state import DB_NAME, Store, active as sqlite_active
 from importlib import metadata
 from pathlib import Path
 
@@ -108,6 +110,8 @@ def _config_summary(paths: RuntimePaths) -> dict[str, object]:
         "config source": load_result.source,
         "core dir": str(config.core_dir),
         "state dir": str(config.state_dir),
+            "sync state database": str(config.state_dir / DB_NAME),
+            "sync trace directory": str(config.state_dir / "diagnostics" / "sync-trace"),
         "log dir": str(config.log_dir),
         "sync scope file": str(config.allowlist_file),
         "manager ignore": str(config.manager_ignore_file),
@@ -269,6 +273,8 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "manager ignore file": str(config.manager_ignore_file),
             "default excludes": list(config.default_excludes),
             "state dir": str(config.state_dir),
+            "sync state database": str(config.state_dir / DB_NAME),
+            "sync trace directory": str(config.state_dir / "diagnostics" / "sync-trace"),
             "log dir": str(config.log_dir),
             "rclone bin": config.rclone_bin,
             "autosync label": config.autosync_label,
@@ -305,6 +311,8 @@ def _info_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport
             "config dir": str(paths.config_dir),
             "env file": str(paths.env_file),
             "state dir": str(config.state_dir),
+            "sync state database": str(config.state_dir / DB_NAME),
+            "sync trace directory": str(config.state_dir / "diagnostics" / "sync-trace"),
             "log dir": str(config.log_dir),
             "core dir": str(config.core_dir),
             "core remote": config.core_remote,
@@ -574,6 +582,17 @@ def _readable_baseline(info_file: Path, mode: str, status: str) -> str:
 def _status_report(args: argparse.Namespace, paths: RuntimePaths) -> CommandReport:
     load_result = load_config(paths)
     config = load_result.config
+    if config.sync_policy == "event":
+        from .event_sync_status import snapshot
+        event = snapshot(config)
+        issues = list(load_result.issues) + [ConfigIssue(key="PCLOUD_TOOLS_EVENT_SYNC", level="warning", message=message)
+                                           for message in event["issues"]]
+        layers = {spec.name: mount_layer_state(spec) for spec in resolve_layers(config, "all")}
+        issues.extend(_mount_state_issues(layers))
+        return CommandReport(command="status", status=status_from_issues(issues), summary=event["label"],
+            details={"sync policy": "event", "event status": event,
+                     "vault": _mount_status_label(layers["vault"]), "crypt": _mount_status_label(layers["crypt"]),
+                     **_config_summary(paths)}, issues=report_issues(issues), actions=_status_actions(paths))
     mode = "dev" if paths.dev_mode else "default"
     sync_state = read_sync_state(config)
     lock_state = read_sync_lock_state(config)
@@ -822,6 +841,16 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         + _mount_state_issues(layer_states)
         + queue_issues
     )
+    if sqlite_active(config.state_dir):
+        try:
+            Store(config.state_dir / DB_NAME).check()
+        except (OSError, ValueError, sqlite3.Error) as exc:
+            issues.append(ConfigIssue(key='PCLOUD_TOOLS_STATE_DATABASE', level='error', message=str(exc)))
+    from .sync_trace import status as trace_status
+    try:
+        trace_status(config.state_dir)
+    except (OSError, ValueError, KeyError, TypeError):
+        issues.append(ConfigIssue(key='sync trace', level='warning', message='Trace state is unreadable; use trace doctor --json.'))
     has_error_issues = has_errors(issues)
     status = status_from_issues(issues)
     doctor_summary = _doctor_operational_summary(queue_details) or _doctor_summary(sync_state, layer_states)
@@ -887,6 +916,18 @@ def _doctor_report(args: argparse.Namespace, paths: RuntimePaths) -> tuple[Comma
         "transfer concurrency effective range": "1-4",
         **queue_details,
     }
+    if config.sync_policy == "event":
+        from .event_sync_status import snapshot
+        event = snapshot(config)
+        issues.extend(ConfigIssue(key="PCLOUD_TOOLS_EVENT_SYNC", level="warning", message=message)
+                      for message in event["issues"])
+        status = status_from_issues(issues)
+        doctor_summary = event["label"]
+        suspected_cause = "; ".join(event["issues"]) or "-"
+        details.update({"summary": doctor_summary, "suspected cause": suspected_cause,
+                        "sync policy": "event", "event status": event,
+                        "legacy sync state": details.pop("sync state"),
+                        "legacy sync activity": details.pop("sync activity")})
     if repaired_items:
         details["repair"] = "; ".join(f"created {item}" for item in repaired_items)
 

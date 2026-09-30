@@ -1666,6 +1666,18 @@ def _status_plan_details(
     service: ServiceDefinition,
 ) -> tuple[dict[str, object], list[ConfigIssue]]:
     issues: list[ConfigIssue] = []
+    if config.sync_policy == "event":
+        from ..event_sync import read_state
+        try:
+            saved = read_state(config)
+            reviews = list(saved.get("reviews", {}).values()) if service.name == "diffd" else []
+            return {"sync policy": "event", "download mode": "event", "cloud review count": len(reviews),
+                    "manual review transfer records": len(reviews), "manual review transfer record details": reviews,
+                    "reconcile remaining": len(saved.get("reconcile", {}).get("pending", [])),
+                    "plan summary": "イベント同期 / 確認待ち: " + str(len(reviews)),
+                    "planned uploads": 0, "planned downloads": 0}, []
+        except TransferStateError as exc:
+            return {"sync policy": "event"}, [ConfigIssue(key="PCLOUD_TOOLS_EVENT_SYNC", level="error", message=str(exc))]
     if service.name == "pushd":
         plan, scope = build_pushd_plan(config, state)
         issues.extend(plan.issues)
@@ -5123,6 +5135,9 @@ def _pushd_fswatch_probe_command(config: AppConfig, fswatch_bin: str) -> tuple[s
 
 
 def _pushd_fswatch_resident_command(config: AppConfig, fswatch_bin: str) -> tuple[str, ...]:
+    if config.sync_policy == "event":
+        from ..event_sync_watch import command
+        return tuple(command(config, fswatch_bin))
     return (
         fswatch_bin,
         "--recursive",
@@ -5453,6 +5468,12 @@ def _pushd_fswatch_resident_run_report_impl(args: argparse.Namespace, paths: Run
             actions=_service_actions(paths, _SERVICES["pushd"]),
         )
 
+    if config.sync_policy == "event":
+        from ..event_sync_watch import run as run_event_watch
+        with writer_process_session(config.state_dir, "pushd", generation="pushd:event-watch"):
+            result = run_event_watch(config, resident_command[0], max_events)
+        return CommandReport(command="pushd fswatch resident-run", status="error" if result["status"] == "failed" else "ok",
+                             summary="FSEvents event watcher " + result["status"], details=result, issues=[], actions=[])
     started_at = datetime.now(timezone.utc).isoformat()
     cleanup: dict[str, object] = {"process group cleanup": "not-needed"}
     results: dict[str, object] = {
@@ -6716,6 +6737,7 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
             folder_metadata_requests: list[str] = []
             combined_changes = []
             combined_invalid = []
+            reconcile_needed = False
             iterations_processed = 0
             for _ in range(requested_iterations):
                 response_text, live_request_url = _fetch_pcloud_diff_response(
@@ -6727,6 +6749,7 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
                 )
                 folder_metadata_requests.extend(fetched_folder_urls)
                 iteration = parse_diff_response_text(response_text, live_request_url, folder_cache)
+                reconcile_needed = reconcile_needed or iteration.requires_reconciliation or bool(iteration.invalid)
                 if not iteration.diffid.isdigit():
                     parsed = iteration
                     break
@@ -6744,6 +6767,7 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
                 changes=tuple(combined_changes),
                 invalid=tuple(combined_invalid),
                 folder_paths=folder_cache,
+                requires_reconciliation=reconcile_needed,
             )
             details["iterations processed"] = iterations_processed
             details["folder metadata requests"] = folder_metadata_requests
@@ -6792,6 +6816,9 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
 
     failure_state_written = False
     if execute and live_api and api_failure and gate_open and approval_status == "complete-read-only":
+        if config.sync_policy == "event":
+            from ..event_sync import request_reconciliation
+            request_reconciliation(config, "cloud monitor interrupted")
         finished_at = datetime.now(timezone.utc).isoformat()
         failure_state = {
             "source": api_response_source,
@@ -6864,6 +6891,15 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
 
     assert parsed is not None
     assert plan is not None
+    if config.sync_policy == "event":
+        from ..event_sync import request_reconciliation
+        try:
+            previous = json.loads(state_file.read_text())
+            gap = (datetime.now(timezone.utc) - datetime.fromisoformat(str(previous.get("finished_at")))).total_seconds()
+        except (OSError, ValueError, TypeError, AttributeError):
+            gap = float("inf")
+        if parsed.requires_reconciliation or parsed.invalid or gap > max(180, config.diffd_poll_interval_seconds * 3):
+            request_reconciliation(config, "cloud monitor started/resumed or directory/reset event")
     iterations_processed = int(details.get("iterations processed", requested_iterations) or 0)
     started_at = datetime.now(timezone.utc).isoformat()
     appended_records: list[dict[str, str]] = []
@@ -6871,7 +6907,7 @@ def _diffd_api_long_poll_run_report_impl(args: argparse.Namespace, paths: Runtim
     coalesced_record_count = 0
     skipped_records = record_payloads(plan.skipped_records)
     for record in plan.download_records:
-        if _is_noop_remote_delete_record(config, record):
+        if config.sync_policy != "event" and _is_noop_remote_delete_record(config, record):
             preview_remove = remove_plan_records(
                 plan.remote_changes_file,
                 "PCLOUD_TOOLS_DIFFD_REMOTE_CHANGES",
@@ -9512,12 +9548,59 @@ def _consume_successful_transfer_results(
     return details, issues
 
 
+def _event_sync_automation_report(args, paths, service, loaded):
+    from ..event_sync import EventSync, read_state
+    config = loaded.config
+    execute = bool(getattr(args, "execute", False))
+    issues = list(loaded.issues)
+    for name in ("real_transfer.execution", "real_transfer.automation", "real_transfer.automation-run"):
+        gate = GATES[name]
+        if os.environ.get(gate.env_var) != gate.expected_value:
+            issues.append(ConfigIssue(key=gate.env_var, level="error" if execute else "warning",
+                                      message="event synchronization requires the existing transfer gates"))
+    shadow, shadow_issues = _shadow_report_check(getattr(args, "report_path", None),
+                                                issue_key="PCLOUD_TOOLS_REAL_TRANSFER_AUTOMATION_SHADOW_REPORT")
+    issues.extend(shadow_issues)
+    maximum = int(getattr(args, "max_records", 1))
+    if execute and (shadow.get("status") != "ok" or not getattr(args, "consume_on_success", False) or maximum <= 0):
+        issues.append(ConfigIssue(key="PCLOUD_TOOLS_EVENT_SYNC_GATE", level="error",
+                                  message="requires saved shadow proof, positive batch limit and --consume-on-success"))
+    details = {"sync policy": "event", "download mode": config.diffd_download_mode,
+               "state writes": "none", "transfer started": False}
+    if not has_errors(issues):
+        try:
+            if execute:
+                binary, issue = _resolve_real_rclone_bin(config)
+                if issue:
+                    issues.append(issue)
+                else:
+                    from ..event_sync_remote import RcloneRemote
+                    from ..review_worker import run_parallel
+                    details.update(run_parallel(config, lambda: RcloneRemote(config, binary),
+                        lambda: EventSync(config, RcloneRemote(config, binary)).tick(maximum)))
+                    details["state writes"] = "event sync state, generation queues and transfer receipts"
+                    details["transfer started"] = any(r.get("action") in {"upload", "download", "move", "delete-cloud", "delete-local"} for r in details["results"])
+            else:
+                saved = read_state(config)
+                details.update({"reviews": list(saved.get("reviews", {}).values()),
+                                "reconcile remaining": len(saved.get("reconcile", {}).get("pending", []))})
+        except (OSError, ValueError, TransferStateError) as exc:
+            issues.append(ConfigIssue(key="PCLOUD_TOOLS_EVENT_SYNC", level="error", message=str(exc)))
+    details["manual review transfer record details"] = details.get("reviews", [])
+    details["manual review transfer records"] = len(details.get("reviews", []))
+    return CommandReport(command=f"{service.name} transfer automation-run", status=status_from_issues(issues),
+                         summary="イベント同期を処理しました" if execute and not has_errors(issues) else "イベント同期の状態",
+                         details=details, issues=report_issues(issues), actions=_service_actions(paths, service))
+
+
 def _transfer_automation_run_report(
     args: argparse.Namespace,
     paths: RuntimePaths,
     service: ServiceDefinition,
 ) -> CommandReport:
     load_result = load_config(paths)
+    if getattr(load_result.config, "sync_policy", "legacy") == "event":
+        return _event_sync_automation_report(args, paths, service, load_result)
     if service.name == "diffd" and load_result.config.diffd_download_mode == "manual":
         return CommandReport(command="diffd transfer automation-run", status="error" if has_errors(load_result.issues) else "ok",
                              summary="クラウド変更は確認待ちです。自動ダウンロードは無効です。",
@@ -10557,7 +10640,7 @@ def cmd_service_transfer(
             if service.name != "diffd":
                 raise ValueError("manual cloud review is available under diffd only")
             details = run_manual_pull(args, paths)
-            report = CommandReport(command=f"diffd transfer manual {args.manual_command}", status="ok",
+            report = CommandReport(command=f"diffd transfer manual {args.manual_command}", status="error" if details.get("failed") else "ok",
                                    summary=details.get("message", "クラウド変更の確認"), details=details, issues=[], actions=[])
         except (OSError, ValueError, TransferStateError) as exc:
             report = CommandReport(command="diffd transfer manual", status="error", summary=str(exc), details={},

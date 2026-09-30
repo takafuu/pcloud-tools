@@ -31,6 +31,11 @@ def selected_queues(config, path):
                              if (r if isinstance(r, str) else r.get('path') if isinstance(r, dict) else None) == path]
     if selected['pending']:
         raise cr.ResolutionError('legacy pending downloads require separate review')
+    if not selected['diffd'] and getattr(config, 'sync_policy', 'legacy') == 'event':
+        from .event_sync import read_state
+        review = read_state(config).get('reviews', {}).get(path)
+        if review and (review.get('local') or {}).get('exists') and (review.get('cloud') or {}).get('exists'):
+            selected['diffd'] = [{'path':path, 'action':'download', 'event_id':'review:' + cr.digest(review)}]
     if not selected['diffd']:
         raise cr.ResolutionError('cloud event is no longer queued; refresh')
     if any(not isinstance(r, dict) or r.get('action') != 'download' or not r.get('event_id') for r in selected['diffd']):
@@ -42,6 +47,10 @@ def selected_queues(config, path):
 
 
 def preview(config, path, choice, remote, validate):
+    if getattr(config, 'sync_policy', 'legacy') == 'event':
+        from .event_sync import EventSync
+        validate(path)
+        return EventSync(config, remote if hasattr(remote, 'inventory') else None).review_preview(path, choice)
     if choice not in {'pull', 'local'}:
         raise cr.ResolutionError('choice must be pull or local')
     target = cr.safe_local(config, path)
@@ -72,6 +81,13 @@ def _remove_selected(file, selected):
 
 
 def apply(config, path, choice, token, remote, validate):
+    if getattr(config, 'sync_policy', 'legacy') == 'event':
+        from .event_sync import EventSync
+        validate(path)
+        result = EventSync(config, remote if hasattr(remote, 'inventory') else None).tick(manual={"path":path,"choice":choice,"token":token})
+        if not any(r.get('path') == path and r.get('verified') for r in result['results']):
+            raise cr.ResolutionError('採用中に変更されたか、結果を検証できません。一覧を更新してください')
+        return {'path':path, 'choice':choice, 'status':'completed', 'backup_directory':result['backup_directory'], 'conflict archives':result.get('conflict archives', []), 'message':'選択した版を反映しました。'}
     with contextlib.ExitStack() as stack:
         for service in ('pushd', 'diffd'):
             stack.enter_context(transfer_tick_lock(config.state_dir, service))
@@ -140,7 +156,9 @@ def apply(config, path, choice, token, remote, validate):
                         raise cr.ResolutionError(snapshot.issue.message)
                     retained = [r for r in snapshot.raw_records if r not in current['queues']['pushd']]
                     retained.append({'path': path, 'action': 'upload', 'event_id': uuid.uuid4().hex,
-                                     'reason': 'manual cloud review: local selected'})
+                                     'reason': 'manual cloud review: local selected',
+                                     **({'event_sync_choice': 'local', 'event_sync_local': current['local'],
+                                         'event_sync_cloud': current['cloud']} if getattr(config,'sync_policy','legacy') == 'event' else {})})
                     atomic_write_json(files['pushd'], retained)
                 _remove_selected(files['diffd'], current['queues']['diffd'])
             receipt['status'] = 'completed' if choice == 'pull' else 'upload-queued'

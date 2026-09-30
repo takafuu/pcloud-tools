@@ -339,3 +339,34 @@ def test_pcloud_archive_tombstone_blocks_repromotion(tmp_path: Path) -> None:
     assert promote.returncode == 1
     assert promote_payload["status"] == "error"
     assert "PCLOUD_ARCHIVE_TOMBSTONE" in [issue["key"] for issue in promote_payload["issues"]]
+
+
+def test_archive_uses_cryptcheck_only_for_configured_crypt_backend(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from pcloud_tools.pcloud_archive import _check_command
+    config=tmp_path/'rclone.conf';config.write_text('[encrypted]\ntype = crypt\n[normal]\ntype = pcloud\n')
+    monkeypatch.setenv('RCLONE_CONFIG',str(config))
+    profile=SimpleNamespace(rclone_bin='rclone',remote_root='encrypted:archive',checkers=4)
+    assert _check_command(profile,tmp_path,'.')[1]=='cryptcheck'
+    profile.remote_root='normal:archive'
+    assert _check_command(profile,tmp_path,'.')[1]=='check'
+
+
+def test_real_cryptcheck_accepts_identical_and_rejects_corruption(tmp_path,monkeypatch):
+    from types import SimpleNamespace
+    from pcloud_tools.pcloud_archive import _check_command
+    binary=subprocess.run(['zsh','-c','command -v rclone'],capture_output=True,text=True).stdout.strip()
+    if not binary:pytest.skip('rclone unavailable')
+    source=tmp_path/'plain';source.mkdir();(source/'a').write_bytes(b'original')
+    remote=tmp_path/'cipher';remote.mkdir()
+    config=tmp_path/'rclone.conf'
+    secret=subprocess.run([binary,'obscure','fixture-only-password'],capture_output=True,text=True,check=True).stdout.strip()
+    config.write_text(f'[fixturecrypt]\ntype = crypt\nremote = {remote}\npassword = {secret}\n')
+    config.chmod(0o600);monkeypatch.setenv('RCLONE_CONFIG',str(config))
+    subprocess.run([binary,'copy',str(source),'fixturecrypt:archive'],capture_output=True,check=True,timeout=20)
+    profile=SimpleNamespace(rclone_bin=binary,remote_root='fixturecrypt:archive',checkers=2)
+    command=_check_command(profile,source,'.')
+    assert command[1]=='cryptcheck'
+    assert subprocess.run(command,capture_output=True,timeout=20).returncode==0
+    (source/'a').write_bytes(b'corrupt!')
+    assert subprocess.run(command,capture_output=True,timeout=20).returncode!=0

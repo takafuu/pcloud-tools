@@ -17,6 +17,8 @@ from .cli_mode import add_mode_parser, cmd_mode
 from .cli_notify import add_notify_parser, cmd_notify
 from .cli_service_daemon import add_service_daemon_parsers, add_trash_parser, cmd_service_daemon, cmd_trash
 from .cli_status import add_status_doctor_parsers, cmd_doctor, cmd_info, cmd_status
+from .cli_trace import add_trace_parser, cmd_trace
+from .cli_state import add_state_parser, cmd_state
 from .cli_sync import add_sync_parser, cmd_sync
 from .runtime import detect_runtime_paths
 
@@ -44,6 +46,8 @@ def build_parser(
     parser.add_argument("--version", action="version", version=f"%(prog)s {__version__}")
     subparsers = parser.add_subparsers(dest="command")
 
+    add_state_parser(subparsers)
+    add_trace_parser(subparsers)
     add_help_parser(subparsers)
 
     add_status_doctor_parsers(subparsers)
@@ -95,6 +99,10 @@ def main(argv: list[str] | None = None) -> int:
         args.sync_command = legacy_sync_command
     paths = detect_runtime_paths()
 
+    if args.command == "trace":
+        return cmd_trace(args, paths)
+    if args.command == "state":
+        return cmd_state(args, paths)
     if args.command == "help":
         return cmd_help(args, parser, dev_mode=dev_mode, paths=paths)
     if args.command == "info":

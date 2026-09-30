@@ -1830,3 +1830,32 @@ def test_diffd_remote_change_add_and_clear_are_dev_state_writes(tmp_path: Path) 
     assert clear.returncode == 0
     assert json.loads(remote_file.read_text()) == []
     assert _payload(clear)["details"]["remote changes before"] == 1
+
+
+@pytest.mark.parametrize('field',['path','name'])
+@pytest.mark.parametrize('name',['line␊name.txt','back＼slash.txt','quoted‛␊name.txt','del␡name.txt','．'])
+def test_pcloud_encoded_api_names_require_rclone_resolution(field,name):
+    from pcloud_tools.diffd_events import parse_diff_response_text, diff_changes_to_records
+    metadata={field:('Documents/'+name if field=='path' else name),'fileid':123,'modified':200,'size':10,'parentfolderid':42}
+    parsed=parse_diff_response_text(json.dumps({'diffid':2,'entries':[{'event':'modifyfile','metadata':metadata}]}),'fixture',{'42':'Documents'})
+    assert not diff_changes_to_records(parsed.changes)
+    assert parsed.invalid and parsed.requires_reconciliation
+
+
+def test_event_api_encoded_name_requests_reconciliation_without_false_path(tmp_path):
+    env=_base_env(tmp_path,{'PCLOUD_TOOLS_DIFFD_API_LONG_POLL_GATE':'operator-approved-api-long-poll-v1',
+                            'PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE':'event'})
+    state_dir=_use_default_dev_state_dir(env)
+    fixture=tmp_path/'encoded-api.json'
+    fixture.write_text(json.dumps({'diffid':'124','entries':[{'event':'modifyfile','metadata':{'path':'Documents/line␊name.txt','fileid':123,'modified':200,'size':10}}]}))
+    shadow=tmp_path/'shadow-validation-encoded-name.json'
+    workspace=tmp_path/'pcloud-shadow-validation-encoded-name'/'workspace'
+    shadow.write_text(json.dumps({'status':'ok','workspace':str(workspace),'state_dir':str(workspace/'.dev-state/state'),
+        'checks':[{'name':name,'status':'ok'} for name in ['temporary workspace guard','temporary state dir guard','unsafe state dir guard']]}))
+    result=subprocess.run([sys.executable,'-m','pcloud_tools.cli','diffd','api-poll','long-poll-run','--fixture',str(fixture),
+        '--report-path',str(shadow),'--operator-reviewed-preview','--reviewer-approved-response-policy',
+        '--reviewer-approved-credential-policy','--reviewer-approved-process-policy','--execute','--json'],cwd=tmp_path,env=env,capture_output=True,text=True)
+    assert result.returncode==0,result.stdout+result.stderr
+    assert (state_dir/'event-sync/reconcile-request.json').is_file()
+    queue = state_dir/'diffd/remote-changes.json'
+    assert not queue.exists() or not json.loads(queue.read_text())

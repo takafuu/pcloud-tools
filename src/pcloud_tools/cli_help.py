@@ -182,6 +182,8 @@ def _important_subcommands_for_topics(topics: list[str]) -> list[str]:
     selected: set[str] = {"help", "info", "status", "doctor", "gates"}
     for topic in topics:
         normalized = topic.lower()
+        if normalized == "trace":
+            selected.add("trace")
         if normalized in {"pushd", "launchd", "transfer"}:
             selected.add("pushd")
         if normalized in {"diffd", "launchd", "transfer"}:
@@ -278,6 +280,18 @@ def render_detailed_help(parser: argparse.ArgumentParser, paths: RuntimePaths) -
 
 
 _TOPICS: dict[str, dict[str, Any]] = {
+    "trace": {
+        "summary": ["Opt-in timing trace for the current reconciliation only; stops at completion, 7 days or 16 MiB.", "Records wall/Python/child CPU times, not filenames, arguments, credentials or file contents. Nested timings overlap."],
+        "commands": ["pcloud-manager trace start --until-reconciled --execute", "pcloud-manager trace status --json", "pcloud-manager trace report", "pcloud-manager trace doctor --json", "pcloud-manager trace stop --execute"],
+        "notes": ["start/stop default to preview; normal synchronization does not record trace logs. Logs remain under state/diagnostics/sync-trace.", "Timing is observational; wall minus CPU does not distinguish network, disk, lock or child scheduling waits."],
+    },
+    "state": {
+        "summary": ["Sync state can be migrated from JSON to row-oriented SQLite without resetting queues or reconciliation."],
+        "commands": ["pcloud-manager state info --json", "pcloud-manager state migrate --json", "pcloud-manager state doctor --json"],
+        "safety": ["Migration --execute requires all writers stopped and active transfers finished or explicitly recovered.",
+                   "Keep the verified backup. Never restore pre-migration JSON after new SQLite work has run.",
+                   "State files contain private paths; do not include them in public artifacts."],
+    },
     "overview": {
         "summary": [
             "pcloud-manager is the public Python CLI for local pCloud/rclone operations.",
@@ -349,12 +363,27 @@ _TOPICS: dict[str, dict[str, Any]] = {
     "diffd": {
         "summary": [
             "diffd polls pCloud /diff and appends in-scope remote-change records.",
+            "PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE=event enables event sync: identical content is skipped; otherwise newer UTC whole-second mtime wins, equal/unknown versions wait for review.",
+            "Event mode uses rich fswatch FSEvents and scoped startup/resume reconciliation; offline deletes may reappear. No bisync.",
+            "Live deletes propagate only against unchanged last-sync versions; local originals are preserved, pCloud uses native Trash/Rewind, never cleanup.",
+            "In event mode manual list and the review window show exceptions only. Select an existing side to resolve same-time or delete/edit conflicts; absent-side adoption never deletes the survivor.",
             "PCLOUD_TOOLS_DIFFD_DOWNLOAD_MODE=manual disables automatic downloads; select changes explicitly in the cloud inbox.",
             "Inspect live status for the current launchd and transfer gate state.",
             "A confirmed missing remote source retires only its obsolete event_id; local files and newer events remain untouched.",
         ],
         "commands": [
             "pcloud-manager diffd transfer manual list --json",
+            "pcloud-manager diffd transfer manual archives --json",
+            "Same-time priority: PCLOUD_TOOLS_CONFLICT_SAME_TIME=local|cloud. Retention: PCLOUD_TOOLS_CONFLICT_RETENTION_DAYS=14, PCLOUD_TOOLS_CONFLICT_MAX_BYTES=100000000000 (decimal bytes).",
+            "Conflicting losing versions go to core/.conflict (excluded from sync). Confirmed deletion wins over editing. Archive failures are recorded but do not block sync.",
+            "pcloud-manager diffd transfer manual recheck --execute --json",
+            "pcloud-manager diffd transfer manual recheck-run --execute --max-records 100 --json",
+            "Recheck has an independent worker, limit and progress; transfers do not hold its execution slot. Newer timestamps resolve ordinary updates automatically.",
+            "Recheck schedules bounded background identity verification without choosing versions. Without --execute it only previews.",
+            "pcloud-manager diffd transfer manual batch preview --input selections.json --json",
+            "pcloud-manager diffd transfer manual batch apply --input reviewed-details.json --execute --json",
+            "Batch JSON schema: pcloud-manual-batch.v1, items with path and choice (pull/local/hold). Use - for stdin.",
+            "Apply accepts preview details with ready tokens; first failure stops remaining items. Progress JSONL is opt-in on stderr.",
             "pcloud-manager diffd transfer manual preview --path Documents/example.txt --choice pull --json",
             "pcloud-manager diffd transfer manual apply --path Documents/example.txt --choice pull --token PREVIEW_TOKEN --execute",
             "pcloud-manager diffd status --xbar",

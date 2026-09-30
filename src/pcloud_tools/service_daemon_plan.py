@@ -18,7 +18,8 @@ from .download_suppression import (
     read_upload_origin_journal,
     upload_origin_match,
 )
-from .io_utils import atomic_write_json, atomic_write_text
+from .sqlite_state import database_for
+from .io_utils import read_json_state, atomic_write_json, atomic_write_text
 from .manager_ignore import load_manager_ignore_rules, manager_ignore_match
 from .service_daemon_state import ServiceDaemonState
 from .sync_scope import SyncScopeInfo, sync_allowlist_info
@@ -165,7 +166,7 @@ def _fingerprint_from_payload(payload: object) -> LocalFingerprint | None:
 def _read_upload_candidate_journal(config: AppConfig) -> dict[str, dict[str, object]]:
     path = _upload_candidate_journal_path(config)
     try:
-        payload = json.loads(path.read_text())
+        payload = read_json_state(path)
     except (OSError, json.JSONDecodeError):
         return {}
     raw_records = payload.get("records") if isinstance(payload, dict) else None
@@ -359,7 +360,7 @@ def _read_json_list(path: Path, key_prefix: str) -> tuple[list[Any], ConfigIssue
     if not path.exists():
         return [], None
     try:
-        payload = json.loads(path.read_text())
+        payload = read_json_state(path)
     except (OSError, json.JSONDecodeError) as exc:
         return [], ConfigIssue(
             key=key_prefix,
@@ -485,6 +486,14 @@ def append_plan_record(
     include_enqueued_at: bool = False,
     coalesce_remote_file: bool = False,
 ) -> PlanUpdateResult:
+    store = database_for(path)
+    if store:
+        payload = _record_payload(record.path, record.action, record.reason,
+            enqueued_at=_now() if include_enqueued_at else record.enqueued_at,
+            event_id=record.event_id or new_event_id(), observed_at=record.observed_at or _now(), extra=record.extra)
+        with writer_state_lock(path):
+            before, after, _ = store.append(path.parent.name, payload, coalesce=coalesce_remote_file)
+        return PlanUpdateResult(file=path, before_count=before, after_count=after)
     with writer_state_lock(path):
         payload, issue = _read_json_list(path, key_prefix)
         if issue:
@@ -1146,7 +1155,7 @@ def build_diffd_plan_from_records(
             skipped_records.append(PlanRecord(record.path, record.action, "partial transfer file"))
         elif (ignore_match := manager_ignore_match(config, record.path, rules=ignore_rules)) and ignore_match.ignored:
             skipped_records.append(PlanRecord(record.path, record.action, ignore_match.reason))
-        elif record.action == "download" and record.reason == "diff:createfile" and (
+        elif getattr(config, "sync_policy", "legacy") != "event" and record.action == "download" and record.reason == "diff:createfile" and (
             upload_match := upload_origin_match(config, record.path, records_by_path=upload_origins)
         )[0]:
             _matched, reason, _journal_record = upload_match

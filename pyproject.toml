@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "pcloud-tools"
-version = "0.2.5"
+version = "0.5.1"
 description = "Personal, preview-first pCloud CLI suite built around rclone."
 readme = "README.md"
 license = "MIT"
@@ -30,6 +30,8 @@ pcloud-archive = "pcloud_tools.pcloud_archive:main"
 packages = ["src/pcloud_tools"]
 
 [tool.hatch.build.targets.wheel.force-include]
+"docs/spec/SQLite状態管理-20260928.md" = "pcloud_tools/share/docs/pcloud-manager/SQLite状態管理-20260928.md"
+"docs/spec/イベント同期実装記録-20260923.md" = "pcloud_tools/share/docs/pcloud-manager/イベント同期実装記録-20260923.md"
 "docs/spec/利用ガイド.md" = "pcloud_tools/share/docs/pcloud-manager/利用ガイド.md"
 "docs/spec/技術仕様.md" = "pcloud_tools/share/docs/pcloud-manager/技術仕様.md"
 "docs/spec/AI向け概要.md" = "pcloud_tools/share/docs/pcloud-manager/AI向け概要.md"

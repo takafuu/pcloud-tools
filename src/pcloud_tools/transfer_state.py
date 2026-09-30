@@ -21,7 +21,8 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Iterator
 
-from .io_utils import atomic_write_json
+from .io_utils import atomic_write_json, read_json_state
+from .sqlite_state import database_for
 
 try:  # pragma: no cover - fcntl is present on the supported Unix hosts.
     import fcntl
@@ -805,7 +806,7 @@ def _read_payload(path: Path, key_prefix: str) -> tuple[list[Any], StateIssue | 
     if not path.exists():
         return [], None
     try:
-        payload = json.loads(path.read_text())
+        payload = read_json_state(path)
     except (OSError, json.JSONDecodeError) as exc:
         return [], StateIssue(key=key_prefix, message=f"cannot read state file {path}: {exc}")
     if not isinstance(payload, list):
@@ -858,6 +859,11 @@ def ensure_event_ids(
     object level (the JSON writer may reformat whitespace).
     """
 
+    store = database_for(path)
+    if store:
+        with writer_state_lock(path) if write else contextlib.nullcontext():
+            before, assigned = store.ensure_ids(path.parent.name, write=write)
+        return EventIdUpdateResult(path, before, before, assigned)
     try:
         lock_context = writer_state_lock(path) if write else contextlib.nullcontext()
         with lock_context:
@@ -915,6 +921,11 @@ def consume_event_ids(
     """
 
     wanted = {str(value).strip() for value in event_ids if str(value).strip()}
+    store = database_for(path)
+    if store:
+        with writer_state_lock(path) if write else contextlib.nullcontext():
+            before, after, removed, stale = store.consume(path.parent.name, wanted, write=write)
+        return ConsumeResult(path, before, after, before-after, removed, stale)
     if not wanted:
         return ConsumeResult(path, 0, 0, 0, (), ())
     try:
@@ -1059,14 +1070,26 @@ def attempt_state_file(state_dir: Path, service: str) -> Path:
     return state_dir / service / "transfer-attempts.json"
 
 
-def _read_attempt_payload(path: Path) -> list[dict[str, Any]]:
+def _read_attempt_payload(path: Path, attempt_id: str | None = None) -> list[dict[str, Any]]:
+    store = database_for(path)
+    if store:
+        return store.attempts(path.parent.name, attempt_id=attempt_id)
     if not path.exists():
         return []
     try:
-        payload = json.loads(path.read_text())
+        payload = read_json_state(path)
     except (OSError, json.JSONDecodeError):
         return []
     return [item for item in payload if isinstance(item, dict)] if isinstance(payload, list) else []
+
+
+def _save_attempt_payload(path, attempts):
+    store = database_for(path)
+    if store:
+        with store.connection(write=True) as db:
+            for item in attempts:store.put_attempt(db, path.parent.name, item)
+    else:
+        atomic_write_json(path, attempts, sort_keys=True)
 
 
 def create_attempt(
@@ -1093,9 +1116,9 @@ def create_attempt(
     }
     try:
         with state_lock(path):
-            attempts = _read_attempt_payload(path)
+            attempts = [] if database_for(path) else _read_attempt_payload(path)
             attempts.append(payload)
-            atomic_write_json(path, attempts, sort_keys=True)
+            _save_attempt_payload(path, attempts)
         return AttemptResult(attempt_id, path, "started", "in_progress")
     except (OSError, TransferStateError) as exc:
         return AttemptResult(
@@ -1119,7 +1142,7 @@ def update_attempt(
     path = attempt_state_file(state_dir, service)
     try:
         with state_lock(path):
-            attempts = _read_attempt_payload(path)
+            attempts = _read_attempt_payload(path, attempt_id)
             found = False
             current_phase = "unknown"
             current_status = "unknown"
@@ -1144,7 +1167,7 @@ def update_attempt(
                     "blocked",
                     StateIssue(key="PCLOUD_TOOLS_TRANSFER_ATTEMPT", message=f"attempt not found: {attempt_id}"),
                 )
-            atomic_write_json(path, attempts, sort_keys=True)
+            _save_attempt_payload(path, attempts)
             return AttemptResult(attempt_id, path, current_phase, current_status)
     except (OSError, TransferStateError) as exc:
         return AttemptResult(
@@ -1161,6 +1184,9 @@ def read_attempts(state_dir: Path, service: str) -> tuple[dict[str, Any], ...]:
 
 
 def unresolved_attempts(state_dir: Path, service: str) -> tuple[dict[str, Any], ...]:
+    store = database_for(attempt_state_file(state_dir, service))
+    if store:
+        return tuple(store.attempts(service, pending=True))
     terminal = {"completed", "failed", "cancelled", "released"}
     return tuple(
         item
@@ -1181,7 +1207,7 @@ def mark_attempt_child(
     path = attempt_state_file(state_dir, service)
     try:
         with state_lock(path):
-            attempts = _read_attempt_payload(path)
+            attempts = _read_attempt_payload(path, attempt_id)
             for item in attempts:
                 if str(item.get("attempt_id")) != attempt_id:
                     continue
@@ -1189,7 +1215,7 @@ def mark_attempt_child(
                 if pid not in child_pids:
                     child_pids.append(pid)
                 item.update({"phase": phase, "status": "in_progress", "child_pids": child_pids, "updated_at": _utc_now()})
-                atomic_write_json(path, attempts, sort_keys=True)
+                _save_attempt_payload(path, attempts)
                 return AttemptResult(attempt_id, path, phase, "in_progress")
             return AttemptResult(
                 attempt_id,
@@ -1219,7 +1245,7 @@ def clear_attempt_child(
     path = attempt_state_file(state_dir, service)
     try:
         with state_lock(path):
-            attempts = _read_attempt_payload(path)
+            attempts = _read_attempt_payload(path, attempt_id)
             for item in attempts:
                 if str(item.get("attempt_id")) != attempt_id:
                     continue
@@ -1236,7 +1262,7 @@ def clear_attempt_child(
                         "updated_at": _utc_now(),
                     }
                 )
-                atomic_write_json(path, attempts, sort_keys=True)
+                _save_attempt_payload(path, attempts)
                 return AttemptResult(attempt_id, path, str(item.get("phase", "running")), "in_progress")
             return AttemptResult(
                 attempt_id,

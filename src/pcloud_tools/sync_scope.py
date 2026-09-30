@@ -145,7 +145,7 @@ def hard_safety_filter_rules(config: AppConfig) -> tuple[str, ...]:
     relative = ".pcloud-manager-trash"
     if remote and root.startswith(f"{remote}/"):
         relative = _normalize_filter_path(root[len(remote) + 1:]) or relative
-    return (f"- /{relative}/**", f"- /**/{relative}/**")
+    return ("- /.conflict/**", f"- /{relative}/**", f"- /**/{relative}/**")
 
 
 def _filter_rules_for_manager_pattern(pattern: str, *, allow: bool) -> tuple[str, ...]:
