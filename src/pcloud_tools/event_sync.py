@@ -388,7 +388,8 @@ class EventSync:
         self.reconciliation_batch = False
         if any(r.get('action') in {'move', 'directory'} for r in structural['pushd']):
             self.expand_structural_events(structural)
-            live = store.priority_paths(live_limit, self.scope.allows, self.state['reviews'])
+            # Preserve the reserved repair work when structural expansion refreshes live events.
+            live = list(dict.fromkeys([*repairs, *store.priority_paths(live_limit, self.scope.allows, self.state['reviews'])]))[:live_limit]
         paths = list(live)
         for path in reconciliation['pending'][:limit]:
             if len(paths) >= limit:

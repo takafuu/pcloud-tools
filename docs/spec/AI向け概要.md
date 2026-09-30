@@ -1,5 +1,9 @@
 # pcloud-manager AI向け概要
 
+## フォルダ整理の処理枠を維持する（0.5.2）
+
+新しいフォルダ通知を展開した後も、古いフォルダ保留の処理枠を維持する。0.5.1では通知が重なると選んだ保留が処理枠から外れていた。再現テストを追加し、開発環境と配布wheelの関連70件が通過した。配備は従来の停止・backup・切替・復帰手順を使う。
+
 ## 確認待ちの分類修正（0.5.1）
 
 開発先は実装repoに登録された `codex/manual-batch-ui` worktree。repo root基準の `src/pcloud_tools/review_classification.py`、`event_sync.py`、`cli_manual_pull.py`、`event_sync_status.py`、`sqlite_state.py`、`review_worker.py` と `tests/test_review_classification.py` を読む。確認待ちは採用判断のみ、情報再確認と処理エラーは別配列・別件数に分ける。旧フォルダ保留は子ファイルを予約してから解除し、新しいイベント世代は消費しない。UI側はxbar/pcloud-status root基準の `review_assets/` が担当し、旧CLIのフォルダエラーも採用一覧から分離する。

@@ -113,3 +113,15 @@ def test_old_directory_is_repaired_during_long_reconciliation(setup):
     EventSync(cfg,remote).tick(max_records=2)
     assert directory not in read_state(cfg)['reviews']
     assert len(read_state(cfg)['reconcile']['pending'])>90
+
+
+def test_directory_repair_is_not_displaced_by_new_structural_events(setup):
+    cfg,remote=setup
+    store,directory=seed(cfg,remote)
+    put(cfg.core_dir,'Documents/other/new.txt')
+    append_records(cfg,[{'path':'Documents/other','action':'directory'}])
+    engine=EventSync(cfg,remote)
+    engine.state['reconcile']={'id':'long-running','pending':['Documents/z'+str(i) for i in range(100)],'captured':{'pushd':[],'diffd':[]}}
+    engine.save()
+    EventSync(cfg,remote).tick(max_records=4)
+    assert directory not in read_state(cfg)['reviews']
