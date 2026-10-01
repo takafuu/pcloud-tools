@@ -28,6 +28,7 @@ from .transfer_state import (consume_event_ids, create_attempt, ensure_event_ids
 
 ABSENT = {"exists": False}
 ID_MISMATCH = "クラウド名とイベントのファイルIDが一致しません。再照合が必要です"
+UNSUPPORTED_EVENT = '未対応のイベントです。再照合または復旧確認が必要です'
 CONTENT_EVENTS = {'upload', 'download', 'delete', 'sync', 'change', 'create', 'created', 'update', 'updated', 'modify', 'modified'}
 
 
@@ -380,7 +381,8 @@ class EventSync:
         if limit == 1 and self.state.get('interleave_turn') == 'background':
             live_limit = 0
         repairs, repair_cursor = store.review_candidates(
-            'only regular files may be synchronized automatically',
+            ('only regular files may be synchronized automatically', UNSUPPORTED_EVENT,
+             'フォルダが変更されました。次回に内容を再確認します', 'アップロード結果を確認できません'),
             self.state.get('directory_review_cursor'), min(10, live_limit), self.scope.allows)
         self.state['directory_review_cursor'] = repair_cursor
         live = list(dict.fromkeys([*repairs, *store.priority_paths(live_limit, self.scope.allows, self.state['reviews'])]))[:live_limit]
@@ -591,6 +593,7 @@ class EventSync:
                 append_records(self.config, [{"path": p, "action": "upload" if safe_local(self.config.core_dir, p).exists() else "delete",
                                              "reason": "fswatch:directory-child"} for p in sorted(paths)])
                 self.consume({"pushd": [record], "diffd": []})
+                self.state["reviews"].pop(old, None)
                 continue
             chain = [record]
             new = record.get("destination")
@@ -629,6 +632,8 @@ class EventSync:
                 old_names = {r["path"] for r in chain}
                 # The content recheck above was queued before retiring old edits.
                 self.consume({"pushd": [r for r in selected["pushd"] if isinstance(r, dict) and r.get("path") in old_names], "diffd": []})
+                for old_name in old_names:
+                    self.state["reviews"].pop(old_name, None)
                 handled.update(old_names)
                 self.results.append({"path": old, "destination": new, "action": "move", "verified": True})
             except (OSError, SyncError) as exc:
@@ -791,6 +796,9 @@ class EventSync:
                     try:
                         if self.defer_changed_generation(path, selected):
                             continue
+                        if not manual and any(r.get('path') == path and r.get('action') in {'move', 'directory'} for r in selected['pushd']):
+                            self.results.append({'path': path, 'action': 'waiting', 'reason': 'フォルダ作成・移動イベントを次のバッチで処理します'})
+                            continue
                         cloud = cloud_versions.get(path, ABSENT)
                         if not manual and self.expand_directory(path, selected, cloud):
                             continue
@@ -845,7 +853,7 @@ class EventSync:
                             if same_content(local, cloud) is True:
                                 action = "equal"
                         if any(r.get("action") not in {"upload", "download", "delete", "sync", "change", "create", "created", "update", "updated", "modify", "modified"} for r in local_events + cloud_events):
-                            action, reason = "hold", "未対応のイベントです。再照合または復旧確認が必要です"
+                            action, reason = "hold", UNSUPPORTED_EVENT
                         if not approved and action == "upload" and self.config.pushd_upload_settle_seconds > 0:
                             stable = self.state.setdefault("settling", {})
                             stamp = {k: v for k, v in local.items() if k not in {"hashes", "second"}}

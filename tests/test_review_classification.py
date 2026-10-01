@@ -125,3 +125,66 @@ def test_directory_repair_is_not_displaced_by_new_structural_events(setup):
     engine.save()
     EventSync(cfg,remote).tick(max_records=4)
     assert directory not in read_state(cfg)['reviews']
+
+
+def test_structural_event_found_in_backlog_is_deferred_to_expansion(setup):
+    cfg, remote = setup
+    EventSync(cfg, remote).tick()
+    store = migrated(cfg)
+    engine = EventSync(cfg, remote)
+    engine.state['reconcile'] = {'id': 'scan', 'pending': ['Documents/folder'], 'captured': {'pushd': [], 'diffd': []}}
+    engine.save()
+    # The original directory name disappeared during creation/rename.
+    append_records(cfg, [{'path': 'Documents/folder', 'action': 'directory'}])
+    # Simulate the foreground quota already being occupied this tick.
+    from unittest.mock import patch
+    with patch.object(type(store), 'priority_paths', return_value=[]):
+        result = EventSync(cfg, remote).tick(max_records=2)
+    assert 'Documents/folder' not in read_state(cfg)['reviews']
+    assert any(r['action'] == 'waiting' for r in result['results'])
+    EventSync(cfg, remote).tick(max_records=4)
+    EventSync(cfg, remote).tick(max_records=4)
+    assert not list(store.queue_rows('pushd', ['Documents/folder']))
+    assert 'Documents/folder' not in read_state(cfg)['reviews']
+
+
+def test_unsupported_move_hold_reenters_structural_processing(setup):
+    cfg, remote = setup
+    EventSync(cfg, remote).tick()
+    store = migrated(cfg)
+    new = put(cfg.core_dir, 'Documents/new.txt', b'new')
+    old = 'Documents/temporary.txt'
+    append_records(cfg, [{'path': old, 'action': 'move', 'destination': 'Documents/new.txt', 'file_id': new.stat().st_ino, 'is_dir': False}])
+    engine = EventSync(cfg, remote)
+    engine.hold(old, '未対応のイベントです。再照合または復旧確認が必要です', {'pushd': list(store.queue_rows('pushd')), 'diffd': []})
+    engine.state['reviews'][old]['diagnostic'] = True
+    engine.state['reconcile'] = {'id': 'scan', 'pending': ['Documents/z'+str(i) for i in range(50)], 'captured': {'pushd': [], 'diffd': []}}
+    engine.save()
+    EventSync(cfg, remote).tick(max_records=4)
+    EventSync(cfg, remote).tick(max_records=4)
+    assert old not in read_state(cfg)['reviews']
+    assert not list(store.queue_rows('pushd', [old]))
+    assert (remote.root/'Documents/new.txt').read_bytes() == b'new'
+
+
+@pytest.mark.parametrize('reason,directory', [
+    ('アップロード結果を確認できません', False),
+    ('フォルダが変更されました。次回に内容を再確認します', True),
+])
+def test_transient_creation_hold_is_rechecked_without_live_events(setup, reason, directory):
+    cfg, remote = setup
+    EventSync(cfg, remote).tick()
+    migrated(cfg)
+    path = 'Documents/temporary'
+    if directory:
+        put(cfg.core_dir, path+'/new.txt', b'new')
+    engine = EventSync(cfg, remote)
+    engine.hold(path, reason, {'pushd': [], 'diffd': []})
+    engine.state['reconcile'] = {'id': 'scan', 'pending': ['Documents/z'+str(i) for i in range(50)], 'captured': {'pushd': [], 'diffd': []}}
+    engine.save()
+    EventSync(cfg, remote).tick(max_records=4)
+    EventSync(cfg, remote).tick(max_records=4)
+    assert path not in read_state(cfg)['reviews']
+    if directory:
+        assert (remote.root/path/'new.txt').read_bytes() == b'new'
+    assert not remote.deletes
