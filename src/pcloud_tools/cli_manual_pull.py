@@ -16,7 +16,7 @@ def add_parser(subparsers):
     archives.add_argument('--open', action='store_true', help='Open the local archive folder in Finder.')
     listing = commands.add_parser('list', help='List queued cloud paths without network access. Select a path to inspect both versions.')
     listing.add_argument('--json', action='store_true')
-    recheck = commands.add_parser('recheck', help='Request background verification of stale cloud identities; never choose a version. Preview by default.')
+    recheck = commands.add_parser('recheck', help='Request background verification of cloud identities and stale move diagnostics. Preview by default.')
     recheck.add_argument('--execute', action='store_true')
     recheck.add_argument('--json', action='store_true')
     worker = commands.add_parser('recheck-run', help='Run one independent verification batch; no file transfers. Preview by default.')
@@ -72,14 +72,14 @@ def run(args, paths):
     if args.manual_command == 'recheck':
         if config.sync_policy != 'event':
             raise cr.ResolutionError('再確認はイベント同期で利用できます')
-        recheck_message = '古いクラウド情報の再確認を依頼します。ファイルの採用・削除は行いません。'
+        recheck_message = 'クラウド情報と古い移動通知の再確認を依頼します。移動通知は通常の同期処理で再照合し、失われる版を退避して進めます。'
         if args.execute:
             from .io_utils import atomic_write_json
             from .event_sync import now
             import uuid
             atomic_write_json(config.state_dir / 'event-sync' / 'review-recheck-request.json',
                               {'id': uuid.uuid4().hex, 'requested_at': now()})
-            recheck_message = '再確認を依頼しました。同期とは独立して順次確認します。「一覧を更新」で結果を確認してください。'
+            recheck_message = '再確認を依頼しました。クラウド情報は順次確認し、移動の診断は次の同期処理で再照合します。「一覧を更新」で結果を確認してください。'
     if args.manual_command in ('list', 'recheck'):
         snapshot = read_queue_snapshot(files['diffd']) if config.sync_policy != 'event' else None
         if snapshot is not None and snapshot.issue:
@@ -126,6 +126,9 @@ def run(args, paths):
             needs_recheck = event_reviews.get(path, {}).get('reason') == ID_MISMATCH
             if needs_recheck:
                 reason = 'クラウド情報の再確認が必要です。「情報を再確認」を押してください。版の採用はまだ不要です。'
+            from .event_sync import MOVE_IDENTITY_CHANGED
+            if event_reviews.get(path, {}).get('reason') == MOVE_IDENTITY_CHANGED:
+                reason = '改名後の変更を自動で再照合します。失われる版は .conflict に退避して同期を進めます。'
             destination = records if kind == 'choice' else rechecks if kind == 'recheck' else diagnostics
             destination.append({'path': path, 'available': kind == 'choice' and not reason, 'needs_recheck': needs_recheck,
                             'status': 'needs-recheck' if needs_recheck else None, 'reason': reason or event_reviews.get(path,{}).get('reason',''),

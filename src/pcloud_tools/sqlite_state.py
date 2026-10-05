@@ -175,7 +175,7 @@ class Store:
                         return result
             return result
 
-    def review_candidates(self, reason, cursor, limit, allows):
+    def review_candidates(self, reason, cursor, limit, allows, *, include_structural=False):
         if limit <= 0:
             return [], cursor
         result, last = [], cursor
@@ -187,7 +187,7 @@ class Store:
                 ):
                     last = path
                     review = json.loads(raw)
-                    if review.get('reason') in ((reason,) if isinstance(reason, str) else reason) and not review.get('structural') and allows(path):
+                    if review.get('reason') in ((reason,) if isinstance(reason, str) else reason) and (include_structural or not review.get('structural')) and allows(path):
                         result.append(path)
                     if len(result) >= limit:
                         return result, last

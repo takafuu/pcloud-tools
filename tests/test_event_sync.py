@@ -261,7 +261,7 @@ def test_recovery_blocks_before_queue_cleanup(setup):
         writers_stopped=True,latest_event_ids_rechecked=True,local_fingerprints_rechecked=True).issue
 
 
-def test_edit_plus_confirmed_rename_and_destination_overwrite(setup):
+def test_edit_plus_confirmed_rename_preserves_existing_destination_version(setup):
     cfg,r,old=initial(setup)
     new='Documents/new.txt';put(r.root,new,b'overwritten',500)
     put(cfg.core_dir,old,b'edited then renamed',200)
@@ -269,8 +269,10 @@ def test_edit_plus_confirmed_rename_and_destination_overwrite(setup):
     append_records(cfg,[{'path':old,'action':'upload'}, {'path':old,'action':'move','destination':new,
         'file_id':(cfg.core_dir/new).stat().st_ino,'is_dir':False}])
     EventSync(cfg,r).tick()
-    assert r.moves==[(old,new)]
-    assert (r.root/new).read_bytes()==b'edited then renamed'
+    assert not r.moves
+    assert (r.root/new).read_bytes()==b'overwritten'
+    assert (cfg.core_dir/new).read_bytes()==b'overwritten'
+    assert any(p.read_bytes()==b'edited then renamed' for p in (cfg.core_dir/'.conflict').glob('*/data/'+new))
     assert not (r.root/old).exists()
 
 

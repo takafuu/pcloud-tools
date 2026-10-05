@@ -29,7 +29,9 @@ from .transfer_state import (consume_event_ids, create_attempt, ensure_event_ids
 ABSENT = {"exists": False}
 ID_MISMATCH = "クラウド名とイベントのファイルIDが一致しません。再照合が必要です"
 UNSUPPORTED_EVENT = '未対応のイベントです。再照合または復旧確認が必要です'
-CONTENT_EVENTS = {'upload', 'download', 'delete', 'sync', 'change', 'create', 'created', 'update', 'updated', 'modify', 'modified'}
+MOVE_IDENTITY_CHANGED = '改名前後の対応を現在のファイルで確認できません'
+STRUCTURAL_RETRY = '移動・フォルダの情報を取得できません。次の同期で再試行します'
+CONTENT_EVENTS = {'upload', 'download', 'delete', 'sync', 'change', 'create', 'created', 'update', 'updated', 'modify', 'modified', 'move-recheck'}
 
 
 def obsolete_identity_event(local, cloud, baseline, local_events, cloud_events):
@@ -376,14 +378,19 @@ class EventSync:
         limit = min(max_records, EVENT_RECONCILE_BATCH_LIMIT)
         if limit <= 0:
             return [], {'pushd': [], 'diffd': []}, set()
+        request_file = self.config.state_dir / 'event-sync' / 'review-recheck-request.json'
+        request = json.loads(request_file.read_text()) if request_file.exists() else {}
+        if self.state.get('move_recheck_request') != request.get('id'):
+            self.state['move_recheck_request'] = request.get('id')
+            self.state.pop('directory_review_cursor', None)
         # A one-file caller alternates; larger batches reserve half for the backlog.
         live_limit = max(1, limit // 2)
         if limit == 1 and self.state.get('interleave_turn') == 'background':
             live_limit = 0
         repairs, repair_cursor = store.review_candidates(
-            ('only regular files may be synchronized automatically', UNSUPPORTED_EVENT,
+            ('only regular files may be synchronized automatically', UNSUPPORTED_EVENT, MOVE_IDENTITY_CHANGED, STRUCTURAL_RETRY,
              'フォルダが変更されました。次回に内容を再確認します', 'アップロード結果を確認できません'),
-            self.state.get('directory_review_cursor'), min(10, live_limit), self.scope.allows)
+            self.state.get('directory_review_cursor'), min(10, live_limit), self.scope.allows, include_structural=True)
         self.state['directory_review_cursor'] = repair_cursor
         live = list(dict.fromkeys([*repairs, *store.priority_paths(live_limit, self.scope.allows, self.state['reviews'])]))[:live_limit]
         structural = {s: list(rows) for s, rows in self.snapshots(live).items()} if live else {'pushd': [], 'diffd': []}
@@ -469,9 +476,12 @@ class EventSync:
                                                and same_content(cloud, baseline.get('cloud', ABSENT)) is not True)))
         deleted_edit = (action == 'delete-local' and same_content(local, baseline.get('local', ABSENT)) is not True
                         or action == 'delete-cloud' and same_content(cloud, baseline.get('cloud', ABSENT)) is not True)
-        if not (collision or deleted_edit):
+        forced = item.get('archive_before_replace') and (
+            action in ('upload', 'delete-cloud') and cloud.get('exists')
+            or action in ('download', 'delete-local') and local.get('exists'))
+        if not (collision or deleted_edit or forced):
             return True
-        if collision or deleted_edit:
+        if collision or deleted_edit or forced:
             side = 'local' if action in ('download', 'delete-local') else 'cloud'
             self.progress('archiving', 0, 1)
             result = capture(self.config, self.remote, path, side, local if side == 'local' else cloud)
@@ -569,13 +579,58 @@ class EventSync:
             safe_local(self.config.core_dir, path).unlink()
         self.complete(path, selected, ABSENT, ABSENT, action)
 
+    def recheck_changed_move(self, chain, new, inventory, local_paths, selected):
+        """Retire an obsolete move, retaining its intent in ordinary content work.
+
+        No remote rename is guessed. Missing source names carry the witnessed
+        removal; destinations without a deletion event retain surviving cloud
+        data. Every displaced version is archived even if baseline is unchanged.
+        """
+        from .event_sync_watch import append_records
+        sources = {record['path'] for record in chain}
+        roots = sources | {new}
+        paths = set(roots)
+        if any(record.get('is_dir') for record in chain):
+            paths |= {p for p in set(inventory) | set(local_paths())
+                      if any(p.startswith(root + '/') for root in roots)}
+        records = []
+        for path in sorted(paths):
+            if not self.scope.allows(path):
+                continue
+            target = safe_local(self.config.core_dir, path)
+            if target.is_dir() and path not in inventory:
+                continue
+            records.append({'path': path, 'action': 'move-recheck',
+                            'move_source': any(path == root or path.startswith(root + '/') for root in sources),
+                            'reason': 'fswatch:changed-move-content-recheck'})
+        # Enqueue before consuming only captured IDs. A crash can repeat work,
+        # but cannot leave a cleared diagnosis without a durable content check.
+        append_records(self.config, records)
+        self.consume({'pushd': [r for r in selected['pushd'] if r in chain or (
+            r.get('path') in sources and r.get('action') not in {'move', 'directory'})], 'diffd': []})
+        for path in sources:
+            self.state['reviews'].pop(path, None)
+        self.results.append({'path': chain[0]['path'], 'destination': new,
+                             'action': 'move-recheck-queued', 'files': len(records)})
+
     def expand_structural_events(self, selected):
         from .event_sync_watch import append_records
         structural = [r for r in selected["pushd"] if isinstance(r, dict) and r.get("action") in {"move", "directory"}]
         if not structural:
             return
         filters = prepare_sync_filter_rules(self.config, self.scope.scope.entries)
-        inventory = self.remote.inventory(filter_rules=filters, hashes=False)
+        try:
+            inventory = self.remote.inventory(filter_rules=filters, hashes=False)
+        except SyncError as exc:
+            # An uncertain child must still pass the existing recovery barrier.
+            # A failed listing provides no deletion evidence, but need not block
+            # unrelated paths whose scoped inventory can still be obtained.
+            if 'recovery required' in str(exc):
+                raise
+            for record in structural:
+                self.hold(record['path'], STRUCTURAL_RETRY, selected)
+                self.state['reviews'][record['path']]['structural'] = True
+            return
         local_inventory = None
         def local_paths():
             nonlocal local_inventory
@@ -603,7 +658,11 @@ class EventSync:
             try:
                 destination = safe_local(self.config.core_dir, new)
                 if safe_local(self.config.core_dir, old).exists() or not destination.exists() or destination.stat().st_ino != record.get("file_id"):
-                    raise SyncError("改名前後の対応を現在のファイルで確認できません")
+                    if not record.get('file_id') or not record.get('destination'):
+                        raise SyncError(MOVE_IDENTITY_CHANGED)
+                    self.recheck_changed_move(chain, new, inventory, local_paths, selected)
+                    handled.update(r['path'] for r in chain)
+                    continue
                 if record.get("is_dir"):
                     mappings = {p: new + p[len(old):] for p in inventory if p.startswith(old + "/")}
                 else:
@@ -613,6 +672,13 @@ class EventSync:
                 outside = [p for p, q in mappings.items() if self.scope.allows(p) and not self.scope.allows(q)]
                 append_records(self.config, [{"path": p, "action": "delete", "reason": "fswatch:move-out-of-scope"} for p in outside])
                 if inside:
+                    # A destination may have been edited independently since the
+                    # local rename. Reconcile with archives instead of moveto's
+                    # replacement semantics silently discarding that version.
+                    if any(path in inventory for path in inside.values()):
+                        self.recheck_changed_move(chain, new, inventory, local_paths, selected)
+                        handled.update(r['path'] for r in chain)
+                        continue
                     before_move = self.current_cloud(list(inside))
                     if any(not before_move.get(p, {}).get("hashes") for p in inside):
                         raise SyncError("移動対象のクラウド版を検証できません")
@@ -631,7 +697,8 @@ class EventSync:
                 append_records(self.config, [{"path": p, "action": "upload", "reason": "fswatch:edit-after-move"} for p in destinations])
                 old_names = {r["path"] for r in chain}
                 # The content recheck above was queued before retiring old edits.
-                self.consume({"pushd": [r for r in selected["pushd"] if isinstance(r, dict) and r.get("path") in old_names], "diffd": []})
+                self.consume({"pushd": [r for r in selected["pushd"] if isinstance(r, dict) and (r in chain or (
+                    r.get("path") in old_names and r.get('action') not in {'move', 'directory'}))], "diffd": []})
                 for old_name in old_names:
                     self.state["reviews"].pop(old_name, None)
                 handled.update(old_names)
@@ -822,14 +889,14 @@ class EventSync:
                                         if record.get("action") == "delete" else {})
                             if not identity.get("id") or str(identity["id"]) != str(expected_id):
                                 identity_changed = True
-                        if identity_changed and not manual and not (local.get("exists") and cloud.get("exists")) and not any(r.get("action") == "delete" for r in cloud_events):
+                        if identity_changed and not manual and not (local.get("exists") and cloud.get("exists")) and not any(r.get("action") == "delete" for r in cloud_events) and not any(r.get('action') == 'move-recheck' for r in local_events):
                             # Inventory succeeded: preserve both versions for explicit,
                             # token-bound review instead of choosing a replacement object.
                             self.hold(path, 'クラウド側の版が変わっています。内容を確認して採用する版を選んでください',
                                       selected, local, cloud)
                             continue
                         action, reason = choose(local, cloud, reconcile=bool(reconciliation) and path not in event_paths,
-                            local_delete=any(r.get("action") == "delete" for r in local_events),
+                            local_delete=any(r.get("action") == "delete" or (r.get('action') == 'move-recheck' and r.get('move_source')) for r in local_events),
                             cloud_delete=any(r.get("action") == "delete" for r in cloud_events),
                             baseline=self.state["baseline"].get(path), same_time=getattr(self.config, "conflict_same_time", "local"))
                         chosen = [r for r in local_events if r.get("event_sync_choice") == "local"]
@@ -852,7 +919,7 @@ class EventSync:
                             action = "upload" if manual["choice"] == "local" else "download"
                             if same_content(local, cloud) is True:
                                 action = "equal"
-                        if any(r.get("action") not in {"upload", "download", "delete", "sync", "change", "create", "created", "update", "updated", "modify", "modified"} for r in local_events + cloud_events):
+                        if any(r.get("action") not in CONTENT_EVENTS for r in local_events + cloud_events):
                             action, reason = "hold", UNSUPPORTED_EVENT
                         if not approved and action == "upload" and self.config.pushd_upload_settle_seconds > 0:
                             stable = self.state.setdefault("settling", {})
@@ -863,7 +930,8 @@ class EventSync:
                             if time.time() - stable[path]["since"] < self.config.pushd_upload_settle_seconds:
                                 self.results.append({"path": path, "action": "waiting", "reason": "書き込み完了待ち"})
                                 continue
-                        item = {"path": path, "action": action, "local": local, "cloud": cloud, "manual": bool(manual)}
+                        item = {"path": path, "action": action, "local": local, "cloud": cloud, "manual": bool(manual),
+                                'archive_before_replace': any(r.get('action') == 'move-recheck' for r in local_events)}
                         if action == "equal":
                             self.complete(path, selected, local, cloud, action)
                         elif action == "hold":
